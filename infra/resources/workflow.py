@@ -1,0 +1,50 @@
+"""Cloud Workflow definition — unified report pipeline."""
+
+from __future__ import annotations
+
+import pathlib
+
+import pulumi
+import pulumi_gcp as gcp
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+
+
+def create(
+    env: str,
+    project: str,
+    region: str,
+    workflow_sa: gcp.serviceaccount.Account,
+    cloud_functions: dict[str, gcp.cloudfunctionsv2.Function],
+    depends_on: list[pulumi.Resource],
+) -> gcp.workflows.Workflow:
+    """Deploy the report flow workflow with function URLs baked in."""
+    template = (PROJECT_ROOT / "workflows" / "report_flow.yaml").read_text()
+
+    # Replace placeholders with actual Cloud Function URLs at deploy time.
+    # The workflow YAML uses __PLACEHOLDER__ syntax to avoid collision
+    # with Cloud Workflows' own ${expression} syntax.
+    source = pulumi.Output.all(
+        auth_url=cloud_functions["auth"].url,
+        create_url=cloud_functions["create-report"].url,
+        poll_url=cloud_functions["poll-status"].url,
+        download_url=cloud_functions["download-upload"].url,
+    ).apply(
+        lambda urls: (
+            template
+            .replace("__AUTH_FUNCTION_URL__", urls["auth_url"])
+            .replace("__CREATE_REPORT_FUNCTION_URL__", urls["create_url"])
+            .replace("__POLL_STATUS_FUNCTION_URL__", urls["poll_url"])
+            .replace("__DOWNLOAD_UPLOAD_FUNCTION_URL__", urls["download_url"])
+        )
+    )
+
+    return gcp.workflows.Workflow(
+        f"kalilos-{env}-report-flow",
+        name=f"kalilos-{env}-report-flow",
+        region=region,
+        project=project,
+        source_contents=source,
+        service_account=workflow_sa.email,
+        opts=pulumi.ResourceOptions(depends_on=depends_on),
+    )

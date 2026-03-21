@@ -1,0 +1,87 @@
+---
+description: Cloud Workflow YAML patterns for the report flow
+globs: workflows/**/*.yaml
+alwaysApply: false
+---
+
+# Cloud Workflow Conventions
+
+The workflow in `workflows/report_flow.yaml` orchestrates the full report lifecycle.
+
+## Input Parameters
+
+Workflows receive: `api_source`, `client_id`, `marketplace`, `report_type`, `report_params`, `folder_name`, `subfolder_strategy`
+
+The `folder_name` and `subfolder_strategy` are passed through to the download_upload function for custom Drive folder paths. Default is empty folder_name (date-first layout) and "date" subfolder strategy.
+
+## HTTP Call to Cloud Function
+
+```yaml
+- callFunction:
+    call: http.post
+    args:
+      url: ${function_url}
+      auth:
+        type: OIDC
+      body: ${payload}
+    result: response
+```
+
+## Sleep / Backoff
+
+```yaml
+- sleep:
+    call: sys.sleep
+    args:
+      seconds: 30
+```
+
+## Poll Loop (Core Pattern)
+
+```yaml
+- checkStatus:
+    switch:
+      - condition: ${response.body.status == "ready"}
+        next: downloadReport
+      - condition: ${response.body.status == "failed"}
+        next: markFailed
+      - condition: true
+        next: backoffWait
+- backoffWait:
+    call: sys.sleep
+    args:
+      seconds: ${math.min(30 * math.pow(2, poll_count), 120)}
+    next: pollStatus
+```
+
+## Passing Optional Args Safely
+
+Use `default(map.get(...))` for optional fields:
+
+```yaml
+folder_name: ${default(map.get(args, "folder_name"), "")}
+subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
+```
+
+## Error Handling
+
+Wrap Cloud Function calls in try/except:
+
+```yaml
+- tryCreateReport:
+    try:
+      call: http.post
+      args:
+        url: ${create_report_url}
+        auth: { type: OIDC }
+        body: ${payload}
+      result: createResult
+    except:
+      as: e
+      steps:
+        - logError:
+            call: sys.log
+            args: { text: ${"Create report failed: " + e.message}, severity: "ERROR" }
+        - failJob:
+            next: markFailed
+```

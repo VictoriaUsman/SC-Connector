@@ -1,0 +1,6 @@
+name: kalilos-connector
+runtime:
+  name: python
+  options:
+    virtualenv: venv
+description: Kalilos Amazon Reports Connector — GCP Infrastructure

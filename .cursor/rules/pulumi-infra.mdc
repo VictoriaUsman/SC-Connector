@@ -1,0 +1,50 @@
+---
+description: Pulumi infrastructure conventions for GCP resources
+globs: infra/**/*.py
+alwaysApply: false
+---
+
+# Pulumi Infrastructure Conventions
+
+## File Layout
+
+All resources in `infra/resources/`:
+- `functions.py` — Cloud Function definitions
+- `workflow.py` — Cloud Workflow
+- `scheduler.py` — Cloud Scheduler jobs
+- `firestore.py` — Firestore indexes and rules
+- `api_gateway.py` — API Gateway for frontend
+- `secrets.py` — Secret Manager resources
+- `iam.py` — IAM bindings (explicit, never default service accounts)
+
+## Resource Naming
+
+```python
+import pulumi
+env = pulumi.get_stack()  # "staging" or "prod"
+name = f"kalilos-{env}-create-report"
+```
+
+## Adding a New Cloud Function
+
+Follow the pattern in `infra/resources/functions.py`:
+
+```python
+create_report_fn = gcp.cloudfunctionsv2.Function(
+    f"kalilos-{env}-create-report",
+    location=region,
+    build_config={"runtime": "python312", "entry_point": "handler", "source": {...}},
+    service_config={"available_memory": "256M", "environment_variables": {...}},
+)
+```
+
+## Stack Configuration
+
+- `Pulumi.staging.yaml` → GCP project `kalilos-connector-staging`
+- `Pulumi.prod.yaml` → GCP project `kalilos-connector-prod`
+
+## Rules
+
+- Always define IAM bindings explicitly in `iam.py`
+- Never use default service accounts — create dedicated ones per function group
+- Deploy via `make deploy-infra`, never raw `pulumi up`

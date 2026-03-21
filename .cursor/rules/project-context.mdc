@@ -1,0 +1,61 @@
+---
+description: Core project context and architecture for Kalilos Amazon Reports Connector
+alwaysApply: true
+---
+
+# Project Context
+
+Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon SP API and Ads API reports for multiple clients/marketplaces, stores them in Google Drive.
+
+## Architecture
+
+- **Orchestration**: GCP Cloud Workflows runs a unified Wait+Poll flow for both SP API and Ads API
+- **Compute**: Cloud Functions (Python 3.12, 2nd gen) — auth, create_report, poll_status, download_upload, scheduler, api
+- **State**: Firestore (collections: `clients`, `schedules`, `jobs`, `_drive_folder_locks`)
+- **Scheduling**: Cloud Scheduler -> scheduler function -> marketplace-timezone-aware fan-out -> Cloud Workflow executions
+- **Secrets**: GCP Secret Manager
+- **Report Storage**: Google Drive (date-first default layout, or custom folder per schedule)
+- **Frontend**: React + Vite + shadcn/ui on Firebase Hosting, Firestore real-time listeners
+- **IaC**: Pulumi (Python, local file backend) in `infra/`
+
+## Three-Clock Timezone Architecture
+
+- **Backend Clock (UTC)**: All Firestore timestamps, scheduler logic, and `next_run_at` are UTC
+- **Marketplace Clock (Local)**: `MARKETPLACE_TIMEZONES` in `functions/shared/config.py` maps each marketplace to its IANA timezone. Scheduler uses this to compute report dates (midnight-to-midnight in marketplace local time, converted to UTC for SP API)
+- **User Clock (Display)**: Frontend formats UTC timestamps using `toLocaleString()` for the user's browser timezone
+
+## Schedule Data Model
+
+Schedules support multi-select clients (`client_ids: string[]`) and marketplaces (`marketplaces: string[]`). The scheduler fans out one workflow execution per `(client, marketplace)` pair.
+
+Scheduling uses `schedule_config` with `type` (daily/weekly/monthly/hourly), `time` (UTC), `days_of_week`, and `day_of_month`.
+
+Each schedule has an optional `timeframe` dict with `strategy` (yesterday | today | last_n_days | rolling_window | last_calendar_week | last_calendar_month) and strategy-specific fields. Defaults to `{"strategy": "yesterday"}`. Reconciliation only applies to the `yesterday` strategy.
+
+Each schedule has `folder_name` (custom Drive folder) and `subfolder_strategy` ("date" or "none"), plus `reconciliation_days` (default [3, 7]) for re-pulling stale Amazon data (yesterday strategy only).
+
+## Environments
+
+| Environment | GCP Project | Pulumi Stack |
+|----|---|-----|
+| Staging | `kalilos-connector-staging` | `staging` |
+| Production | `kalilos-connector-prod` | `prod` |
+
+## Key Conventions
+
+- GCP account: `nivbraz90@gmail.com`. Scripts auto-verify before any operation
+- API source branching: functions accept `api_source` ("sp_api" or "ads_api") and branch accordingly
+- Resource naming: `kalilos-{env}-{resource}` (e.g., `kalilos-staging-create-report`)
+- Secret naming: `kalilos-{env}-{service}-{client}` (e.g., `kalilos-prod-sp-api-acme`)
+- ALL operations via Makefile — never raw gcloud, pulumi, or firebase commands
+- Deploy: `make env-staging && make deploy-all` or `make env-prod && make deploy-all`
+- Pulumi backend: local file (`file://~/.pulumi-local`), configured in `scripts/_common.sh`
+
+## Key Shared Modules
+
+- `functions/shared/config.py` — env config, marketplace regions, `MARKETPLACE_TIMEZONES`
+- `functions/shared/schedule_compute.py` — timezone-aware date computation, `compute_date_range()` for timeframe strategies, `compute_report_dates()` for single-day and range API params, flexible `compute_next_run()`
+- `functions/shared/workflow_launcher.py` — unified workflow launch helpers: `build_payload()`, `launch_execution()` with retry, `launch_for_marketplace()` with timeframe-aware date ranges and conditional reconciliation
+- `functions/shared/drive_client.py` — Drive folder hierarchy, Firestore-coordinated concurrent folder creation, upload with replace, range-aware filenames
+- `functions/shared/report_converter.py` — JSON→TSV flattening for SP API JSON reports (Sales & Traffic, Brand Analytics, Ledger)
+- `functions/shared/firestore_utils.py` — CRUD for clients, schedules, jobs

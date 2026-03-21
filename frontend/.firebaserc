@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "staging": "kalilos-connector-staging",
+    "prod": "kalilos-connector-prod"
+  }
+}

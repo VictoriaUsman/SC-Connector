@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+infra/venv/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# Environment (secrets)
+.env
+.env.staging
+.env.prod
+frontend/.env
+
+# Pulumi local state
+.pulumi-local/
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing / caching
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+Thumbs.db

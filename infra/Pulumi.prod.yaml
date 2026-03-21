@@ -1,0 +1,6 @@
+config:
+  gcp:project: kalilos-connector-prod
+  gcp:region: us-central1
+  kalilos:scheduler-cron: "*/15 * * * *"
+  kalilos:scheduler-timezone: America/New_York
+  kalilos:gdrive-root-folder: "Kalilos Reports"

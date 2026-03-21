@@ -1,0 +1,102 @@
+---
+description: Cloud Function patterns and conventions for this project
+globs: functions/**/*.py
+alwaysApply: false
+---
+
+# Cloud Function Conventions
+
+- Python 3.12, Cloud Functions 2nd gen, 256MB default memory
+- Handler signature: `def handler(request: flask.Request) -> tuple[dict, int]`
+- Shared code lives in `functions/shared/` — import as `from shared.sp_api_client import ...`
+
+## API Source Branching
+
+Every function that touches Amazon APIs MUST handle both sources:
+
+```python
+api_source = data["api_source"]
+if api_source == "sp_api":
+    result = sp_api_client.create_report(data)
+elif api_source == "ads_api":
+    result = ads_api_client.create_report(data)
+else:
+    return {"error": f"Unknown api_source: {api_source}", "code": "INVALID_SOURCE"}, 400
+```
+
+## Schedule Data Model
+
+Schedules use arrays for multi-select:
+- `client_ids: list[str]` (not `client_id`)
+- `marketplaces: list[str]` (not `marketplace`)
+
+The scheduler fans out one workflow per `(client, marketplace)` pair. Firestore queries use `array_contains` for filtering by client.
+
+## Timezone-Aware Report Dates
+
+Use `functions/shared/schedule_compute.py` for all date computation:
+
+```python
+from shared.schedule_compute import (
+    compute_date_range, compute_report_dates, marketplace_yesterday,
+)
+
+# Single day (legacy or simple usage):
+report_date = marketplace_yesterday("US", utc_now)
+params = compute_report_dates("US", "sp_api", report_date)
+# {"dataStartTime": "2026-03-19T08:00:00Z", "dataEndTime": "2026-03-20T08:00:00Z"}
+
+# Date range via timeframe strategy (preferred for scheduled reports):
+timeframe = schedule.get("timeframe", {"strategy": "yesterday"})
+start, end = compute_date_range("US", timeframe, utc_now)
+params = compute_report_dates("US", "sp_api", start, end)
+# Multi-day range: dataStartTime=midnight of start, dataEndTime=midnight after end
+```
+
+SP API gets UTC timestamps (marketplace midnight-to-midnight, spanning the full range). Ads API gets YYYY-MM-DD startDate/endDate strings.
+
+For date-range schedules (any strategy other than `yesterday`), reconciliation re-pulls are automatically skipped by the workflow launcher.
+
+## Drive Folder Paths
+
+Use `folder_name` and `subfolder_strategy` from the schedule payload:
+- Default (empty folder_name): `{root}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`
+- Custom: `{root}/{folder_name}/{optional YYYY-MM-DD}/`
+
+Folder creation across concurrent workflow executions is coordinated via Firestore locks in the `_drive_folder_locks` collection. Never call `create_folder()` directly for shared paths — always use `find_or_create_folder()`.
+
+## JSON Report Conversion
+
+Some SP API reports return JSON (Sales & Traffic, Brand Analytics, Ledger) but are uploaded as TSV for Google Sheets compatibility. The `download_upload` function checks `should_convert(report_type)` and calls `json_report_to_tsv()` before uploading. When adding a new JSON report type:
+
+1. Add to `_SP_API_JSON_REPORTS` in `drive_client.py`
+2. Add array key mapping to `_JSON_REPORT_ARRAY_KEYS` in `report_converter.py`
+
+## Firestore Access
+
+```python
+from google.cloud import firestore
+db = firestore.Client()
+doc = db.collection("jobs").document(job_id).get()
+db.collection("jobs").document(job_id).update({"status": "complete"})
+```
+
+## Error Responses
+
+Always return structured JSON with an HTTP status code:
+
+```python
+return {"error": "Report not found", "code": "NOT_FOUND"}, 404
+```
+
+## Logging
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+logger.info("Processing report", extra={"client_id": client_id, "api_source": api_source})
+```
+
+## Environment Variables
+
+Read from `os.environ` (set via Pulumi). Never hardcode project IDs or secrets.

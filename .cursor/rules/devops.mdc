@@ -1,0 +1,66 @@
+---
+description: DevOps conventions for deployment, scripts, and infrastructure management
+globs: Makefile,scripts/**/*.sh
+alwaysApply: false
+---
+
+# DevOps Conventions
+
+## Makefile is the Single Entry Point
+
+ALL operations go through the Makefile. Never run raw `gcloud`, `pulumi`, or `firebase` commands.
+
+Key targets:
+
+| Target             | Description                                  |
+|--------------------|----------------------------------------------|
+| `make env-staging` | Switch to staging environment                |
+| `make env-prod`    | Switch to prod (requires confirmation)       |
+| `make preview`     | Pulumi preview (dry run)                     |
+| `make deploy-infra`| Deploy infrastructure via Pulumi             |
+| `make deploy-frontend` | Build and deploy frontend to Firebase    |
+| `make deploy-all`  | Deploy infra then frontend, in order         |
+| `make health`      | Run post-deploy health checks (12 checks)    |
+| `make seed-firestore` | Seed test data into Firestore             |
+
+## Pulumi Backend
+
+Uses a local file backend configured in `scripts/_common.sh`:
+
+```bash
+export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-file://~/.pulumi-local}"
+export PULUMI_CONFIG_PASSPHRASE="${PULUMI_CONFIG_PASSPHRASE:-}"
+```
+
+State lives at `~/.pulumi-local/`. No Pulumi Cloud account needed.
+
+## GCP Account Guard
+
+Every deployment script sources `scripts/_common.sh` which verifies the active GCP account is `nivbraz90@gmail.com`. If the check fails, the script aborts with instructions to re-authenticate. The Makefile `check-auth` target is a prerequisite of all deploy/preview/destroy targets.
+
+## Shell Scripts
+
+All scripts in `scripts/` must source `_common.sh` instead of defining their own `log`/`error`/`set -euo pipefail`:
+
+```bash
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/_common.sh"
+check_gcp_account
+```
+
+`_common.sh` provides: `set -euo pipefail`, `log()`, `error()`, `check_gcp_account()`, and Pulumi backend env vars.
+
+## Environment Management
+
+- `.env.staging` and `.env.prod` contain project-specific vars (git-ignored)
+- `.env.example` is the committed template
+- `make env-staging` loads staging config and sets Pulumi stack to `staging`
+- `make env-prod` loads prod config, sets stack to `prod`, and prompts for confirmation
+
+## Deployment Checklist
+
+1. `make env-{target}` — set environment
+2. `make preview` — review changes (REQUIRED before destructive ops)
+3. `make deploy-all` — apply changes
+4. `make health` — verify deployment (all 12 checks should pass)

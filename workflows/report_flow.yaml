@@ -1,0 +1,212 @@
+main:
+  params: [args]
+  steps:
+    - validate_input:
+        switch:
+          - condition: ${map.get(args, "api_source") != "sp_api" and map.get(args, "api_source") != "ads_api"}
+            raise:
+              message: "api_source must be sp_api or ads_api"
+
+    - log_start:
+        call: sys.log
+        args:
+          text: '${"Report flow started - client=" + args.client_id + " api=" + args.api_source + " type=" + args.report_type + " market=" + args.marketplace}'
+          severity: INFO
+
+    - authenticate:
+        try:
+          call: http.post
+          args:
+            url: __AUTH_FUNCTION_URL__
+            auth:
+              type: OIDC
+            body:
+              api_source: ${args.api_source}
+              client_id: ${args.client_id}
+          result: auth_response
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 2
+          backoff:
+            initial_delay: 2
+            max_delay: 30
+            multiplier: 2
+
+    - create_report:
+        try:
+          call: http.post
+          args:
+            url: __CREATE_REPORT_FUNCTION_URL__
+            auth:
+              type: OIDC
+            body:
+              api_source: ${args.api_source}
+              client_id: ${args.client_id}
+              marketplace: ${args.marketplace}
+              report_type: ${args.report_type}
+              report_params: ${map.get(args, "report_params")}
+              job_id: ${map.get(args, "job_id")}
+              schedule_id: ${map.get(args, "schedule_id")}
+              frequency: ${default(map.get(args, "frequency"), "on_demand")}
+          result: create_response
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 5
+            max_delay: 60
+            multiplier: 2
+
+    - init_poll:
+        assign:
+          - poll_count: 0
+          - max_polls: 60
+          - backoff_seconds: 30
+
+    - wait_before_poll:
+        call: sys.sleep
+        args:
+          seconds: ${backoff_seconds}
+
+    - poll_status:
+        try:
+          call: http.post
+          args:
+            url: __POLL_STATUS_FUNCTION_URL__
+            auth:
+              type: OIDC
+            body:
+              api_source: ${args.api_source}
+              client_id: ${args.client_id}
+              marketplace: ${args.marketplace}
+              report_id: ${create_response.body.report_id}
+              job_id: ${create_response.body.job_id}
+          result: poll_response
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 2
+          backoff:
+            initial_delay: 2
+            max_delay: 30
+            multiplier: 2
+
+    - log_poll:
+        call: sys.log
+        args:
+          text: '${"Poll " + string(poll_count) + " status=" + poll_response.body.report_status + " raw=" + poll_response.body.raw_status}'
+          severity: INFO
+
+    - check_status:
+        switch:
+          - condition: ${poll_response.body.report_status == "ready"}
+            next: download_upload
+          - condition: ${poll_response.body.report_status == "failed"}
+            next: report_failed
+          - condition: ${poll_count >= max_polls}
+            next: poll_timeout
+
+    - increment_poll:
+        assign:
+          - poll_count: ${poll_count + 1}
+          - backoff_seconds: ${if(backoff_seconds * 2 > 120, 120, backoff_seconds * 2)}
+        next: wait_before_poll
+
+    - download_upload:
+        try:
+          call: http.post
+          args:
+            url: __DOWNLOAD_UPLOAD_FUNCTION_URL__
+            auth:
+              type: OIDC
+            body:
+              api_source: ${args.api_source}
+              client_id: ${args.client_id}
+              marketplace: ${args.marketplace}
+              report_type: ${args.report_type}
+              report_id: ${create_response.body.report_id}
+              job_id: ${create_response.body.job_id}
+              download_info: ${poll_response.body.download_info}
+              frequency: ${default(map.get(args, "frequency"), "on_demand")}
+              report_params: ${map.get(args, "report_params")}
+              folder_name: ${default(map.get(args, "folder_name"), "")}
+              subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
+          result: download_response
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 5
+            max_delay: 60
+            multiplier: 2
+
+    - log_complete:
+        call: sys.log
+        args:
+          text: '${"Report flow complete - job=" + create_response.body.job_id + " drive=" + download_response.body.drive_file_id}'
+          severity: INFO
+
+    - return_result:
+        return:
+          status: "completed"
+          job_id: ${create_response.body.job_id}
+          report_id: ${create_response.body.report_id}
+          drive_file_id: ${download_response.body.drive_file_id}
+          drive_path: ${download_response.body.drive_path}
+
+    - report_failed:
+        steps:
+          - log_report_failed:
+              call: sys.log
+              args:
+                text: '${"Report failed - job=" + create_response.body.job_id + " status=" + poll_response.body.raw_status}'
+                severity: ERROR
+          - mark_report_failed:
+              call: http.patch
+              args:
+                url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + create_response.body.job_id + "?updateMask.fieldPaths=status&updateMask.fieldPaths=completed_at&updateMask.fieldPaths=error_details"}'
+                auth:
+                  type: OAuth2
+                body:
+                  fields:
+                    status:
+                      stringValue: "failed"
+                    completed_at:
+                      timestampValue: ${time.format(sys.now())}
+                    error_details:
+                      mapValue:
+                        fields:
+                          message:
+                            stringValue: '${"Report generation failed: " + poll_response.body.raw_status}'
+                          phase:
+                            stringValue: "report_failed"
+          - raise_failure:
+              raise: '${"Report generation failed: " + poll_response.body.raw_status}'
+
+    - poll_timeout:
+        steps:
+          - log_poll_timeout:
+              call: sys.log
+              args:
+                text: '${"Poll timeout - job=" + create_response.body.job_id + " after " + string(poll_count) + " polls"}'
+                severity: ERROR
+          - mark_poll_timeout:
+              call: http.patch
+              args:
+                url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + create_response.body.job_id + "?updateMask.fieldPaths=status&updateMask.fieldPaths=completed_at&updateMask.fieldPaths=error_details"}'
+                auth:
+                  type: OAuth2
+                body:
+                  fields:
+                    status:
+                      stringValue: "failed"
+                    completed_at:
+                      timestampValue: ${time.format(sys.now())}
+                    error_details:
+                      mapValue:
+                        fields:
+                          message:
+                            stringValue: '${"Poll timeout after " + string(poll_count) + " attempts"}'
+                          phase:
+                            stringValue: "poll_timeout"
+          - raise_timeout:
+              raise: '${"Poll timeout after " + string(poll_count) + " attempts"}'

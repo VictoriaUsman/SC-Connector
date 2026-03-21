@@ -1,0 +1,8 @@
+encryptionsalt: v1:Gmg6BKBW3Jg=:v1:nzRJ89Z1j2aKP0rJ:oAYfegXpkMYo01vFq+9bPN9sWrmPoQ==
+config:
+  gcp:project: kalilos-connector-staging
+  gcp:region: us-central1
+  kalilos:scheduler-cron: '*/30 * * * *'
+  kalilos:scheduler-timezone: America/New_York
+  kalilos:gdrive-root-folder: Kalilos Reports [STAGING]
+  kalilos:gdrive-root-folder-id: 0AMwE_D4Cl8OUUk9PVA

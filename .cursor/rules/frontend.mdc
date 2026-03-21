@@ -1,0 +1,84 @@
+---
+description: React frontend conventions with shadcn/ui and Firestore
+globs: frontend/src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Frontend Conventions
+
+React + Vite + TypeScript + shadcn/ui (base-ui), deployed to Firebase Hosting.
+
+## Component Library
+
+Use shadcn/ui for all UI components. These are built on `@base-ui/react`, not Radix.
+
+Key difference from Radix-based shadcn: use `render` prop instead of `asChild`:
+
+```tsx
+<DropdownMenuTrigger
+  render={<Button variant="ghost"><MoreHorizontal /></Button>}
+/>
+```
+
+## Multi-Select Pattern
+
+For multi-select fields (clients, marketplaces), use Checkbox-based grids inside a bordered container. Do NOT use Popover or Command patterns:
+
+```tsx
+<div className="grid grid-cols-2 gap-1.5 rounded-md border p-3">
+  {options.map((item) => (
+    <label key={item.id} className="flex items-center gap-2 cursor-pointer">
+      <Checkbox checked={selected.includes(item.id)} onCheckedChange={() => toggle(item.id)} />
+      {item.label}
+    </label>
+  ))}
+</div>
+```
+
+## Schedule Data Model
+
+Schedule type uses arrays for multi-select:
+- `client_ids: string[]` (not `client_id`)
+- `marketplaces: string[]` (not `marketplace`)
+- `schedule_config: ScheduleConfig` — flexible scheduling (type, time, days_of_week, day_of_month)
+- `folder_name: string` — custom Drive folder
+- `subfolder_strategy: "date" | "none"` — subfolder behavior
+- `reconciliation_days: number[]` — re-pull days (default [3, 7])
+
+## Firestore Real-Time Data
+
+Use `reactfire` hooks for live data:
+
+```tsx
+import { useFirestoreCollectionData } from "reactfire";
+import { collection, query, where } from "firebase/firestore";
+
+const jobsQuery = query(collection(firestore, "jobs"), where("status", "==", "running"));
+const { data: jobs } = useFirestoreCollectionData(jobsQuery, { idField: "id" });
+```
+
+## API Mutations
+
+Use React Query for API calls to the backend:
+
+```tsx
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+
+const apiUrl = import.meta.env.VITE_API_URL;
+const createSchedule = useMutation({
+  mutationFn: (data: ScheduleInput) => fetch(`${apiUrl}/schedules`, { method: "POST", body: JSON.stringify(data) }),
+});
+```
+
+## Project Structure
+
+- Pages in `src/pages/`: dashboard, clients, schedules, on-demand
+- Shared components in `src/components/`
+- Hooks in `src/hooks/`, utilities in `src/lib/`, types in `src/types/`
+
+## Rules
+
+- TypeScript strict mode. No `any` types.
+- Prefer named exports over default exports.
+- Co-locate component-specific types with the component file.
+- Timezone: display all Firestore UTC timestamps using `toLocaleString()` (browser timezone). Never manipulate timezone in the frontend.
