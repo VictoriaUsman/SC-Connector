@@ -105,6 +105,42 @@ def create_folder(name: str, parent_id: str) -> str:
     return folder["id"]
 
 
+def _create_folder_with_dedup(name: str, parent_id: str) -> str:
+    """Create a folder with a safety net: sleep, re-check Drive, then deduplicate.
+
+    Used as a last resort when Firestore coordination is unavailable.
+    Because Drive's search is eventually consistent, a concurrent caller
+    may have already created the folder but it isn't visible yet.  We
+    sleep briefly to widen the consistency window, re-check, and if we
+    still must create, do a post-creation dedup pass to clean up races.
+    """
+    time.sleep(2)
+    existing = find_folder(name, parent_id)
+    if existing:
+        logger.info("[folder] Found '%s' on re-check after delay → %s", name, existing)
+        return existing
+
+    folder_id = create_folder(name, parent_id)
+    logger.info("[folder] Created '%s' via fallback → %s, running dedup", name, folder_id)
+
+    time.sleep(2)
+    matches = _list_matching_folders(name, parent_id)
+    if len(matches) > 1:
+        winner_id = matches[0]["id"]
+        from googleapiclient.errors import HttpError
+        for dupe in matches[1:]:
+            try:
+                get_service().files().delete(fileId=dupe["id"], supportsAllDrives=True).execute()
+                logger.info("[folder] Dedup: deleted duplicate %s for '%s'", dupe["id"], name)
+            except HttpError as exc:
+                if exc.resp.status != 404:
+                    logger.warning("[folder] Dedup: could not delete %s: %s", dupe["id"], exc)
+        logger.info("[folder] Dedup: kept oldest folder %s for '%s'", winner_id, name)
+        return winner_id
+
+    return folder_id
+
+
 _LOCK_COLLECTION = "_drive_folder_locks"
 _LOCK_POLL_INTERVAL = 1.0
 _LOCK_TIMEOUT_SECS = 15
@@ -122,7 +158,7 @@ def find_or_create_folder(name: str, parent_id: str) -> str:
       2. Attempt to claim a Firestore lock document.
          - Winner creates the Drive folder and writes its ID to the lock.
          - Losers poll the lock until the folder ID appears.
-      3. If Firestore is unavailable, fall back to a direct Drive create.
+      3. If Firestore is unavailable, fall back with dedup safety net.
     """
     existing = find_folder(name, parent_id)
     if existing:
@@ -133,11 +169,11 @@ def find_or_create_folder(name: str, parent_id: str) -> str:
     try:
         return _create_folder_coordinated(name, parent_id)
     except Exception as exc:
-        logger.warning("[folder] Firestore coordination failed for '%s', falling back to direct create: %s", name, exc)
-        return create_folder(name, parent_id)
+        logger.warning("[folder] Firestore coordination failed for '%s', falling back: %s", name, exc)
+        return _create_folder_with_dedup(name, parent_id)
 
 
-def _create_folder_coordinated(name: str, parent_id: str, _is_retry: bool = False) -> str:
+def _create_folder_coordinated(name: str, parent_id: str) -> str:
     from google.api_core.exceptions import AlreadyExists
 
     lock_key = f"{parent_id}__{name}".replace("/", "_")
@@ -149,15 +185,14 @@ def _create_folder_coordinated(name: str, parent_id: str, _is_retry: bool = Fals
         lock_ref.create({"status": "creating", "name": name, "parent_id": parent_id})
         logger.info("[folder] WON lock for '%s' — I will create it", name)
     except AlreadyExists:
-        if not _is_retry:
-            existing_lock = lock_ref.get()
-            if existing_lock.exists:
-                data = existing_lock.to_dict() or {}
-                stale_id = data.get("folder_id")
-                if stale_id and not find_folder(name, parent_id):
-                    logger.warning("[folder] Stale lock for '%s' (folder %s deleted) — clearing", name, stale_id)
-                    lock_ref.delete()
-                    return _create_folder_coordinated(name, parent_id, _is_retry=True)
+        existing_lock = lock_ref.get()
+        if existing_lock.exists:
+            data = existing_lock.to_dict() or {}
+            stale_id = data.get("folder_id")
+            if stale_id and not find_folder(name, parent_id):
+                logger.warning("[folder] Stale lock for '%s' (folder %s gone) — deleting lock, using dedup path", name, stale_id)
+                lock_ref.delete()
+                return _create_folder_with_dedup(name, parent_id)
         logger.info("[folder] LOST lock for '%s' — waiting for creator", name)
         return _wait_for_folder_id(lock_ref, name, parent_id)
 
@@ -201,9 +236,9 @@ def _wait_for_folder_id(lock_ref, name: str, parent_id: str) -> str:
         logger.info("[folder] Found '%s' in Drive after timeout → %s", name, existing)
         return existing
 
-    logger.warning("[folder] Lock timed out for '%s' — clearing stale lock and creating directly", name)
+    logger.warning("[folder] Lock timed out for '%s' — clearing stale lock and creating with dedup", name)
     lock_ref.delete()
-    return create_folder(name, parent_id)
+    return _create_folder_with_dedup(name, parent_id)
 
 
 def build_folder_path(
@@ -252,7 +287,38 @@ def build_folder_path(
                 current,
             )
             raise
+
+        _assert_no_duplicates(part, current, path_so_far)
+
     return current, "/".join(path_so_far)
+
+
+def _assert_no_duplicates(name: str, folder_id: str, path_so_far: list[str]) -> None:
+    """Final safety net: if duplicates of this folder exist, keep oldest and delete rest."""
+    try:
+        parent_of = get_service().files().get(
+            fileId=folder_id, fields="parents", supportsAllDrives=True,
+        ).execute().get("parents", [None])[0]
+        if not parent_of:
+            return
+        matches = _list_matching_folders(name, parent_of)
+        if len(matches) <= 1:
+            return
+
+        from googleapiclient.errors import HttpError
+        winner = matches[0]["id"]
+        for dupe in matches[1:]:
+            try:
+                get_service().files().delete(fileId=dupe["id"], supportsAllDrives=True).execute()
+                logger.warning("[dedup-guard] Deleted duplicate folder %s for '%s' at %s", dupe["id"], name, "/".join(path_so_far))
+            except HttpError as exc:
+                if exc.resp.status != 404:
+                    logger.warning("[dedup-guard] Could not delete %s: %s", dupe["id"], exc)
+
+        if folder_id != winner:
+            logger.warning("[dedup-guard] Switched from %s to winner %s for '%s'", folder_id, winner, name)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -312,8 +378,15 @@ def upload_report(
     folder_name: str = "",
     subfolder_strategy: str = "date",
     report_end_date: date | None = None,
+    execution_date: date | None = None,
 ) -> dict[str, str]:
-    """Build full folder hierarchy and upload the report file. Returns file_id and path."""
+    """Build full folder hierarchy and upload the report file. Returns file_id and path.
+
+    The folder hierarchy uses ``execution_date`` (when the report was created)
+    so all reports from the same run land in the same folder.  The filename
+    uses ``report_date`` / ``report_end_date`` (what data the report covers)
+    so employees can identify the data range at a glance.
+    """
     verify_folder_access(root_folder_id)
 
     if not file_ext or not mime_type:
@@ -321,9 +394,10 @@ def upload_report(
         file_ext = file_ext or ext
         mime_type = mime_type or mt
 
+    folder_date = execution_date if execution_date is not None else report_date
     folder_id, path_prefix = build_folder_path(
         root_folder_id, client_name, marketplace,
-        api_source, report_type, report_date,
+        api_source, report_type, folder_date,
         folder_name=folder_name,
         subfolder_strategy=subfolder_strategy,
     )

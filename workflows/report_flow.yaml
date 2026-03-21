@@ -130,6 +130,7 @@ main:
               report_params: ${map.get(args, "report_params")}
               folder_name: ${default(map.get(args, "folder_name"), "")}
               subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
+              execution_date: ${default(map.get(args, "execution_date"), "")}
           result: download_response
         retry:
           predicate: ${http.default_retry_predicate}

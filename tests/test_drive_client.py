@@ -130,9 +130,19 @@ class TestFindOrCreateFolder:
 
     def test_loses_lock_and_waits(self, mock_service, mock_db):
         """Second caller loses the lock, polls Firestore for the folder ID."""
+        from google.api_core.exceptions import AlreadyExists
         from shared.drive_client import find_or_create_folder
 
-        lock_ref = _mock_lock_ref(create_raises=True, poll_folder_id="winner-folder")
+        lock_ref = MagicMock()
+        lock_ref.create.side_effect = AlreadyExists("already exists")
+
+        creating_snap = MagicMock(exists=True)
+        creating_snap.to_dict.return_value = {"status": "creating"}
+
+        created_snap = MagicMock(exists=True)
+        created_snap.to_dict.return_value = {"folder_id": "winner-folder", "status": "created"}
+
+        lock_ref.get.side_effect = [creating_snap, created_snap]
         mock_db.collection().document.return_value = lock_ref
 
         mock_service.files().list().execute.return_value = {"files": []}
@@ -183,17 +193,171 @@ class TestFindOrCreateFolder:
 
         assert result == "late-folder"
 
-    def test_firestore_down_falls_back(self, mock_service, mock_db):
-        """If Firestore is unavailable, fall back to direct Drive create."""
+    @patch("shared.drive_client.time.sleep")
+    def test_stale_lock_uses_dedup_not_retry(self, mock_sleep, mock_service, mock_db):
+        """When lock references a deleted folder, fall to dedup path (not recursive retry)."""
+        from google.api_core.exceptions import AlreadyExists
+        from shared.drive_client import find_or_create_folder
+
+        lock_ref = MagicMock()
+        lock_ref.create.side_effect = AlreadyExists("already exists")
+
+        stale_snap = MagicMock(exists=True)
+        stale_snap.to_dict.return_value = {"folder_id": "deleted-folder", "status": "created"}
+        lock_ref.get.return_value = stale_snap
+
+        mock_db.collection().document.return_value = lock_ref
+
+        list_responses = [
+            {"files": []},  # initial find_folder
+            {"files": []},  # stale check find_folder (folder gone)
+            {"files": []},  # dedup re-check
+            {"files": [{"id": "new-folder", "createdTime": "2026-03-21T00:00:00Z"}]},  # dedup post-create
+        ]
+        mock_service.files().list().execute.side_effect = list_responses
+        mock_service.files().create().execute.return_value = {"id": "new-folder"}
+
+        result = find_or_create_folder("2026-03-21", "root-id")
+        assert result == "new-folder"
+        lock_ref.delete.assert_called_once()
+
+    @patch("shared.drive_client.time.sleep")
+    def test_firestore_down_uses_dedup_fallback(self, mock_sleep, mock_service, mock_db):
+        """If Firestore is unavailable, fall back through _create_folder_with_dedup."""
         from shared.drive_client import find_or_create_folder
 
         mock_db.collection.side_effect = RuntimeError("Firestore unavailable")
 
-        mock_service.files().list().execute.return_value = {"files": []}
+        list_responses = [
+            {"files": []},  # initial find_folder
+            {"files": []},  # re-check inside _create_folder_with_dedup
+            {"files": [{"id": "fallback-1", "createdTime": "2026-03-20T00:00:00Z"}]},  # post-create dedup check
+        ]
+        mock_service.files().list().execute.side_effect = list_responses
         mock_service.files().create().execute.return_value = {"id": "fallback-1"}
 
         result = find_or_create_folder("2026-03-20", "root-id")
         assert result == "fallback-1"
+        mock_sleep.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# _create_folder_with_dedup — dedup safety net
+# ---------------------------------------------------------------------------
+
+class TestCreateFolderWithDedup:
+    @patch("shared.drive_client.time.sleep")
+    def test_recheck_finds_folder_skips_create(self, mock_sleep, mock_service):
+        """If the folder appears during the delay, no creation happens."""
+        from shared.drive_client import _create_folder_with_dedup
+
+        mock_service.files().list().execute.return_value = {
+            "files": [{"id": "appeared", "createdTime": "2026-03-20T00:00:00Z"}]
+        }
+        result = _create_folder_with_dedup("2026-03-20", "root-id")
+        assert result == "appeared"
+        mock_service.files().create.assert_not_called()
+
+    @patch("shared.drive_client.time.sleep")
+    def test_creates_and_dedup_keeps_oldest(self, mock_sleep, mock_service):
+        """When duplicates exist after creation, keep the oldest and delete the rest."""
+        from shared.drive_client import _create_folder_with_dedup
+
+        list_responses = [
+            {"files": []},  # re-check (nothing yet)
+            {"files": [  # post-create dedup finds two
+                {"id": "older-folder", "createdTime": "2026-03-20T00:00:00Z"},
+                {"id": "my-folder", "createdTime": "2026-03-20T00:00:01Z"},
+            ]},
+        ]
+        mock_service.files().list().execute.side_effect = list_responses
+        mock_service.files().create().execute.return_value = {"id": "my-folder"}
+
+        result = _create_folder_with_dedup("2026-03-20", "root-id")
+        assert result == "older-folder"
+        mock_service.files().delete.assert_called_once()
+
+    @patch("shared.drive_client.time.sleep")
+    def test_creates_single_no_dedup_needed(self, mock_sleep, mock_service):
+        """When no duplicates exist, just return the created folder."""
+        from shared.drive_client import _create_folder_with_dedup
+
+        list_responses = [
+            {"files": []},  # re-check
+            {"files": [{"id": "only-one", "createdTime": "2026-03-20T00:00:00Z"}]},  # dedup check
+        ]
+        mock_service.files().list().execute.side_effect = list_responses
+        mock_service.files().create().execute.return_value = {"id": "only-one"}
+
+        result = _create_folder_with_dedup("2026-03-20", "root-id")
+        assert result == "only-one"
+        mock_service.files().delete.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Concurrent folder creation simulation
+# ---------------------------------------------------------------------------
+
+class TestConcurrentFolderCreation:
+    """Simulate two concurrent callers hitting find_or_create_folder.
+
+    This is the exact scenario that causes duplicate Drive folders:
+    two workflow executions (US and CA) for the same schedule arrive
+    at download_upload around the same time and both try to create
+    the date folder.
+    """
+
+    @patch("shared.drive_client._assert_no_duplicates")
+    @patch("shared.drive_client.time.sleep")
+    def test_concurrent_callers_with_lock(self, mock_sleep, mock_dedup, mock_service, mock_db):
+        """Two threads call find_or_create_folder — Firestore lock ensures
+        the winner creates the folder and the loser gets the winner's ID."""
+        import threading
+        from google.api_core.exceptions import AlreadyExists
+        from shared.drive_client import find_or_create_folder
+
+        lock_claimed = threading.Event()
+        winner_folder_id = "the-one-folder"
+
+        def mock_lock_create(data):
+            if lock_claimed.is_set():
+                raise AlreadyExists("lock exists")
+            lock_claimed.set()
+
+        lock_ref = MagicMock()
+        lock_ref.create.side_effect = mock_lock_create
+
+        won_snap = MagicMock(exists=True)
+        won_snap.to_dict.return_value = {"folder_id": winner_folder_id, "status": "created"}
+        lock_ref.get.return_value = won_snap
+
+        mock_db.collection().document.return_value = lock_ref
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": winner_folder_id}
+
+        results: list[str] = []
+        errors: list[Exception] = []
+
+        def caller():
+            try:
+                results.append(find_or_create_folder("2026-03-21", "root-id"))
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=caller)
+        t2 = threading.Thread(target=caller)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors, f"Unexpected errors: {errors}"
+        assert len(results) == 2
+        assert results[0] == results[1] == winner_folder_id, (
+            f"Both callers must get the same folder ID '{winner_folder_id}', "
+            f"got {results}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +365,12 @@ class TestFindOrCreateFolder:
 # ---------------------------------------------------------------------------
 
 class TestBuildFolderPath:
+    @pytest.fixture(autouse=True)
+    def _skip_dedup_guard(self):
+        """Dedup guard is tested separately — don't let it consume mock responses."""
+        with patch("shared.drive_client._assert_no_duplicates"):
+            yield
+
     def _setup_find_or_create(self, mock_service, folder_map: dict[str, str]):
         """Mock find_or_create_folder to map folder names to IDs."""
         call_count = {"n": 0}

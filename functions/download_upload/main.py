@@ -37,6 +37,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     report_params = data.get("report_params") or {}
     folder_name = data.get("folder_name", "")
     subfolder_strategy = data.get("subfolder_strategy", "date")
+    execution_date_str = data.get("execution_date", "")
 
     if not all([api_source, client_id, marketplace, report_type]):
         return {
@@ -68,6 +69,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
         report_start, report_end = _extract_report_dates(api_source, report_params)
 
+        execution_date_val: date | None = None
+        if execution_date_str:
+            execution_date_val = date.fromisoformat(execution_date_str)
+
         file_ext = None
         mime_type = None
         if api_source == "sp_api" and should_convert(report_type):
@@ -89,6 +94,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             folder_name=folder_name,
             subfolder_strategy=subfolder_strategy,
             report_end_date=report_end if report_end != report_start else None,
+            execution_date=execution_date_val,
         )
 
         if job_id:

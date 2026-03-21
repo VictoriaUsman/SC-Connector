@@ -20,7 +20,12 @@ from google.cloud.workflows.executions_v1 import ExecutionsClient
 from google.cloud.workflows.executions_v1.types import Execution
 
 from shared.firestore_utils import create_job, update_job_status
-from shared.schedule_compute import compute_date_range, compute_report_dates, marketplace_yesterday
+from shared.schedule_compute import (
+    compute_date_range,
+    compute_report_dates,
+    marketplace_today,
+    marketplace_yesterday,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +61,7 @@ def build_payload(
     folder_name: str = "",
     subfolder_strategy: str = "date",
     schedule_id: str | None = None,
+    execution_date: str | None = None,
 ) -> dict[str, Any]:
     """Construct the canonical workflow execution payload."""
     payload: dict[str, Any] = {
@@ -71,6 +77,8 @@ def build_payload(
     }
     if schedule_id is not None:
         payload["schedule_id"] = schedule_id
+    if execution_date is not None:
+        payload["execution_date"] = execution_date
     return payload
 
 
@@ -124,6 +132,8 @@ def launch_for_marketplace(
     timeframe: dict = schedule.get("timeframe", {"strategy": "yesterday"})
     strategy = timeframe.get("strategy", "yesterday")
 
+    execution_date_val = marketplace_today(marketplace, now)
+
     start_date, end_date = compute_date_range(marketplace, timeframe, now)
 
     report_params = {**schedule.get("report_params", {})}
@@ -153,6 +163,7 @@ def launch_for_marketplace(
             "schedule_id": schedule["id"],
             "frequency": frequency,
             "report_date": pull_start.isoformat(),
+            "execution_date": execution_date_val.isoformat(),
         }
         if pull_start != pull_end:
             job_data["report_end_date"] = pull_end.isoformat()
@@ -172,6 +183,7 @@ def launch_for_marketplace(
             folder_name=schedule.get("folder_name", ""),
             subfolder_strategy=schedule.get("subfolder_strategy", "date"),
             schedule_id=schedule["id"],
+            execution_date=execution_date_val.isoformat(),
         )
 
         launch_execution(parent, payload, job_id, error_phase="scheduler")

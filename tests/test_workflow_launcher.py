@@ -178,6 +178,38 @@ class TestLaunchForMarketplace:
         assert payload["marketplace"] == "US"
         assert payload["schedule_id"] == "s1"
 
+    def test_execution_date_in_payload(self, mock_exec_client):
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(reconciliation_days=[])
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="job-1") as mock_create:
+            launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+        assert payload["execution_date"] == "2026-03-20"
+
+        job_data = mock_create.call_args[0][0]
+        assert job_data["execution_date"] == "2026-03-20"
+
+    def test_execution_date_is_marketplace_today(self, mock_exec_client):
+        """execution_date should be marketplace today, not the report data date."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(
+            timeframe={"strategy": "last_calendar_month"},
+            reconciliation_days=[],
+        )
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="job-1"):
+            launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+        assert payload["execution_date"] == "2026-03-20"
+        assert "2026-02" in payload["report_params"]["dataStartTime"]
+
     def test_with_reconciliation(self, mock_exec_client):
         from shared.workflow_launcher import launch_for_marketplace
 
@@ -366,3 +398,91 @@ class TestLaunchForMarketplaceTimeframe:
 
         job_data = mock_create.call_args[0][0]
         assert "report_end_date" not in job_data
+
+
+# ---------------------------------------------------------------------------
+# execution_date determinism — US and CA MUST get the same folder date
+# ---------------------------------------------------------------------------
+
+class TestExecutionDateDeterminism:
+    """For every timeframe strategy, two concurrent marketplace launches
+    (US and CA) from the same scheduler run must produce the EXACT same
+    execution_date.  If they don't, they'll create separate date folders
+    in Drive — the duplicate-folder bug.
+    """
+
+    _ALL_TIMEFRAMES = [
+        {"strategy": "yesterday"},
+        {"strategy": "today"},
+        {"strategy": "last_n_days", "days": 30},
+        {"strategy": "last_n_days", "days": 30, "end_offset_days": 3},
+        {"strategy": "rolling_window", "start_offset": -7, "end_offset": -1},
+        {"strategy": "last_calendar_week", "week_start": 0},
+        {"strategy": "last_calendar_week", "week_start": 3},
+        {"strategy": "last_calendar_month"},
+    ]
+
+    def _make_schedule(self, timeframe: dict) -> dict:
+        return {
+            "id": "s1",
+            "api_source": "sp_api",
+            "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+            "frequency": "daily",
+            "report_params": {},
+            "folder_name": "",
+            "subfolder_strategy": "date",
+            "reconciliation_days": [],
+            "timeframe": timeframe,
+        }
+
+    @pytest.mark.parametrize("timeframe", _ALL_TIMEFRAMES, ids=lambda tf: tf["strategy"])
+    def test_same_execution_date_for_us_and_ca(self, timeframe, mock_exec_client):
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(timeframe)
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        job_counter = iter(range(100))
+        with patch("shared.workflow_launcher.create_job", side_effect=lambda _: f"j{next(job_counter)}"):
+            launch_for_marketplace("parent", now, sched, "c1", "US")
+        us_payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+
+        mock_exec_client.reset_mock()
+        with patch("shared.workflow_launcher.create_job", side_effect=lambda _: f"j{next(job_counter)}"):
+            launch_for_marketplace("parent", now, sched, "c1", "CA")
+        ca_payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+
+        assert us_payload["execution_date"] == ca_payload["execution_date"], (
+            f"US got execution_date={us_payload['execution_date']} but "
+            f"CA got execution_date={ca_payload['execution_date']} — "
+            f"they would create separate Drive folders!"
+        )
+
+    @pytest.mark.parametrize("timeframe", _ALL_TIMEFRAMES, ids=lambda tf: tf["strategy"])
+    def test_execution_date_is_today_not_report_date(self, timeframe, mock_exec_client):
+        """execution_date must be marketplace today, never the report data date."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(timeframe)
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="j1"):
+            launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+        assert payload["execution_date"] == "2026-03-20"
+
+    @pytest.mark.parametrize("timeframe", _ALL_TIMEFRAMES, ids=lambda tf: tf["strategy"])
+    def test_execution_date_in_job_data(self, timeframe, mock_exec_client):
+        """execution_date must be stored in the Firestore job document too."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(timeframe)
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="j1") as mock_create:
+            launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        job_data = mock_create.call_args[0][0]
+        assert "execution_date" in job_data
+        assert job_data["execution_date"] == "2026-03-20"
