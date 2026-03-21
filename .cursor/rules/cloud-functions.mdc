@@ -59,11 +59,15 @@ For date-range schedules (any strategy other than `yesterday`), reconciliation r
 
 ## Drive Folder Paths
 
-Use `folder_name` and `subfolder_strategy` from the schedule payload:
-- Default (empty folder_name): `{root}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`
-- Custom: `{root}/{folder_name}/{optional YYYY-MM-DD}/`
+Folder hierarchy uses `execution_date` (when the report was created, i.e. marketplace today at launch time), NOT the report data date. This ensures all marketplace workflows from the same scheduler run share the same folder. The `execution_date` is computed once in `launch_for_marketplace()` and threaded through the workflow payload to `download_upload`.
 
-Folder creation across concurrent workflow executions is coordinated via Firestore locks in the `_drive_folder_locks` collection. Never call `create_folder()` directly for shared paths — always use `find_or_create_folder()`.
+- Default (empty folder_name): `{root}/{execution_date}/{client}/{marketplace}/{report_type}/`
+- Custom: `{root}/{folder_name}/{optional execution_date}/`
+- Filename uses the report data date: `{report_type}_{data_date}_{client}_{marketplace}.{ext}`
+
+Folder creation across concurrent workflow executions is coordinated via Firestore locks in the `_drive_folder_locks` collection, with a dedup safety net. Never call `create_folder()` directly for shared paths — always use `find_or_create_folder()`.
+
+**Stale lock handling**: When users delete Drive folders, Firestore lock docs persist with a `folder_id` pointing to the deleted folder. On the next run, stale locks are detected and cleared, and the caller falls through to the dedup-safe creation path. Never recursively retry lock acquisition after clearing a stale lock — this causes a TOCTOU race.
 
 ## JSON Report Conversion
 

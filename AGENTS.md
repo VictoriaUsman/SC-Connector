@@ -211,18 +211,23 @@ Central module for timezone-aware scheduling:
 
 Unified workflow launch helpers used by the scheduler, API on-demand triggers, and manual triggers:
 - `get_workflow_parent()` — builds the fully-qualified Cloud Workflows parent path from env vars
-- `build_payload(...)` — constructs the canonical workflow execution payload dict
+- `build_payload(...)` — constructs the canonical workflow execution payload dict, including `execution_date`
 - `launch_execution(parent, payload, job_id)` — starts a Cloud Workflow execution with retry-and-backoff. Marks job as failed in Firestore on exhausted retries
-- `launch_for_marketplace(parent, now, schedule, client_id, marketplace)` — launches primary + reconciliation jobs for one `(client, marketplace)` pair. Reads the schedule's `timeframe` config (default: `yesterday`) and calls `compute_date_range()`. Reconciliation only runs for `yesterday` strategy
+- `launch_for_marketplace(parent, now, schedule, client_id, marketplace)` — launches primary + reconciliation jobs for one `(client, marketplace)` pair. Computes `execution_date` (marketplace today) once and passes it through to all jobs. Reads the schedule's `timeframe` config (default: `yesterday`) and calls `compute_date_range()`. Reconciliation only runs for `yesterday` strategy
 
 ### `functions/shared/drive_client.py`
 
 Google Drive folder hierarchy and upload:
-- **Default path**: `{root}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`
-- **Custom folder**: `{root}/{folder_name}/{optional YYYY-MM-DD}/`
-- `build_folder_path()` returns `(folder_id, human_readable_path)`
-- Filename: `{report_type}_{date}_{client}_{marketplace}.{ext}` for single-day reports, `{report_type}_{start}_to_{end}_{client}_{marketplace}.{ext}` for date-range reports
-- **Concurrent folder creation**: `find_or_create_folder()` uses Firestore's atomic `document.create()` as a distributed lock. First caller wins and creates the Drive folder; concurrent callers poll the lock document for the folder ID. Falls back to direct Drive create if Firestore is unavailable. Lock documents live in the `_drive_folder_locks` Firestore collection.
+- **Folder date = execution date** (when the report was created), not the report data date. The `execution_date` is computed once at launch time and threaded through the workflow payload, ensuring all marketplace workflows from the same run target the same folder
+- **Default path**: `{root}/{execution_date}/{client}/{marketplace}/{report_type}/`
+- **Custom folder**: `{root}/{folder_name}/{optional execution_date}/`
+- `build_folder_path()` returns `(folder_id, human_readable_path)`. Runs `_assert_no_duplicates()` on every folder segment as a runtime dedup guard
+- Filename uses the **report data date** (not execution date): `{report_type}_{date}_{client}_{marketplace}.{ext}` for single-day, `{report_type}_{start}_to_{end}_{client}_{marketplace}.{ext}` for ranges
+- **Concurrent folder creation** (4-layer defense):
+  1. `find_or_create_folder()` — Firestore atomic `document.create()` as distributed lock. Winner creates, losers poll
+  2. Stale lock detection — when a lock references a deleted Drive folder, it's cleared and the caller falls through to the dedup path (never recursively retries the lock, which caused a TOCTOU race)
+  3. `_create_folder_with_dedup()` — fallback that sleeps, re-checks Drive, creates, then post-creation deduplicates by keeping the oldest folder and deleting extras
+  4. `_assert_no_duplicates()` — runtime guard after every folder segment in `build_folder_path()` that detects and cleans up duplicates before the file is uploaded
 
 ### `functions/shared/report_converter.py`
 

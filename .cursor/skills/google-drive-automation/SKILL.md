@@ -93,77 +93,70 @@ def find_folder(service, name: str, parent_id: str) -> str | None:
     return files[0]["id"] if files else None
 ```
 
-### Find or Create Folder (with Firestore Coordination)
+### Find or Create Folder (with Firestore Coordination + Dedup Safety Net)
 
-Google Drive allows duplicate folder names and its `files.list` API is eventually consistent. When concurrent workflow executions race to create the same folder, duplicates appear. We solve this with Firestore's strongly-consistent `document.create()` as a distributed lock:
+Google Drive allows duplicate folder names and its `files.list` API is eventually consistent. When concurrent workflow executions race to create the same folder, duplicates appear. We solve this with a 4-layer defense:
 
-1. Check Drive (fast path — folder already exists).
-2. Attempt to claim a Firestore lock document (`_drive_folder_locks` collection).
-   - Winner creates the Drive folder and writes its ID to the lock.
-   - Losers poll the lock until the folder ID appears.
-3. If Firestore is unavailable, fall back to direct Drive create.
+**Layer 1 — Firestore distributed lock**: `find_or_create_folder()` uses Firestore's strongly-consistent `document.create()` as an atomic lock. Winner creates the Drive folder and writes its ID to the lock document. Losers poll until the folder ID appears.
+
+**Layer 2 — Stale lock handling**: When a lock references a deleted Drive folder (e.g., user deleted it between runs), the stale lock is cleared and the caller falls through to the dedup path. **Never recursively retry lock acquisition after clearing a stale lock** — two concurrent callers can both clear the same stale lock and both re-acquire independently (TOCTOU race).
+
+**Layer 3 — Dedup fallback** (`_create_folder_with_dedup`): When Firestore coordination fails or a stale lock is detected, this fallback sleeps 2s (widens the Drive consistency window), re-checks Drive, creates only if nothing found, then does a post-creation dedup pass: lists all matching folders sorted by `createdTime`, keeps the oldest, deletes extras.
+
+**Layer 4 — Runtime guard** (`_assert_no_duplicates`): Runs after every folder segment in `build_folder_path()`. If duplicates exist at any level, the oldest is kept and extras are deleted before the file is uploaded. This is the last line of defense.
 
 ```python
-_LOCK_COLLECTION = "_drive_folder_locks"
-
 def find_or_create_folder(name: str, parent_id: str) -> str:
     existing = find_folder(name, parent_id)
     if existing:
         return existing
-
     try:
         return _create_folder_coordinated(name, parent_id)
     except Exception:
-        return create_folder(name, parent_id)  # fallback
-
-def _create_folder_coordinated(name: str, parent_id: str) -> str:
-    from google.api_core.exceptions import AlreadyExists
-
-    lock_key = f"{parent_id}__{name}".replace("/", "_")
-    lock_ref = db.collection(_LOCK_COLLECTION).document(lock_key)
-
-    try:
-        lock_ref.create({"status": "creating", "name": name})
-    except AlreadyExists:
-        # Another execution is creating — poll for folder_id
-        return _wait_for_folder_id(lock_ref, name, parent_id)
-
-    # Double-check Drive (may have propagated)
-    existing = find_folder(name, parent_id)
-    if existing:
-        lock_ref.delete()
-        return existing
-
-    folder_id = create_folder(name, parent_id)
-    lock_ref.set({"status": "created", "folder_id": folder_id})
-    return folder_id
+        return _create_folder_with_dedup(name, parent_id)  # NOT create_folder()!
 ```
 
-**Important**: Never call `create_folder()` directly for shared paths. Always use `find_or_create_folder()` which handles concurrency.
+**Critical rules**:
+- Never call `create_folder()` directly for shared paths — always use `find_or_create_folder()`
+- Never recursively retry lock acquisition in stale lock handling — fall through to dedup path
+- The fallback must ALWAYS be `_create_folder_with_dedup()`, never a bare `create_folder()`
 
 ## Our Folder Hierarchy
 
 Reports support two folder layouts, configurable per schedule via `folder_name` and `subfolder_strategy`.
 
+**Folder date = execution date** (when the report was created, i.e. marketplace today at launch time). This is computed once in `launch_for_marketplace()` and threaded through the workflow payload.
+**Filename date = report data date** (what data the report covers). For date ranges: `{start}_to_{end}`.
+
 ### Default Layout (date-first, when `folder_name` is empty)
 
 ```
 {root_folder}/
-  {YYYY-MM-DD}/
+  {execution_date}/               # when the report was created
     {client_name}/
       {marketplace}/
         {report_type}/
-          {report_type}_{date}_{client}_{marketplace}.tsv
+          {report_type}_{data_date}_{client}_{marketplace}.tsv
 ```
 
-Example:
+Example (daily "yesterday" report run on Mar 20):
 ```
 Kalilos Reports/
-  2026-03-19/
+  2026-03-20/
     acme-corp/
       US/
         GET_FLAT_FILE_OPEN_LISTINGS_DATA/
           GET_FLAT_FILE_OPEN_LISTINGS_DATA_2026-03-19_acme-corp_US.tsv
+```
+
+Example (last calendar month report run on Mar 21, pulling Feb data):
+```
+Kalilos Reports/
+  2026-03-21/
+    acme-corp/
+      US/
+        GET_SALES_AND_TRAFFIC_REPORT/
+          GET_SALES_AND_TRAFFIC_REPORT_2026-02-01_to_2026-02-28_acme-corp_US.tsv
 ```
 
 ### Custom Folder Layout (when `folder_name` is set)
@@ -171,64 +164,38 @@ Kalilos Reports/
 ```
 {root_folder}/
   {folder_name}/
-    {YYYY-MM-DD}/         # only if subfolder_strategy == "date"
-      {report_type}_{date}_{client}_{marketplace}.json
-```
-
-Example with `folder_name="WoW Weekly Reports"` and `subfolder_strategy="date"`:
-```
-Kalilos Reports/
-  WoW Weekly Reports/
-    2026-03-19/
-      spCampaigns_2026-03-19_acme-corp_US.json
-```
-
-Example with `subfolder_strategy="none"` (flat):
-```
-Kalilos Reports/
-  WoW Weekly Reports/
-    spCampaigns_2026-03-19_acme-corp_US.json
+    {execution_date}/         # only if subfolder_strategy == "date"
+      {report_type}_{data_date}_{client}_{marketplace}.json
 ```
 
 ### Building the Full Path
 
 ```python
-from datetime import date
-
-def build_folder_path(
-    root_folder_id: str,
-    client_name: str,
-    marketplace: str,
-    api_source: str,
-    report_type: str,
-    report_date: date,
-    folder_name: str = "",
-    subfolder_strategy: str = "date",
-) -> tuple[str, str]:
-    """Returns (folder_id, human_readable_path)."""
-    if folder_name:
-        parts = [folder_name]
-        if subfolder_strategy == "date":
-            parts.append(report_date.isoformat())
-    else:
-        parts = [report_date.isoformat(), client_name, marketplace, report_type]
-
+def build_folder_path(..., report_date: date, ...) -> tuple[str, str]:
+    # report_date here is actually the execution_date (folder organization)
+    # passed from upload_report() which selects execution_date over report_date
+    ...
     current = root_folder_id
     for part in parts:
         current = find_or_create_folder(part, current)
+        _assert_no_duplicates(part, current, path_so_far)  # runtime dedup guard
     return current, "/".join(parts)
 ```
 
 ### Generating the Filename
 
+Filename uses the **report data dates** (not execution date):
+
 ```python
-def build_filename(report_type: str, report_date: date, client_name: str, marketplace: str, ext: str) -> str:
-    return f"{report_type}_{report_date.isoformat()}_{client_name}_{marketplace}{ext}"
+# Single day:
+f"{report_type}_{report_date}_{client_name}_{marketplace}{ext}"
+# Date range:
+f"{report_type}_{start}_to_{end}_{client_name}_{marketplace}{ext}"
 ```
 
 ## Complete Upload Flow
 
-The `upload_report()` function in `functions/shared/drive_client.py` accepts `folder_name` and `subfolder_strategy` parameters that are passed through from the schedule configuration via the workflow.
+`upload_report()` accepts both `report_date` (for filename) and `execution_date` (for folder hierarchy). The `execution_date` is computed once in `launch_for_marketplace()` and threaded through the workflow payload → `download_upload` → `upload_report()`.
 
 ## Shared Drive Support
 
@@ -245,7 +212,7 @@ All our helper functions above already include `supportsAllDrives=True`.
 
 ## Handling Duplicates
 
-**Folders**: Prevented by the Firestore lock mechanism in `find_or_create_folder()`. The `_drive_folder_locks` collection coordinates concurrent executions so only one creates the folder.
+**Folders**: Prevented by the 4-layer defense in `find_or_create_folder()` (Firestore lock → stale lock → dedup fallback → runtime guard). The `_drive_folder_locks` collection coordinates concurrent executions. If users delete Drive folders between runs, stale locks are detected and handled safely. See the "Find or Create Folder" section above for the full defense strategy.
 
 **Files**: if a file with the same name already exists in the target folder, **overwrite it** (delete old, upload new). This prevents duplicate reports and handles reconciliation re-pulls cleanly.
 
