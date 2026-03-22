@@ -72,18 +72,20 @@ export function useRealtimeJobs(opts?: {
   return { jobs, loading, error };
 }
 
-export function useTriggerReport() {
+export function useTriggerOnDemand() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
       client_id: string;
       api_source: string;
       marketplace: string;
-      report_type: string;
+      report_types: string[];
       report_params?: Record<string, unknown>;
+      start_date?: string;
+      end_date?: string;
       folder_name?: string;
       subfolder_strategy?: "date" | "none";
-    }) => api.triggerReport(data),
+    }) => api.triggerOnDemand(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
   });
 }

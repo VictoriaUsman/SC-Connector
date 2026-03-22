@@ -19,6 +19,7 @@ from typing import Any
 from google.cloud.workflows.executions_v1 import ExecutionsClient
 from google.cloud.workflows.executions_v1.types import Execution
 
+from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES
 from shared.firestore_utils import create_job, update_job_status
 from shared.schedule_compute import (
     compute_date_range,
@@ -111,6 +112,61 @@ def launch_execution(
     raise last_err  # type: ignore[misc]
 
 
+def get_report_types(schedule: dict[str, Any]) -> list[str]:
+    """Extract the report_types list from a schedule (or request data) dict."""
+    return schedule.get("report_types") or []
+
+
+def is_ads_report_type(report_type: str) -> bool:
+    """Return True if the report type belongs to the Ads API."""
+    return report_type in _ADS_REPORT_TYPES
+
+
+def infer_api_source(report_type: str, schedule_api_source: str) -> str:
+    """Determine the effective API source for a report type.
+
+    When ``schedule_api_source`` is ``"both"``, the report type name determines
+    whether to call the SP API or Ads API. Otherwise uses the schedule's source.
+    """
+    if schedule_api_source in ("sp_api", "ads_api"):
+        return schedule_api_source
+    return "ads_api" if is_ads_report_type(report_type) else "sp_api"
+
+
+def validate_report_types(api_source: str, report_types: list[str]) -> str | None:
+    """Return an error message if any report type conflicts with api_source, else None."""
+    for rt in report_types:
+        is_ads = is_ads_report_type(rt)
+        if api_source == "sp_api" and is_ads:
+            return f"Report type '{rt}' is an Ads API type but api_source is 'sp_api'"
+        if api_source == "ads_api" and not is_ads:
+            return f"Report type '{rt}' is an SP API type but api_source is 'ads_api'"
+    return None
+
+
+def client_has_credentials(client: dict[str, Any], api_source: str) -> bool:
+    """Check whether the client has credentials for the given API source.
+
+    For ``"both"``, returns True if the client has at least one set of
+    credentials.  Per-report-type credential filtering happens inside
+    ``launch_for_marketplace`` via ``infer_api_source``.
+    """
+    if api_source == "sp_api":
+        return bool(client.get("sp_api_secret_name"))
+    if api_source == "ads_api":
+        return bool(client.get("ads_profile_id"))
+    if api_source == "both":
+        return bool(client.get("sp_api_secret_name")) or bool(client.get("ads_profile_id"))
+    return False
+
+
+def _get_report_params_map(
+    schedule: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Return the per-report-type params map from a schedule."""
+    return schedule.get("report_params", {})
+
+
 def launch_for_marketplace(
     parent: str,
     now: datetime,
@@ -121,6 +177,11 @@ def launch_for_marketplace(
     extra_job_fields: dict[str, Any] | None = None,
 ) -> list[str]:
     """Launch primary + reconciliation jobs for one (client, marketplace) pair.
+
+    Iterates over all ``report_types`` in the schedule (backward-compatible
+    with legacy ``report_type``).  For each report type, determines the
+    effective ``api_source`` (important when the schedule source is ``"both"``),
+    extracts the per-type ``report_params``, and launches a separate workflow.
 
     Reconciliation only runs when the timeframe strategy is ``"yesterday"``
     (the default).  Multi-day strategies inherently cover wider windows,
@@ -133,60 +194,70 @@ def launch_for_marketplace(
     strategy = timeframe.get("strategy", "yesterday")
 
     execution_date_val = marketplace_today(marketplace, now)
-
     start_date, end_date = compute_date_range(marketplace, timeframe, now)
 
-    report_params = {**schedule.get("report_params", {})}
-    report_params.update(
-        compute_report_dates(marketplace, schedule["api_source"], start_date, end_date)
-    )
-
-    dates_to_pull: list[tuple[date, date, dict]] = [(start_date, end_date, report_params)]
-
-    if strategy == "yesterday":
-        reconciliation_days: list[int] = schedule.get("reconciliation_days", [3, 7])
-        for days_back in reconciliation_days:
-            recon_date = start_date - timedelta(days=days_back - 1)
-            recon_params = {**schedule.get("report_params", {})}
-            recon_params.update(
-                compute_report_dates(marketplace, schedule["api_source"], recon_date)
-            )
-            dates_to_pull.append((recon_date, recon_date, recon_params))
+    report_types = get_report_types(schedule)
+    schedule_api_source = schedule.get("api_source", "sp_api")
+    params_map = _get_report_params_map(schedule)
 
     job_ids: list[str] = []
-    for pull_start, pull_end, pull_params in dates_to_pull:
-        job_data: dict[str, Any] = {
-            "client_id": client_id,
-            "api_source": schedule["api_source"],
-            "marketplace": marketplace,
-            "report_type": schedule["report_type"],
-            "schedule_id": schedule["id"],
-            "frequency": frequency,
-            "report_date": pull_start.isoformat(),
-            "execution_date": execution_date_val.isoformat(),
-        }
-        if pull_start != pull_end:
-            job_data["report_end_date"] = pull_end.isoformat()
-        if extra_job_fields:
-            job_data.update(extra_job_fields)
 
-        job_id = create_job(job_data)
+    for report_type in report_types:
+        effective_source = infer_api_source(report_type, schedule_api_source)
+        type_params = params_map.get(report_type, {})
 
-        payload = build_payload(
-            api_source=schedule["api_source"],
-            client_id=client_id,
-            marketplace=marketplace,
-            report_type=schedule["report_type"],
-            report_params=pull_params,
-            job_id=job_id,
-            frequency=frequency,
-            folder_name=schedule.get("folder_name", ""),
-            subfolder_strategy=schedule.get("subfolder_strategy", "date"),
-            schedule_id=schedule["id"],
-            execution_date=execution_date_val.isoformat(),
+        report_params = {**type_params}
+        report_params.update(
+            compute_report_dates(marketplace, effective_source, start_date, end_date)
         )
 
-        launch_execution(parent, payload, job_id, error_phase="scheduler")
-        job_ids.append(job_id)
+        dates_to_pull: list[tuple[date, date, dict]] = [
+            (start_date, end_date, report_params),
+        ]
+
+        if strategy == "yesterday":
+            reconciliation_days: list[int] = schedule.get("reconciliation_days", [3, 7])
+            for days_back in reconciliation_days:
+                recon_date = start_date - timedelta(days=days_back - 1)
+                recon_params = {**type_params}
+                recon_params.update(
+                    compute_report_dates(marketplace, effective_source, recon_date)
+                )
+                dates_to_pull.append((recon_date, recon_date, recon_params))
+
+        for pull_start, pull_end, pull_params in dates_to_pull:
+            job_data: dict[str, Any] = {
+                "client_id": client_id,
+                "api_source": effective_source,
+                "marketplace": marketplace,
+                "report_type": report_type,
+                "schedule_id": schedule["id"],
+                "frequency": frequency,
+                "report_date": pull_start.isoformat(),
+                "execution_date": execution_date_val.isoformat(),
+            }
+            if pull_start != pull_end:
+                job_data["report_end_date"] = pull_end.isoformat()
+            if extra_job_fields:
+                job_data.update(extra_job_fields)
+
+            job_id = create_job(job_data)
+
+            payload = build_payload(
+                api_source=effective_source,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+                report_params=pull_params,
+                job_id=job_id,
+                frequency=frequency,
+                folder_name=schedule.get("folder_name", ""),
+                subfolder_strategy=schedule.get("subfolder_strategy", "date"),
+                schedule_id=schedule["id"],
+                execution_date=execution_date_val.isoformat(),
+            )
+
+            launch_execution(parent, payload, job_id, error_phase="scheduler")
+            job_ids.append(job_id)
 
     return job_ids

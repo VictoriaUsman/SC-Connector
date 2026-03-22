@@ -19,7 +19,7 @@ from shared import ads_api_client, sp_api_client
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.firestore_utils import get_client, update_job_status
-from shared.report_converter import json_report_to_tsv, should_convert
+from shared.report_converter import maybe_convert_to_tsv
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +73,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if execution_date_str:
             execution_date_val = date.fromisoformat(execution_date_str)
 
-        file_ext = None
-        mime_type = None
-        if api_source == "sp_api" and should_convert(report_type):
-            content = json_report_to_tsv(content, report_type)
-            file_ext = ".tsv"
-            mime_type = "text/tab-separated-values"
+        content, converted = maybe_convert_to_tsv(content, api_source, report_type)
+        file_ext = ".tsv" if converted else None
+        mime_type = "text/tab-separated-values" if converted else None
 
         result = upload_report(
             root_folder_id=root_folder_id,

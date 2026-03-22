@@ -24,7 +24,7 @@ from shared.firestore_utils import (
     update_schedule_run_times,
 )
 from shared.schedule_compute import compute_next_run
-from shared.workflow_launcher import get_workflow_parent, launch_for_marketplace
+from shared.workflow_launcher import client_has_credentials, get_workflow_parent, launch_for_marketplace
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             )
 
         for sched in capped:
-            if not _client_has_credentials(client, sched.get("api_source", "")):
+            if not client_has_credentials(client, sched.get("api_source", "")):
                 skipped += len(_get_marketplaces(sched))
                 logger.info(
                     "Skipping schedule — client missing credentials for api_source",
@@ -79,8 +79,8 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             marketplaces = _get_marketplaces(sched)
             for marketplace in marketplaces:
                 try:
-                    launch_for_marketplace(parent, now, sched, client_id, marketplace)
-                    launched += 1
+                    ids = launch_for_marketplace(parent, now, sched, client_id, marketplace)
+                    launched += len(ids)
                 except Exception as exc:
                     logger.exception("Failed to launch workflow", extra={"schedule_id": sched["id"], "marketplace": marketplace})
                     errors.append({"schedule_id": sched["id"], "error": str(exc)})
@@ -118,10 +118,3 @@ def _get_marketplaces(schedule: dict[str, Any]) -> list[str]:
     return []
 
 
-def _client_has_credentials(client: dict[str, Any], api_source: str) -> bool:
-    """Check whether the client has the required credentials for the given API source."""
-    if api_source == "sp_api":
-        return bool(client.get("sp_api_secret_name"))
-    if api_source == "ads_api":
-        return bool(client.get("ads_profile_id"))
-    return False

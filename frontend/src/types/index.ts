@@ -39,7 +39,7 @@ export interface Schedule {
   name?: string;
   client_ids: string[];
   api_source: ApiSource;
-  report_type: string;
+  report_types: string[];
   marketplaces: string[];
   frequency: Frequency;
   schedule_config: ScheduleConfig;
@@ -75,7 +75,7 @@ export interface Job {
   completed_at?: string;
 }
 
-export type ApiSource = "sp_api" | "ads_api";
+export type ApiSource = "sp_api" | "ads_api" | "both";
 export type Frequency = "hourly" | "daily" | "weekly" | "monthly";
 export type ScheduleType = "hourly" | "daily" | "weekly" | "monthly";
 export type JobStatus =
@@ -90,6 +90,7 @@ export type JobStatus =
 export const API_SOURCES: { value: ApiSource; label: string }[] = [
   { value: "sp_api", label: "SP API" },
   { value: "ads_api", label: "Ads API" },
+  { value: "both", label: "Both" },
 ];
 
 export const FREQUENCIES: { value: Frequency; label: string }[] = [
@@ -167,3 +168,7 @@ export interface AdsReportConfig {
 }
 
 export type AdsReportConfigMap = Record<string, AdsReportConfig>;
+
+export function isAdsReportType(reportType: string): boolean {
+  return (ADS_REPORT_TYPES as readonly string[]).includes(reportType);
+}

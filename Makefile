@@ -85,6 +85,9 @@ test-integration:  ## Run integration tests against current environment
 seed-firestore:  ## Seed Firestore with test client. Usage: make seed-firestore [CLIENT_ID=test-client]
 	@python3 ./scripts/seed-firestore.py --client-id $(or $(CLIENT_ID),test-client)
 
+wipe-firestore:  ## Wipe Firestore data (schedules, jobs, locks). Add ALL=1 to also wipe clients
+	@python3 ./scripts/wipe-firestore.py $(if $(ALL),--all,)
+
 workflow-trigger: check-auth  ## Trigger a workflow. Usage: make workflow-trigger API_SOURCE=sp_api CLIENT_ID=test-client MARKETPLACE=US REPORT_TYPE=GET_FLAT_FILE_OPEN_LISTINGS_DATA [START_DATE=2026-03-01] [END_DATE=2026-03-15]
 	@./scripts/trigger-workflow.sh $(API_SOURCE) $(CLIENT_ID) $(MARKETPLACE) $(REPORT_TYPE) $(START_DATE) $(END_DATE)
 
@@ -99,5 +102,5 @@ health:  ## Run health checks against current environment
 	secret-set secret-get secret-list \
 	logs-fn logs-workflow workflows-status workflows-cancel \
 	local-fn local-frontend \
-	test test-fn test-integration seed-firestore workflow-trigger \
+	test test-fn test-integration seed-firestore wipe-firestore workflow-trigger \
 	health

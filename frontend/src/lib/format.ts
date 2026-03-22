@@ -26,6 +26,7 @@ export function formatDate(isoString: string | undefined): string {
 export function formatApiSource(source: string): string {
   if (source === "sp_api") return "SP API";
   if (source === "ads_api") return "Ads API";
+  if (source === "both") return "Both";
   return source;
 }
 

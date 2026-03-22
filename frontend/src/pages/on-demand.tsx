@@ -9,9 +9,8 @@ import { EmptyState } from "@/components/empty-state";
 import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import { FolderConfig } from "@/components/folder-config";
 import { ReportSelector } from "@/components/report-selector";
-import type { AdsReportParams } from "@/components/ads-report-config";
 import { useClients } from "@/hooks/use-clients";
-import { useRealtimeJobs, useTriggerReport } from "@/hooks/use-jobs";
+import { useRealtimeJobs, useTriggerOnDemand } from "@/hooks/use-jobs";
 import { formatApiSource, formatReportType, timeAgo } from "@/lib/format";
 import type { ApiSource, Job } from "@/types";
 import { Loader2, Zap, Send, FileText, ExternalLink } from "lucide-react";
@@ -78,17 +77,17 @@ function JobProgressCard({ job }: { job: Job }) {
 
 export function OnDemand() {
   const { data: clients, isLoading: clientsLoading } = useClients();
-  const triggerReport = useTriggerReport();
+  const triggerOnDemand = useTriggerOnDemand();
 
   const [clientIds, setClientIds] = useState<string[]>([]);
   const [apiSource, setApiSource] = useState<ApiSource>("sp_api");
   const [marketplaceIds, setMarketplaceIds] = useState<string[]>([]);
-  const [reportType, setReportType] = useState("");
+  const [reportTypes, setReportTypes] = useState<string[]>([]);
+  const [reportParamsMap, setReportParamsMap] = useState<Record<string, Record<string, unknown>>>({});
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [folderName, setFolderName] = useState("");
   const [subfolderStrategy, setSubfolderStrategy] = useState<"date" | "none">("date");
-  const [adsConfig, setAdsConfig] = useState<AdsReportParams>({});
   const [submitting, setSubmitting] = useState(false);
 
   const { jobs: recentJobs, loading: jobsLoading } = useRealtimeJobs({
@@ -100,22 +99,14 @@ export function OnDemand() {
   const activeClients = (clients ?? []).filter((c) => c.is_active);
   const clientOptions = activeClients.map((c) => ({ id: c.id, label: c.name }));
 
-  const canSubmit = clientIds.length > 0 && marketplaceIds.length > 0 && reportType && !submitting;
+  const canSubmit =
+    clientIds.length > 0 && marketplaceIds.length > 0 && reportTypes.length > 0 && !submitting;
+
+  const totalJobs = clientIds.length * marketplaceIds.length * reportTypes.length;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-
-    const reportParams: Record<string, unknown> = {};
-    if (apiSource === "sp_api") {
-      if (startDate) reportParams.dataStartTime = startDate;
-      if (endDate) reportParams.dataEndTime = endDate;
-    } else {
-      if (startDate) reportParams.startDate = startDate;
-      if (endDate) reportParams.endDate = endDate;
-      if (adsConfig.columns) reportParams.columns = adsConfig.columns;
-      if (adsConfig.timeUnit) reportParams.timeUnit = adsConfig.timeUnit;
-    }
 
     const pairs = clientIds.flatMap((cid) =>
       marketplaceIds.map((mid) => ({ client_id: cid, marketplace: mid })),
@@ -124,17 +115,20 @@ export function OnDemand() {
     try {
       const results = await Promise.all(
         pairs.map((pair) =>
-          triggerReport.mutateAsync({
+          triggerOnDemand.mutateAsync({
             ...pair,
             api_source: apiSource,
-            report_type: reportType,
-            report_params: reportParams,
+            report_types: reportTypes,
+            report_params: reportParamsMap,
+            start_date: startDate || undefined,
+            end_date: endDate || undefined,
             folder_name: folderName || undefined,
             subfolder_strategy: subfolderStrategy,
           }),
         ),
       );
-      toast.success(`Triggered ${results.length} report${results.length > 1 ? "s" : ""}`);
+      const total = results.reduce((sum, r) => sum + r.jobs_started, 0);
+      toast.success(`Triggered ${total} report${total !== 1 ? "s" : ""}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to trigger reports");
     } finally {
@@ -174,12 +168,12 @@ export function OnDemand() {
               <ReportSelector
                 apiSource={apiSource}
                 onApiSourceChange={setApiSource}
-                reportType={reportType}
-                onReportTypeChange={setReportType}
+                reportTypes={reportTypes}
+                onReportTypesChange={setReportTypes}
                 marketplaceIds={marketplaceIds}
                 onMarketplaceIdsChange={setMarketplaceIds}
-                adsConfig={adsConfig}
-                onAdsConfigChange={setAdsConfig}
+                reportParamsMap={reportParamsMap}
+                onReportParamsMapChange={setReportParamsMap}
               />
 
               <Separator />
@@ -216,9 +210,7 @@ export function OnDemand() {
                 ) : (
                   <Send className="mr-2 h-4 w-4" />
                 )}
-                {clientIds.length > 0 && marketplaceIds.length > 0
-                  ? `Generate ${clientIds.length * marketplaceIds.length} Report${clientIds.length * marketplaceIds.length > 1 ? "s" : ""}`
-                  : "Generate Report"}
+                {totalJobs > 0 ? `Generate ${totalJobs} Report${totalJobs > 1 ? "s" : ""}` : "Generate Report"}
               </Button>
             </form>
           </CardContent>

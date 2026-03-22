@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import gzip
 import logging
+import re
 
 from ad_api.api import Reports
 from ad_api.base import Marketplaces
+from ad_api.base.exceptions import AdvertisingApiException
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +39,40 @@ def _client(credentials: dict, marketplace: str) -> Reports:
     return Reports(credentials=credentials, marketplace=_MARKETPLACE_ENUM[marketplace])
 
 
+_DUPLICATE_RE = re.compile(r"duplicate of\s*:\s*([0-9a-f-]{36})", re.IGNORECASE)
+
+
 def create_report(
     credentials: dict,
     marketplace: str,
     report_config: dict,
 ) -> str:
-    """Create an async v3 report. Returns the Ads API reportId."""
-    resp = _client(credentials, marketplace).post_report(body=report_config)
-    report_id = resp.payload["reportId"]
-    logger.info("Ads API report created", extra={"report_id": report_id})
-    return report_id
+    """Create an async v3 report. Returns the Ads API reportId.
+
+    Handles HTTP 425 (duplicate request) by extracting the existing report ID
+    from Amazon's error response and returning it for polling.
+    """
+    try:
+        resp = _client(credentials, marketplace).post_report(body=report_config)
+        report_id = resp.payload["reportId"]
+        logger.info("Ads API report created", extra={"report_id": report_id})
+        return report_id
+    except AdvertisingApiException as exc:
+        if exc.code == 425:
+            detail = (exc.error or {}).get("detail", "")
+            match = _DUPLICATE_RE.search(detail)
+            if match:
+                existing_id = match.group(1)
+                logger.info(
+                    "Ads API 425 duplicate — reusing existing report",
+                    extra={"existing_report_id": existing_id},
+                )
+                return existing_id
+            logger.warning(
+                "Ads API 425 but could not parse existing report ID",
+                extra={"detail": detail},
+            )
+        raise
 
 
 def get_report(credentials: dict, marketplace: str, report_id: str) -> dict:

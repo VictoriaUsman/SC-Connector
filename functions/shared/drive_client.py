@@ -141,6 +141,27 @@ def _create_folder_with_dedup(name: str, parent_id: str) -> str:
     return folder_id
 
 
+def _folder_exists(folder_id: str) -> bool:
+    """Strongly-consistent check whether a Drive folder exists (not trashed).
+
+    Uses ``files().get()`` which is consistent, unlike the search API used by
+    ``find_folder``. Critical for stale-lock detection where the folder may
+    have been created moments ago and isn't yet visible in search results.
+    """
+    from googleapiclient.errors import HttpError
+    try:
+        meta = get_service().files().get(
+            fileId=folder_id,
+            fields="id,trashed",
+            supportsAllDrives=True,
+        ).execute()
+        return not meta.get("trashed", False)
+    except HttpError as exc:
+        if exc.resp.status == 404:
+            return False
+        raise
+
+
 _LOCK_COLLECTION = "_drive_folder_locks"
 _LOCK_POLL_INTERVAL = 1.0
 _LOCK_TIMEOUT_SECS = 15
@@ -189,8 +210,11 @@ def _create_folder_coordinated(name: str, parent_id: str) -> str:
         if existing_lock.exists:
             data = existing_lock.to_dict() or {}
             stale_id = data.get("folder_id")
-            if stale_id and not find_folder(name, parent_id):
-                logger.warning("[folder] Stale lock for '%s' (folder %s gone) — deleting lock, using dedup path", name, stale_id)
+            if stale_id:
+                if _folder_exists(stale_id):
+                    logger.info("[folder] Lock for '%s' has valid folder %s — reusing", name, stale_id)
+                    return stale_id
+                logger.warning("[folder] Stale lock for '%s' (folder %s deleted) — deleting lock, using dedup path", name, stale_id)
                 lock_ref.delete()
                 return _create_folder_with_dedup(name, parent_id)
         logger.info("[folder] LOST lock for '%s' — waiting for creator", name)
@@ -433,7 +457,7 @@ def infer_report_format(api_source: str, report_type: str) -> tuple[str, str]:
     Ads API v3 is always JSON.
     """
     if api_source == "ads_api":
-        return ".json", "application/json"
+        return ".tsv", "text/tab-separated-values"
 
     rt = report_type.upper()
     if rt in _SP_API_JSON_REPORTS:

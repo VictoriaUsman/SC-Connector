@@ -97,16 +97,18 @@ export const api = {
   getAdsReportConfig: () => request<AdsReportConfigMap>("/ads-report-config"),
 
   // On-demand
-  triggerReport: (data: {
+  triggerOnDemand: (data: {
     client_id: string;
     api_source: string;
     marketplace: string;
-    report_type: string;
+    report_types: string[];
     report_params?: Record<string, unknown>;
+    start_date?: string;
+    end_date?: string;
     folder_name?: string;
     subfolder_strategy?: "date" | "none";
   }) =>
-    request<{ job_id: string; execution_name: string; status: string }>("/on-demand", {
+    request<{ job_ids: string[]; jobs_started: number; errors: number; status: string }>("/on-demand", {
       method: "POST",
       body: JSON.stringify(data),
     }),

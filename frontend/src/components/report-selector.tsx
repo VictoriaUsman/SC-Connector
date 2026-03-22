@@ -14,6 +14,7 @@ import {
   MARKETPLACES,
   SP_REPORT_TYPES,
   ADS_REPORT_TYPES,
+  isAdsReportType,
 } from "@/types";
 import type { ApiSource } from "@/types";
 
@@ -22,26 +23,61 @@ const MARKETPLACE_OPTIONS = MARKETPLACES.map((m) => ({
   label: `${m.flag} ${m.id}`,
 }));
 
+const SP_REPORT_OPTIONS = SP_REPORT_TYPES.map((rt) => ({
+  id: rt,
+  label: formatReportType(rt),
+}));
+
+const ADS_REPORT_OPTIONS = ADS_REPORT_TYPES.map((rt) => ({
+  id: rt,
+  label: formatReportType(rt),
+}));
+
 export function ReportSelector({
   apiSource,
   onApiSourceChange,
-  reportType,
-  onReportTypeChange,
+  reportTypes,
+  onReportTypesChange,
   marketplaceIds,
   onMarketplaceIdsChange,
-  adsConfig,
-  onAdsConfigChange,
+  reportParamsMap,
+  onReportParamsMapChange,
 }: {
   apiSource: ApiSource;
   onApiSourceChange: (source: ApiSource) => void;
-  reportType: string;
-  onReportTypeChange: (type: string) => void;
+  reportTypes: string[];
+  onReportTypesChange: (types: string[]) => void;
   marketplaceIds: string[];
   onMarketplaceIdsChange: (ids: string[]) => void;
-  adsConfig: AdsReportParams;
-  onAdsConfigChange: (config: AdsReportParams) => void;
+  reportParamsMap: Record<string, Record<string, unknown>>;
+  onReportParamsMapChange: (map: Record<string, Record<string, unknown>>) => void;
 }) {
-  const reportTypes = apiSource === "sp_api" ? SP_REPORT_TYPES : ADS_REPORT_TYPES;
+  const showSp = apiSource === "sp_api" || apiSource === "both";
+  const showAds = apiSource === "ads_api" || apiSource === "both";
+
+  const selectedSpTypes = reportTypes.filter((rt) => !isAdsReportType(rt));
+  const selectedAdsTypes = reportTypes.filter((rt) => isAdsReportType(rt));
+
+  const handleSpChange = (ids: string[]) => {
+    onReportTypesChange([...ids, ...selectedAdsTypes]);
+  };
+
+  const handleAdsChange = (ids: string[]) => {
+    const removed = selectedAdsTypes.filter((rt) => !ids.includes(rt));
+    if (removed.length) {
+      const next = { ...reportParamsMap };
+      for (const rt of removed) delete next[rt];
+      onReportParamsMapChange(next);
+    }
+    onReportTypesChange([...selectedSpTypes, ...ids]);
+  };
+
+  const handleAdsParamsChange = (rt: string, params: AdsReportParams) => {
+    const entry: Record<string, unknown> = {};
+    if (params.columns) entry.columns = params.columns;
+    if (params.timeUnit) entry.timeUnit = params.timeUnit;
+    onReportParamsMapChange({ ...reportParamsMap, [rt]: entry });
+  };
 
   return (
     <>
@@ -50,11 +86,10 @@ export function ReportSelector({
         <Select
           value={apiSource}
           onValueChange={(v) => {
-            if (v) {
-              onApiSourceChange(v as ApiSource);
-              onReportTypeChange("");
-              onAdsConfigChange({});
-            }
+            if (!v) return;
+            onApiSourceChange(v as ApiSource);
+            onReportTypesChange([]);
+            onReportParamsMapChange({});
           }}
         >
           <SelectTrigger>
@@ -70,29 +105,36 @@ export function ReportSelector({
         </Select>
       </div>
 
-      <div className="space-y-2">
-        <Label>Report Type</Label>
-        <Select
-          value={reportType}
-          onValueChange={(v) => {
-            if (v) {
-              onReportTypeChange(v);
-              onAdsConfigChange({});
-            }
-          }}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="Select report type" />
-          </SelectTrigger>
-          <SelectContent className="w-auto min-w-[var(--anchor-width)]">
-            {reportTypes.map((rt) => (
-              <SelectItem key={rt} value={rt}>
-                {formatReportType(rt)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {showSp && (
+        <MultiSelectDropdown
+          label={apiSource === "both" ? "SP API Report Types" : "Report Types"}
+          options={SP_REPORT_OPTIONS}
+          selected={selectedSpTypes}
+          onChange={handleSpChange}
+        />
+      )}
+
+      {showAds && (
+        <>
+          <MultiSelectDropdown
+            label={apiSource === "both" ? "Ads API Report Types" : "Report Types"}
+            options={ADS_REPORT_OPTIONS}
+            selected={selectedAdsTypes}
+            onChange={handleAdsChange}
+          />
+
+          {selectedAdsTypes.map((rt) => (
+            <AdsReportConfigPanel
+              key={rt}
+              reportType={rt}
+              value={
+                (reportParamsMap[rt] as AdsReportParams | undefined) ?? {}
+              }
+              onChange={(params) => handleAdsParamsChange(rt, params)}
+            />
+          ))}
+        </>
+      )}
 
       <MultiSelectDropdown
         label="Marketplaces"
@@ -101,14 +143,6 @@ export function ReportSelector({
         onChange={onMarketplaceIdsChange}
         searchable={false}
       />
-
-      {apiSource === "ads_api" && reportType && (
-        <AdsReportConfigPanel
-          reportType={reportType}
-          value={adsConfig}
-          onChange={onAdsConfigChange}
-        />
-      )}
     </>
   );
 }

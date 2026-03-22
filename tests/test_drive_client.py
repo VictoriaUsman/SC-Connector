@@ -405,12 +405,15 @@ class TestBuildFolderPath:
         assert path == "2026-03-20/testy/US/GET_SALES_AND_TRAFFIC_REPORT"
 
     def test_custom_folder_with_date_subfolder(self, mock_service):
-        """Custom: {root}/{folder_name}/{date}"""
+        """Custom: {root}/{folder_name}/{date}/{client}/{marketplace}/{report_type}"""
         from shared.drive_client import build_folder_path
 
         self._setup_find_or_create(mock_service, {
             "testem": "custom-id",
             "2026-03-20": "date-id",
+            "testy": "client-id",
+            "US": "market-id",
+            "GET_SALES_AND_TRAFFIC_REPORT": "report-id",
         })
 
         folder_id, path = build_folder_path(
@@ -423,14 +426,19 @@ class TestBuildFolderPath:
             folder_name="testem",
             subfolder_strategy="date",
         )
-        assert folder_id == "date-id"
-        assert path == "testem/2026-03-20"
+        assert folder_id == "report-id"
+        assert path == "testem/2026-03-20/testy/US/GET_SALES_AND_TRAFFIC_REPORT"
 
     def test_custom_folder_flat(self, mock_service):
-        """Custom flat: {root}/{folder_name}"""
+        """Custom flat: {root}/{folder_name}/{client}/{marketplace}/{report_type}"""
         from shared.drive_client import build_folder_path
 
-        self._setup_find_or_create(mock_service, {"testem": "custom-id"})
+        self._setup_find_or_create(mock_service, {
+            "testem": "custom-id",
+            "testy": "client-id",
+            "US": "market-id",
+            "GET_SALES_AND_TRAFFIC_REPORT": "report-id",
+        })
 
         folder_id, path = build_folder_path(
             root_folder_id="root-id",
@@ -442,8 +450,8 @@ class TestBuildFolderPath:
             folder_name="testem",
             subfolder_strategy="none",
         )
-        assert folder_id == "custom-id"
-        assert path == "testem"
+        assert folder_id == "report-id"
+        assert path == "testem/testy/US/GET_SALES_AND_TRAFFIC_REPORT"
 
 
 # ---------------------------------------------------------------------------
@@ -505,9 +513,9 @@ class TestInferReportFormat:
         assert ext == ".json"
         assert mime == "application/json"
 
-    def test_ads_api_always_json(self):
+    def test_ads_api_always_tsv(self):
         from shared.drive_client import infer_report_format
 
-        ext, mime = infer_report_format("ads_api", "SP_TRAFFIC")
-        assert ext == ".json"
-        assert mime == "application/json"
+        ext, mime = infer_report_format("ads_api", "spCampaigns")
+        assert ext == ".tsv"
+        assert mime == "text/tab-separated-values"

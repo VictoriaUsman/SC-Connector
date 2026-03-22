@@ -152,7 +152,7 @@ class TestLaunchForMarketplace:
         sched = {
             "id": "s1",
             "api_source": "sp_api",
-            "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
             "frequency": "daily",
             "report_params": {},
             "folder_name": "",
@@ -275,7 +275,7 @@ class TestLaunchForMarketplaceTimeframe:
         sched = {
             "id": "s1",
             "api_source": "sp_api",
-            "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
             "frequency": "daily",
             "report_params": {},
             "folder_name": "",
@@ -426,7 +426,7 @@ class TestExecutionDateDeterminism:
         return {
             "id": "s1",
             "api_source": "sp_api",
-            "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
             "frequency": "daily",
             "report_params": {},
             "folder_name": "",

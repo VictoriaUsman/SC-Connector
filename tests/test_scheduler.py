@@ -26,15 +26,16 @@ def _make_request(body: dict | None = None) -> MagicMock:
 
 def _make_schedule(
     schedule_id: str = "s1",
-    client_id: str = "c1",
+    client_ids: list[str] | None = None,
     frequency: str = "daily",
 ) -> dict:
+    cids = client_ids if client_ids is not None else ["c1"]
     return {
         "id": schedule_id,
-        "client_id": client_id,
+        "client_ids": cids,
         "api_source": "sp_api",
-        "report_type": "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
-        "marketplace": "US",
+        "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
+        "marketplaces": ["US"],
         "frequency": frequency,
         "report_params": {},
         "is_active": True,
@@ -79,6 +80,7 @@ class TestSchedulerHandler:
         with (
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
+            patch("scheduler.main.client_has_credentials", return_value=True),
             patch("scheduler.main.update_schedule_run_times") as mock_update,
         ):
             body, status = handler(_make_request())
@@ -132,6 +134,7 @@ class TestSchedulerHandler:
         with (
             patch("scheduler.main.list_due_schedules", return_value=schedules),
             patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
+            patch("scheduler.main.client_has_credentials", return_value=True),
             patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
@@ -143,8 +146,8 @@ class TestSchedulerHandler:
         from scheduler.main import handler
 
         scheds = [
-            _make_schedule(schedule_id="s1", client_id="c1"),
-            _make_schedule(schedule_id="s2", client_id="c2"),
+            _make_schedule(schedule_id="s1", client_ids=["c1"]),
+            _make_schedule(schedule_id="s2", client_ids=["c2"]),
         ]
 
         def fake_get_client(cid):
@@ -153,6 +156,7 @@ class TestSchedulerHandler:
         with (
             patch("scheduler.main.list_due_schedules", return_value=scheds),
             patch("scheduler.main.get_client", side_effect=fake_get_client),
+            patch("scheduler.main.client_has_credentials", return_value=True),
             patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
@@ -174,7 +178,7 @@ class TestMultiMarketplaceFanOut:
             "id": "s1",
             "client_ids": ["testy"],
             "api_source": "sp_api",
-            "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
             "marketplaces": ["US", "CA"],
             "frequency": "daily",
             "report_params": {},
@@ -185,6 +189,7 @@ class TestMultiMarketplaceFanOut:
         with (
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "testy", "is_active": True, "name": "testy"}),
+            patch("scheduler.main.client_has_credentials", return_value=True),
             patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
@@ -204,7 +209,7 @@ class TestMultiMarketplaceFanOut:
             "id": "s1",
             "client_ids": ["testy"],
             "api_source": "sp_api",
-            "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
             "marketplaces": ["US"],
             "frequency": "daily",
             "report_params": {},
@@ -217,6 +222,7 @@ class TestMultiMarketplaceFanOut:
         with (
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "testy", "is_active": True}),
+            patch("scheduler.main.client_has_credentials", return_value=True),
             patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
@@ -241,6 +247,7 @@ class TestSchedulerErrors:
         with (
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
+            patch("scheduler.main.client_has_credentials", return_value=True),
             patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())

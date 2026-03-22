@@ -181,7 +181,7 @@ class TestSchedules:
             resp = client.post("/schedules", json={
                 "client_id": "c1",
                 "api_source": "sp_api",
-                "report_type": "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+                "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
                 "marketplace": "US",
                 "frequency": "daily",
             })
@@ -195,7 +195,7 @@ class TestSchedules:
 
     def test_create_schedule_invalid_api_source(self, client):
         resp = client.post("/schedules", json={
-            "client_id": "c1", "api_source": "bad", "report_type": "X",
+            "client_id": "c1", "api_source": "bad", "report_types": ["X"],
             "marketplace": "US", "frequency": "daily",
         })
         assert resp.status_code == 400
@@ -203,7 +203,7 @@ class TestSchedules:
 
     def test_create_schedule_invalid_frequency(self, client):
         resp = client.post("/schedules", json={
-            "client_id": "c1", "api_source": "sp_api", "report_type": "X",
+            "client_id": "c1", "api_source": "sp_api", "report_types": ["X"],
             "marketplace": "US", "frequency": "biweekly",
         })
         assert resp.status_code == 400
@@ -212,13 +212,18 @@ class TestSchedules:
     def test_create_schedule_client_not_found(self, client):
         with patch("api.main.get_client", return_value=None):
             resp = client.post("/schedules", json={
-                "client_id": "gone", "api_source": "sp_api", "report_type": "X",
+                "client_id": "gone", "api_source": "sp_api", "report_types": ["X"],
                 "marketplace": "US", "frequency": "daily",
             })
         assert resp.status_code == 404
 
     def test_update_schedule_recomputes_next_run(self, client):
-        existing = {"id": "s1", "frequency": "daily", "is_active": True}
+        existing = {
+            "id": "s1",
+            "frequency": "daily",
+            "is_active": True,
+            "schedule_config": {"type": "daily", "time": "03:00"},
+        }
         with (
             patch("api.main.get_schedule", return_value=existing),
             patch("api.main.update_schedule") as mock,
@@ -286,14 +291,37 @@ class TestOnDemand:
                 "client_id": "c1",
                 "api_source": "sp_api",
                 "marketplace": "US",
-                "report_type": "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+                "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
             })
 
         assert resp.status_code == 201
         body = resp.get_json()
-        assert body["job_id"] == "job-123"
+        assert body["jobs_started"] == 1
+        assert body["job_ids"] == ["job-123"]
         assert body["status"] == "started"
-        assert "execution_name" in body
+
+    def test_on_demand_multiple_report_types(self, client):
+        mock_execution = MagicMock()
+        mock_execution.name = "projects/p/locations/l/workflows/w/executions/e1"
+
+        with (
+            patch("api.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("api.main.create_job", side_effect=["job-1", "job-2"]),
+            patch("api.main.launch_execution", return_value=mock_execution),
+        ):
+            resp = client.post("/on-demand", json={
+                "client_id": "c1",
+                "api_source": "both",
+                "marketplace": "US",
+                "report_types": ["GET_SALES_AND_TRAFFIC_REPORT", "spCampaigns"],
+                "report_params": {"spCampaigns": {"timeUnit": "DAILY"}},
+                "start_date": "2026-03-20",
+                "end_date": "2026-03-21",
+            })
+
+        assert resp.status_code == 201
+        body = resp.get_json()
+        assert body["jobs_started"] == 2
 
     def test_on_demand_workflow_failure(self, client):
         with (
@@ -305,13 +333,13 @@ class TestOnDemand:
                 "client_id": "c1",
                 "api_source": "sp_api",
                 "marketplace": "US",
-                "report_type": "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+                "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
             })
 
-        assert resp.status_code == 502
+        assert resp.status_code == 201
         body = resp.get_json()
-        assert body["code"] == "WORKFLOW_START_FAILED"
-        assert body["job_id"] == "job-123"
+        assert body["jobs_started"] == 0
+        assert body["errors"] == 1
 
     def test_on_demand_missing_fields(self, client):
         resp = client.post("/on-demand", json={"client_id": "c1"})
@@ -319,14 +347,16 @@ class TestOnDemand:
 
     def test_on_demand_invalid_api_source(self, client):
         resp = client.post("/on-demand", json={
-            "client_id": "c1", "api_source": "bad", "marketplace": "US", "report_type": "X",
+            "client_id": "c1", "api_source": "bad", "marketplace": "US",
+            "report_types": ["X"],
         })
         assert resp.status_code == 400
 
     def test_on_demand_inactive_client(self, client):
         with patch("api.main.get_client", return_value={"id": "c1", "is_active": False}):
             resp = client.post("/on-demand", json={
-                "client_id": "c1", "api_source": "sp_api", "marketplace": "US", "report_type": "X",
+                "client_id": "c1", "api_source": "sp_api", "marketplace": "US",
+                "report_types": ["X"],
             })
         assert resp.status_code == 404
 
@@ -341,7 +371,7 @@ class TestTriggerSchedule:
             "id": "s1",
             "client_ids": ["c1"],
             "api_source": "sp_api",
-            "report_type": "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+            "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
             "marketplaces": ["US"],
             "frequency": "daily",
             "report_params": {},
@@ -351,6 +381,7 @@ class TestTriggerSchedule:
         with (
             patch("api.main.get_schedule", return_value=fake_schedule),
             patch("api.main.get_client", return_value={"id": "c1", "is_active": True}),
+            patch("api.main.client_has_credentials", return_value=True),
             patch("api.main.launch_for_marketplace", return_value=["job-1"]),
             patch("api.main.update_schedule"),
         ):
@@ -371,7 +402,7 @@ class TestTriggerSchedule:
             "id": "s1",
             "client_ids": ["c1"],
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplaces": ["US"],
         }
 
@@ -397,7 +428,7 @@ class TestTimeframeValidation:
             resp = client.post("/schedules", json={
                 "client_id": "c1",
                 "api_source": "sp_api",
-                "report_type": "GET_FLAT_FILE_OPEN_LISTINGS_DATA",
+                "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
                 "marketplace": "US",
                 "frequency": "daily",
                 "timeframe": {"strategy": "yesterday"},
@@ -412,7 +443,7 @@ class TestTimeframeValidation:
             resp = client.post("/schedules", json={
                 "client_id": "c1",
                 "api_source": "sp_api",
-                "report_type": "X",
+                "report_types": ["X"],
                 "marketplace": "US",
                 "frequency": "daily",
                 "timeframe": {"strategy": "last_n_days", "days": 30, "end_offset_days": 3},
@@ -423,7 +454,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"strategy": "next_year"},
@@ -435,7 +466,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"days": 30},
@@ -447,7 +478,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"strategy": "last_n_days"},
@@ -459,7 +490,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"strategy": "last_n_days", "days": 500},
@@ -471,7 +502,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"strategy": "rolling_window"},
@@ -483,7 +514,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"strategy": "rolling_window", "start_offset": -1, "end_offset": -5},
@@ -495,7 +526,7 @@ class TestTimeframeValidation:
         resp = client.post("/schedules", json={
             "client_id": "c1",
             "api_source": "sp_api",
-            "report_type": "X",
+            "report_types": ["X"],
             "marketplace": "US",
             "frequency": "daily",
             "timeframe": {"strategy": "last_calendar_week", "week_start": 9},
@@ -531,7 +562,7 @@ class TestTimeframeValidation:
             resp = client.post("/schedules", json={
                 "client_id": "c1",
                 "api_source": "sp_api",
-                "report_type": "X",
+                "report_types": ["X"],
                 "marketplace": "US",
                 "frequency": "daily",
             })

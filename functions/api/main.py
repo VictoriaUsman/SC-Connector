@@ -37,27 +37,23 @@ from shared.firestore_utils import (
 )
 from shared.workflow_launcher import (
     build_payload,
+    client_has_credentials,
+    get_report_types,
     get_workflow_parent,
+    infer_api_source,
     launch_execution,
     launch_for_marketplace,
+    validate_report_types,
 )
 
 logger = logging.getLogger(__name__)
 
 app = flask.Flask(__name__)
 
-VALID_API_SOURCES = {"sp_api", "ads_api"}
+VALID_API_SOURCES = {"sp_api", "ads_api", "both"}
 VALID_FREQUENCIES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SCHEDULE_TYPES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SUBFOLDER_STRATEGIES = {"date", "none"}
-
-
-def _client_has_credentials(client: dict, api_source: str) -> bool:
-    if api_source == "sp_api":
-        return bool(client.get("sp_api_secret_name"))
-    if api_source == "ads_api":
-        return bool(client.get("ads_profile_id"))
-    return False
 
 
 def _validate_timeframe(timeframe: dict) -> str | None:
@@ -277,8 +273,13 @@ def get_schedule_route(schedule_id: str):
 def create_schedule_route():
     data = flask.request.get_json(silent=True) or {}
 
-    required = ["api_source", "report_type"]
-    missing = [f for f in required if not data.get(f)]
+    missing: list[str] = []
+    if not data.get("api_source"):
+        missing.append("api_source")
+
+    report_types = get_report_types(data)
+    if not report_types:
+        missing.append("report_types")
 
     has_clients = bool(data.get("client_ids") or data.get("client_id"))
     has_markets = bool(data.get("marketplaces") or data.get("marketplace"))
@@ -292,6 +293,10 @@ def create_schedule_route():
 
     if data["api_source"] not in VALID_API_SOURCES:
         return flask.jsonify({"error": f"api_source must be one of: {sorted(VALID_API_SOURCES)}", "code": "INVALID_REQUEST"}), 400
+
+    validation_err = validate_report_types(data["api_source"], report_types)
+    if validation_err:
+        return flask.jsonify({"error": validation_err, "code": "INVALID_REQUEST"}), 400
 
     client_ids = data.get("client_ids") or [data.pop("client_id")]
     data["client_ids"] = client_ids
@@ -347,6 +352,12 @@ def update_schedule_route(schedule_id: str):
 
     if "api_source" in data and data["api_source"] not in VALID_API_SOURCES:
         return flask.jsonify({"error": f"api_source must be one of: {sorted(VALID_API_SOURCES)}", "code": "INVALID_REQUEST"}), 400
+
+    if "report_types" in data:
+        effective_source = data.get("api_source", existing.get("api_source", ""))
+        validation_err = validate_report_types(effective_source, data["report_types"])
+        if validation_err:
+            return flask.jsonify({"error": validation_err, "code": "INVALID_REQUEST"}), 400
 
     if "frequency" in data and data["frequency"] not in VALID_FREQUENCIES:
         return flask.jsonify({"error": f"frequency must be one of: {sorted(VALID_FREQUENCIES)}", "code": "INVALID_REQUEST"}), 400
@@ -404,7 +415,7 @@ def trigger_schedule_route(schedule_id: str):
     errors: list[dict[str, str]] = []
 
     for cid in client_ids:
-        if not _client_has_credentials(clients_by_id[cid], api_source):
+        if not client_has_credentials(clients_by_id[cid], api_source):
             skipped_clients.append(cid)
             logger.info("Skipping client — missing credentials", extra={"client_id": cid, "api_source": api_source})
             continue
@@ -461,55 +472,97 @@ def get_job_route(job_id: str):
 
 @app.route("/on-demand", methods=["POST"])
 def on_demand_route():
+    """Trigger on-demand report downloads.
+
+    Accepts ``report_types`` (list) and fans out one workflow per report type,
+    mirroring the scheduler fan-out model.  Date params are translated into the
+    correct API-specific keys (SP API uses dataStartTime/dataEndTime, Ads API
+    uses startDate/endDate) per report type's effective source.
+    """
     data = flask.request.get_json(silent=True) or {}
 
-    missing = [f for f in ("client_id", "api_source", "marketplace", "report_type") if not data.get(f)]
+    report_types = get_report_types(data)
+    missing: list[str] = []
+    if not data.get("client_id"):
+        missing.append("client_id")
+    if not data.get("api_source"):
+        missing.append("api_source")
+    if not data.get("marketplace"):
+        missing.append("marketplace")
+    if not report_types:
+        missing.append("report_types")
     if missing:
         return flask.jsonify({"error": f"Missing fields: {', '.join(missing)}", "code": "INVALID_REQUEST"}), 400
 
-    if data["api_source"] not in VALID_API_SOURCES:
+    api_source = data["api_source"]
+    if api_source not in VALID_API_SOURCES:
         return flask.jsonify({"error": f"api_source must be one of: {sorted(VALID_API_SOURCES)}", "code": "INVALID_REQUEST"}), 400
+
+    validation_err = validate_report_types(api_source, report_types)
+    if validation_err:
+        return flask.jsonify({"error": validation_err, "code": "INVALID_REQUEST"}), 400
 
     client = get_client(data["client_id"])
     if not client or not client.get("is_active", True):
         return flask.jsonify({"error": "Client not found or inactive", "code": "NOT_FOUND"}), 404
 
-    job_id = create_job({
-        "client_id": data["client_id"],
-        "api_source": data["api_source"],
-        "marketplace": data["marketplace"],
-        "report_type": data["report_type"],
-        "frequency": "on_demand",
-    })
-
     parent = get_workflow_parent()
-    payload = build_payload(
-        api_source=data["api_source"],
-        client_id=data["client_id"],
-        marketplace=data["marketplace"],
-        report_type=data["report_type"],
-        report_params=data.get("report_params", {}),
-        job_id=job_id,
-        frequency="on_demand",
-        folder_name=data.get("folder_name", ""),
-        subfolder_strategy=data.get("subfolder_strategy", "date"),
-    )
+    report_params_map: dict = data.get("report_params", {})
+    start_date = data.get("start_date", "")
+    end_date = data.get("end_date", "")
 
-    try:
-        result = launch_execution(parent, payload, job_id, error_phase="trigger")
-        logger.info("On-demand workflow started", extra={"job_id": job_id, "execution": result.name})
-        return flask.jsonify({
-            "job_id": job_id,
-            "execution_name": result.name,
-            "status": "started",
-        }), 201
-    except Exception as exc:
-        logger.exception("Failed to start workflow after retries", extra={"job_id": job_id})
-        return flask.jsonify({
-            "error": f"Failed to start workflow: {exc}",
-            "code": "WORKFLOW_START_FAILED",
-            "job_id": job_id,
-        }), 502
+    job_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    for report_type in report_types:
+        effective_source = infer_api_source(report_type, api_source)
+
+        rt_params: dict = {**report_params_map.get(report_type, {})}
+        if effective_source == "sp_api":
+            if start_date:
+                rt_params["dataStartTime"] = start_date
+            if end_date:
+                rt_params["dataEndTime"] = end_date
+        else:
+            if start_date:
+                rt_params["startDate"] = start_date
+            if end_date:
+                rt_params["endDate"] = end_date
+
+        job_id = create_job({
+            "client_id": data["client_id"],
+            "api_source": effective_source,
+            "marketplace": data["marketplace"],
+            "report_type": report_type,
+            "frequency": "on_demand",
+        })
+
+        payload = build_payload(
+            api_source=effective_source,
+            client_id=data["client_id"],
+            marketplace=data["marketplace"],
+            report_type=report_type,
+            report_params=rt_params,
+            job_id=job_id,
+            frequency="on_demand",
+            folder_name=data.get("folder_name", ""),
+            subfolder_strategy=data.get("subfolder_strategy", "date"),
+        )
+
+        try:
+            launch_execution(parent, payload, job_id, error_phase="trigger")
+            job_ids.append(job_id)
+        except Exception as exc:
+            logger.exception("On-demand workflow failed", extra={"job_id": job_id, "report_type": report_type})
+            errors.append({"report_type": report_type, "error": str(exc)[:200]})
+
+    logger.info("On-demand trigger", extra={"jobs": len(job_ids), "errors": len(errors)})
+    return flask.jsonify({
+        "job_ids": job_ids,
+        "jobs_started": len(job_ids),
+        "errors": len(errors),
+        "status": "started",
+    }), 201
 
 
 # ---------------------------------------------------------------------------

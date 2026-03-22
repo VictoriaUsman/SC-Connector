@@ -51,7 +51,6 @@ import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import { FolderConfig } from "@/components/folder-config";
 import { TimeframeConfig } from "@/components/timeframe-config";
 import { ReportSelector } from "@/components/report-selector";
-import type { AdsReportParams } from "@/components/ads-report-config";
 import { useClients } from "@/hooks/use-clients";
 import {
   useSchedules,
@@ -64,6 +63,7 @@ import { formatDate, formatApiSource, formatReportType, formatTimeframeLabel } f
 import {
   FREQUENCIES,
   DAYS_OF_WEEK,
+  isAdsReportType,
 } from "@/types";
 import type { ApiSource, Frequency, Schedule, ScheduleConfig, Timeframe } from "@/types";
 import {
@@ -182,7 +182,7 @@ interface ScheduleFormData {
   name: string;
   client_ids: string[];
   api_source: ApiSource;
-  report_type: string;
+  report_types: string[];
   marketplaces: string[];
   frequency: Frequency;
   schedule_config: ScheduleConfig;
@@ -212,7 +212,10 @@ function ScheduleForm({
   const [name, setName] = useState(initialData?.name ?? "");
   const [clientIds, setClientIds] = useState<string[]>(initialData?.client_ids ?? []);
   const [apiSource, setApiSource] = useState<ApiSource>(initialData?.api_source ?? "sp_api");
-  const [reportType, setReportType] = useState(initialData?.report_type ?? "");
+  const [reportTypes, setReportTypes] = useState<string[]>(initialData?.report_types ?? []);
+  const [reportParamsMap, setReportParamsMap] = useState<Record<string, Record<string, unknown>>>(
+    (initialData?.report_params ?? {}) as Record<string, Record<string, unknown>>,
+  );
   const [marketplaceIds, setMarketplaceIds] = useState<string[]>(initialData?.marketplaces ?? []);
   const [frequency, setFrequency] = useState<Frequency>(initialData?.frequency ?? "daily");
   const [scheduleTime, setScheduleTime] = useState(initialData?.schedule_config?.time ?? "03:00");
@@ -228,14 +231,6 @@ function ScheduleForm({
   const [reconDays, setReconDays] = useState<number[]>(initRecon.length > 0 ? initRecon : [3, 7]);
 
   const isYesterday = timeframe.strategy === "yesterday";
-  const [adsConfig, setAdsConfig] = useState<AdsReportParams>(() => {
-    if (!initialData?.report_params) return {};
-    const p = initialData.report_params;
-    return {
-      columns: p.columns as string[] | undefined,
-      timeUnit: p.timeUnit as string | undefined,
-    };
-  });
   const [advancedOpen, setAdvancedOpen] = useState(isEdit && initRecon.length > 0);
   const [isActive, setIsActive] = useState(initialData?.is_active ?? true);
 
@@ -258,16 +253,11 @@ function ScheduleForm({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        const reportParams: Record<string, unknown> = {};
-        if (apiSource === "ads_api") {
-          if (adsConfig.columns) reportParams.columns = adsConfig.columns;
-          if (adsConfig.timeUnit) reportParams.timeUnit = adsConfig.timeUnit;
-        }
         onSubmit({
           name: name.trim(),
           client_ids: clientIds,
           api_source: apiSource,
-          report_type: reportType,
+          report_types: reportTypes,
           marketplaces: marketplaceIds,
           frequency,
           schedule_config: buildScheduleConfig(),
@@ -275,7 +265,7 @@ function ScheduleForm({
           folder_name: folderName,
           subfolder_strategy: subfolderStrategy,
           reconciliation_days: isYesterday && reconciliationEnabled ? reconDays : [],
-          report_params: reportParams,
+          report_params: reportParamsMap,
           is_active: isActive,
         });
       }}
@@ -300,12 +290,12 @@ function ScheduleForm({
       <ReportSelector
         apiSource={apiSource}
         onApiSourceChange={setApiSource}
-        reportType={reportType}
-        onReportTypeChange={setReportType}
+        reportTypes={reportTypes}
+        onReportTypesChange={setReportTypes}
         marketplaceIds={marketplaceIds}
         onMarketplaceIdsChange={setMarketplaceIds}
-        adsConfig={adsConfig}
-        onAdsConfigChange={setAdsConfig}
+        reportParamsMap={reportParamsMap}
+        onReportParamsMapChange={setReportParamsMap}
       />
 
       {/* Frequency / Schedule Config */}
@@ -454,7 +444,7 @@ function ScheduleForm({
         </Button>
         <Button
           type="submit"
-          disabled={isPending || !clientIds.length || !reportType || !marketplaceIds.length}
+          disabled={isPending || !clientIds.length || !reportTypes.length || !marketplaceIds.length}
         >
           {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {isEdit ? "Save Changes" : "Create Schedule"}
@@ -495,7 +485,7 @@ function ScheduleTable({
           <TableHead>Name</TableHead>
           <TableHead>Clients</TableHead>
           <TableHead>Source</TableHead>
-          <TableHead>Report Type</TableHead>
+          <TableHead>Report Types</TableHead>
           <TableHead>Marketplaces</TableHead>
           <TableHead>Schedule</TableHead>
           <TableHead>Timeframe</TableHead>
@@ -521,8 +511,22 @@ function ScheduleTable({
               {resolveClientNames(sched)}
             </TableCell>
             <TableCell>{formatApiSource(sched.api_source)}</TableCell>
-            <TableCell className="max-w-[180px] truncate" title={sched.report_type}>
-              {formatReportType(sched.report_type)}
+            <TableCell className="max-w-[220px]">
+              <div className="flex flex-wrap gap-1">
+                {sched.report_types.map((rt) => (
+                  <Badge
+                    key={rt}
+                    variant="secondary"
+                    className={`text-xs ${
+                      isAdsReportType(rt)
+                        ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                    }`}
+                  >
+                    {formatReportType(rt)}
+                  </Badge>
+                ))}
+              </div>
             </TableCell>
             <TableCell>
               {(sched.marketplaces ?? []).length > 0 ? (
@@ -663,8 +667,9 @@ export function Schedules() {
   const computeJobCount = (schedule: Schedule) => {
     const mktCount = (schedule.marketplaces ?? []).length;
     const clientCount = (schedule.client_ids ?? []).length;
+    const reportCount = schedule.report_types.length || 1;
     const reconCount = (schedule.reconciliation_days ?? []).length + 1;
-    return clientCount * mktCount * reconCount;
+    return clientCount * mktCount * reportCount * reconCount;
   };
 
   const handleTriggerNow = (schedule: Schedule) => {
