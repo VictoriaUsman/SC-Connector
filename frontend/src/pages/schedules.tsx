@@ -84,6 +84,32 @@ import {
 import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
+// Timezone conversion helper
+// ---------------------------------------------------------------------------
+
+function formatInTimezone(utcTime: string, tz: string): string {
+  const [h, m] = utcTime.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return "--:--";
+  const ref = new Date(Date.UTC(2026, 0, 15, h, m));
+  return ref.toLocaleTimeString(undefined, {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function TimezoneHints({ utcTime }: { utcTime: string }) {
+  const pst = formatInTimezone(utcTime, "America/Los_Angeles");
+  const pht = formatInTimezone(utcTime, "Asia/Manila");
+  return (
+    <p className="text-xs text-muted-foreground">
+      {pst} PST &middot; {pht} PHT
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // View mode persistence
 // ---------------------------------------------------------------------------
 
@@ -153,6 +179,7 @@ function buildGroups(schedules: Schedule[]): ScheduleGroup[] {
 // ---------------------------------------------------------------------------
 
 interface ScheduleFormData {
+  name: string;
   client_ids: string[];
   api_source: ApiSource;
   report_type: string;
@@ -182,6 +209,7 @@ function ScheduleForm({
 }) {
   const isEdit = !!initialData;
 
+  const [name, setName] = useState(initialData?.name ?? "");
   const [clientIds, setClientIds] = useState<string[]>(initialData?.client_ids ?? []);
   const [apiSource, setApiSource] = useState<ApiSource>(initialData?.api_source ?? "sp_api");
   const [reportType, setReportType] = useState(initialData?.report_type ?? "");
@@ -236,6 +264,7 @@ function ScheduleForm({
           if (adsConfig.timeUnit) reportParams.timeUnit = adsConfig.timeUnit;
         }
         onSubmit({
+          name: name.trim(),
           client_ids: clientIds,
           api_source: apiSource,
           report_type: reportType,
@@ -252,6 +281,15 @@ function ScheduleForm({
       }}
       className="space-y-4 max-h-[70vh] overflow-y-auto pr-1"
     >
+      <div className="space-y-2">
+        <Label>Schedule Name</Label>
+        <Input
+          placeholder="e.g. Month to Date, Weekly WoW"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </div>
+
       <MultiSelectDropdown
         label="Clients"
         options={clientOptions}
@@ -296,6 +334,7 @@ function ScheduleForm({
                 value={scheduleTime}
                 onChange={(e) => setScheduleTime(e.target.value)}
               />
+              <TimezoneHints utcTime={scheduleTime} />
             </div>
           )}
         </div>
@@ -453,6 +492,7 @@ function ScheduleTable({
       <TableHeader>
         <TableRow>
           <TableHead>Active</TableHead>
+          <TableHead>Name</TableHead>
           <TableHead>Clients</TableHead>
           <TableHead>Source</TableHead>
           <TableHead>Report Type</TableHead>
@@ -473,6 +513,9 @@ function ScheduleTable({
                 checked={sched.is_active}
                 onCheckedChange={() => onToggleActive(sched)}
               />
+            </TableCell>
+            <TableCell className="font-medium max-w-[140px] truncate" title={sched.name || "-"}>
+              {sched.name || <span className="text-muted-foreground">-</span>}
             </TableCell>
             <TableCell className="font-medium max-w-[140px] truncate" title={resolveClientNames(sched)}>
               {resolveClientNames(sched)}
@@ -568,7 +611,14 @@ export function Schedules() {
   const clientMap = new Map((clients ?? []).map((c) => [c.id, c.name]));
   const activeClients = (clients ?? []).filter((c) => c.is_active);
 
-  const groups = useMemo(() => buildGroups(schedules ?? []), [schedules]);
+  const sortedSchedules = useMemo(
+    () => [...(schedules ?? [])].sort((a, b) =>
+      (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+    ),
+    [schedules],
+  );
+
+  const groups = useMemo(() => buildGroups(sortedSchedules), [sortedSchedules]);
 
   const allGroupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
   const allExpanded = openGroups.length === allGroupKeys.length;
@@ -811,7 +861,7 @@ export function Schedules() {
       </div>
 
       {/* Content */}
-      {!schedules?.length ? (
+      {!sortedSchedules.length ? (
         <Card>
           <CardContent className="pt-6">
             <EmptyState
@@ -834,7 +884,7 @@ export function Schedules() {
           </CardHeader>
           <CardContent>
             <ScheduleTable
-              schedules={schedules}
+              schedules={sortedSchedules}
               showFolderColumn
               resolveClientNames={resolveClientNames}
               formatFrequencyLabel={formatFrequencyLabel}

@@ -16,17 +16,16 @@ def get_environment() -> str:
 LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 
 MARKETPLACE_TO_REGION: dict[str, str] = {
-    "US": "na", "CA": "na", "MX": "na", "BR": "na",
+    "US": "na", "CA": "na", "MX": "na",
     "UK": "eu", "DE": "eu", "FR": "eu", "IT": "eu",
     "ES": "eu", "NL": "eu", "SE": "eu", "PL": "eu", "TR": "eu",
-    "JP": "fe", "AU": "fe", "IN": "fe", "SG": "fe",
+    "AU": "fe", "SG": "fe",
 }
 
 MARKETPLACE_TIMEZONES: dict[str, str] = {
     "US": "America/Los_Angeles",
     "CA": "America/Los_Angeles",
     "MX": "America/Los_Angeles",
-    "BR": "America/Sao_Paulo",
     "UK": "Europe/London",
     "DE": "Europe/Paris",
     "FR": "Europe/Paris",
@@ -36,9 +35,7 @@ MARKETPLACE_TIMEZONES: dict[str, str] = {
     "SE": "Europe/Paris",
     "PL": "Europe/Paris",
     "TR": "Europe/Istanbul",
-    "JP": "Asia/Tokyo",
     "AU": "Australia/Sydney",
-    "IN": "Asia/Kolkata",
     "SG": "Asia/Singapore",
 }
 
@@ -63,9 +60,7 @@ MARKETPLACE_IDS: dict[str, str] = {
     "FR": "A13V1IB3VIYZZH",
     "IT": "APJ6JRA9NG5V4",
     "ES": "A1RKKUPIHCS9HS",
-    "JP": "A1VC38T7YXB528",
     "AU": "A39IBJ37TRP1C6",
-    "IN": "A21TJRUUN4KGV",
 }
 
 

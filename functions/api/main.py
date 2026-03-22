@@ -315,6 +315,7 @@ def create_schedule_route():
         if tf_error:
             return flask.jsonify({"error": tf_error, "code": "INVALID_REQUEST"}), 400
 
+    data.setdefault("name", "")
     data.setdefault("folder_name", "")
     data.setdefault("subfolder_strategy", "date")
     data.setdefault("reconciliation_days", [3, 7])

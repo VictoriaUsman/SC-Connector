@@ -36,6 +36,7 @@ export interface Timeframe {
 
 export interface Schedule {
   id: string;
+  name?: string;
   client_ids: string[];
   api_source: ApiSource;
   report_type: string;
@@ -121,15 +122,12 @@ export const MARKETPLACES: { id: string; label: string; flag: string }[] = [
   { id: "US", label: "United States", flag: "\u{1F1FA}\u{1F1F8}" },
   { id: "CA", label: "Canada", flag: "\u{1F1E8}\u{1F1E6}" },
   { id: "MX", label: "Mexico", flag: "\u{1F1F2}\u{1F1FD}" },
-  { id: "BR", label: "Brazil", flag: "\u{1F1E7}\u{1F1F7}" },
   { id: "UK", label: "United Kingdom", flag: "\u{1F1EC}\u{1F1E7}" },
   { id: "DE", label: "Germany", flag: "\u{1F1E9}\u{1F1EA}" },
   { id: "FR", label: "France", flag: "\u{1F1EB}\u{1F1F7}" },
   { id: "IT", label: "Italy", flag: "\u{1F1EE}\u{1F1F9}" },
   { id: "ES", label: "Spain", flag: "\u{1F1EA}\u{1F1F8}" },
-  { id: "JP", label: "Japan", flag: "\u{1F1EF}\u{1F1F5}" },
   { id: "AU", label: "Australia", flag: "\u{1F1E6}\u{1F1FA}" },
-  { id: "IN", label: "India", flag: "\u{1F1EE}\u{1F1F3}" },
 ];
 
 export const SP_REPORT_TYPES = [
