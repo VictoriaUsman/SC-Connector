@@ -253,26 +253,24 @@ def build_folder_path(
 ) -> tuple[str, str]:
     """Walk/create the folder hierarchy in Google Drive.
 
-    When folder_name is set, the path is:
-        {root} / {folder_name} / {YYYY-MM-DD}  (if subfolder_strategy == "date")
-        {root} / {folder_name}                  (if subfolder_strategy == "none")
+    The standard layout is always:
+        {YYYY-MM-DD} / {client_name} / {marketplace} / {report_type}
 
-    When folder_name is empty (default), uses date-first layout:
-        {root} / {YYYY-MM-DD} / {client_name} / {marketplace} / {report_type}
+    When folder_name is set it acts as a prefix:
+        {folder_name} / {YYYY-MM-DD} / {client_name} / {marketplace} / {report_type}
+
+    subfolder_strategy == "none" drops the date segment:
+        {folder_name} / {client_name} / {marketplace} / {report_type}   (custom)
+        {client_name} / {marketplace} / {report_type}                    (default)
 
     Returns (folder_id, human_readable_path).
     """
+    parts: list[str] = []
     if folder_name:
-        parts = [folder_name]
-        if subfolder_strategy == "date":
-            parts.append(report_date.isoformat())
-    else:
-        parts = [
-            report_date.isoformat(),
-            client_name,
-            marketplace,
-            report_type,
-        ]
+        parts.append(folder_name)
+    if subfolder_strategy != "none":
+        parts.append(report_date.isoformat())
+    parts.extend([client_name, marketplace, report_type])
 
     current = root_folder_id
     path_so_far: list[str] = []

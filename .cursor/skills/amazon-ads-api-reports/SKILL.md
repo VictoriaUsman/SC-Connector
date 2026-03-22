@@ -123,7 +123,7 @@ Returns status and, when complete, `url`:
 ```json
 {
   "reportId": "amzn1.ads.report.abc123",
-  "status": "SUCCESS",
+  "status": "COMPLETED",
   "url": "https://advertising-api.amazon.com/reporting/download/..."
 }
 ```
@@ -163,19 +163,30 @@ If you hit 429, back off exponentially starting at 1 second.
 
 ## Status Values
 
-| Ads API Status | Our Normalized Status |
-|----------------|-----------------------|
-| IN_PROGRESS    | pending               |
-| SUCCESS        | ready                 |
-| FAILURE        | failed                |
+The Ads API v3 returns different statuses depending on the endpoint version. The SDK
+may surface either set, so we map all known values:
+
+| Ads API Status | Our Normalized Status | Notes                    |
+|----------------|-----------------------|--------------------------|
+| PENDING        | pending               | v3 — queued              |
+| PROCESSING     | pending               | v3 — generating          |
+| IN_PROGRESS    | pending               | v2/legacy                |
+| COMPLETED      | ready                 | v3 — download available  |
+| SUCCESS        | ready                 | v2/legacy                |
+| FAILED         | failed                | v3                       |
+| FAILURE        | failed                | v2/legacy                |
 
 ### Normalization Code
 
 ```python
 ADS_API_STATUS_MAP = {
+    "PENDING": "pending",
+    "PROCESSING": "pending",
     "IN_PROGRESS": "pending",
+    "COMPLETED": "ready",
     "SUCCESS": "ready",
     "FAILURE": "failed",
+    "FAILED": "failed",
 }
 
 def normalize_ads_status(raw_status: str) -> str:

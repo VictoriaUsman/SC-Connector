@@ -5,6 +5,7 @@ export interface Client {
   is_active: boolean;
   sp_api_secret_name?: string;
   ads_api_secret_name?: string;
+  ads_profile_id?: string;
   created_at?: string;
   updated_at?: string;
 }

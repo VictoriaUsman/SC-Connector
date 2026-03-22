@@ -25,7 +25,7 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 
 **Secrets**: GCP Secret Manager stores Amazon credentials (LWA refresh tokens, Ads API tokens). Secret naming: `kalilos-{env}-{service}-{client}` (e.g., `kalilos-prod-sp-api-acme`).
 
-**Report Storage**: Google Drive via a GCP service account with native IAM. Default folder layout is date-first: `{root}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`. Custom folder names and subfolder strategies can be configured per schedule. Folder creation is coordinated across concurrent workflow executions using Firestore-based distributed locks (`_drive_folder_locks` collection) to prevent duplicate folders from Drive's eventually-consistent search API.
+**Report Storage**: Google Drive via a GCP service account with native IAM. Default folder layout is date-first: `{root}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`. A custom `folder_name` acts as a prefix: `{root}/{folder_name}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`. Setting `subfolder_strategy` to "none" drops the date segment. Folder creation is coordinated across concurrent workflow executions using Firestore-based distributed locks (`_drive_folder_locks` collection) to prevent duplicate folders from Drive's eventually-consistent search API.
 
 **Frontend**: React + Vite + shadcn/ui on Firebase Hosting. Uses Firestore real-time listeners for live job status. Calls an API Gateway backed by a Cloud Function for mutations. The Schedules page supports inline editing (Edit dialog) and immediate triggering (Run Now) from the row dropdown menu.
 
@@ -220,7 +220,8 @@ Unified workflow launch helpers used by the scheduler, API on-demand triggers, a
 Google Drive folder hierarchy and upload:
 - **Folder date = execution date** (when the report was created), not the report data date. The `execution_date` is computed once at launch time and threaded through the workflow payload, ensuring all marketplace workflows from the same run target the same folder
 - **Default path**: `{root}/{execution_date}/{client}/{marketplace}/{report_type}/`
-- **Custom folder**: `{root}/{folder_name}/{optional execution_date}/`
+- **Custom folder** (prefix): `{root}/{folder_name}/{execution_date}/{client}/{marketplace}/{report_type}/`
+- **subfolder_strategy "none"** drops the date segment from either layout
 - `build_folder_path()` returns `(folder_id, human_readable_path)`. Runs `_assert_no_duplicates()` on every folder segment as a runtime dedup guard
 - Filename uses the **report data date** (not execution date): `{report_type}_{date}_{client}_{marketplace}.{ext}` for single-day, `{report_type}_{start}_to_{end}_{client}_{marketplace}.{ext}` for ranges
 - **Concurrent folder creation** (4-layer defense):

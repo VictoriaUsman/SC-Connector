@@ -87,7 +87,7 @@ export const api = {
     ),
   getSpApiAuthUrl: (clientId: string) => `${BASE_URL}/oauth/sp-api/authorize?client_id=${clientId}`,
   getAdsApiAuthUrl: (clientId: string) => `${BASE_URL}/oauth/ads-api/authorize?client_id=${clientId}`,
-  connectManual: (clientId: string, data: { api_source: string; refresh_token: string; profile_id?: string }) =>
+  connectManual: (clientId: string, data: { api_source: string; refresh_token?: string; profile_id?: string }) =>
     request<{ id: string; api_source: string; status: string }>(`/clients/${clientId}/connect`, {
       method: "POST",
       body: JSON.stringify(data),

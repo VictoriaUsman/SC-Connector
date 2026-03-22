@@ -164,6 +164,7 @@ export function Clients() {
   const [connectOpen, setConnectOpen] = useState(false);
   const [connectTarget, setConnectTarget] = useState<{ client: Client; apiSource: "sp_api" | "ads_api" } | null>(null);
   const [connectToken, setConnectToken] = useState("");
+  const [connectProfileId, setConnectProfileId] = useState("");
   const [connectLoading, setConnectLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -223,21 +224,28 @@ export function Clients() {
   const openManualConnect = (client: Client, apiSource: "sp_api" | "ads_api") => {
     setConnectTarget({ client, apiSource });
     setConnectToken("");
+    setConnectProfileId("");
     setConnectOpen(true);
   };
 
   const handleManualConnect = async () => {
-    if (!connectTarget || !connectToken.trim()) return;
+    if (!connectTarget) return;
+    const isSpApi = connectTarget.apiSource === "sp_api";
+    if (isSpApi && !connectToken.trim()) return;
+    if (!isSpApi && !connectProfileId.trim()) return;
     setConnectLoading(true);
     try {
       await api.connectManual(connectTarget.client.id, {
         api_source: connectTarget.apiSource,
-        refresh_token: connectToken.trim(),
+        ...(isSpApi
+          ? { refresh_token: connectToken.trim() }
+          : { profile_id: connectProfileId.trim() }),
       });
-      toast.success(`${connectTarget.apiSource === "sp_api" ? "SP API" : "Ads API"} connected successfully`);
+      toast.success(`${isSpApi ? "SP API" : "Ads API"} connected successfully`);
       setConnectOpen(false);
       setConnectTarget(null);
       setConnectToken("");
+      setConnectProfileId("");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Connection failed");
     } finally {
@@ -328,7 +336,7 @@ export function Clients() {
                           label="SP API"
                         />
                         <ConnectionStatus
-                          connected={!!client.ads_api_secret_name}
+                          connected={!!client.ads_profile_id}
                           label="Ads API"
                         />
                       </div>
@@ -368,7 +376,7 @@ export function Clients() {
                               </DropdownMenuItem>
                             </>
                           )}
-                          {!client.ads_api_secret_name && (
+                          {!client.ads_profile_id && (
                             <>
                               <DropdownMenuItem
                                 onClick={() => { window.location.href = api.getAdsApiAuthUrl(client.id); }}
@@ -435,25 +443,44 @@ export function Clients() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="refresh-token">Refresh Token</Label>
-              <Textarea
-                id="refresh-token"
-                value={connectToken}
-                onChange={(e) => setConnectToken(e.target.value)}
-                placeholder="Atzr|IwEBxxxxxxx..."
-                rows={4}
-                className="font-mono text-xs"
-              />
-              <p className="text-xs text-muted-foreground">
-                Paste the Amazon refresh token for this seller account. This will be stored securely in Secret Manager.
-              </p>
-            </div>
+            {connectTarget?.apiSource === "sp_api" ? (
+              <div className="space-y-2">
+                <Label htmlFor="refresh-token">Refresh Token</Label>
+                <Textarea
+                  id="refresh-token"
+                  value={connectToken}
+                  onChange={(e) => setConnectToken(e.target.value)}
+                  placeholder="Atzr|IwEBxxxxxxx..."
+                  rows={4}
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Paste the Amazon SP API refresh token for this seller account. This will be stored securely in Secret Manager.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="profile-id">Profile ID</Label>
+                <Input
+                  id="profile-id"
+                  value={connectProfileId}
+                  onChange={(e) => setConnectProfileId(e.target.value)}
+                  placeholder="1234567890"
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  The advertiser profile ID for this client. Find it in the Amazon Ads console under Account Settings.
+                </p>
+              </div>
+            )}
             <DialogFooter>
               <Button variant="outline" onClick={() => { setConnectOpen(false); setConnectTarget(null); }}>
                 Cancel
               </Button>
-              <Button onClick={handleManualConnect} disabled={connectLoading || !connectToken.trim()}>
+              <Button
+                onClick={handleManualConnect}
+                disabled={connectLoading || (connectTarget?.apiSource === "sp_api" ? !connectToken.trim() : !connectProfileId.trim())}
+              >
                 {connectLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Connect
               </Button>

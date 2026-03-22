@@ -41,7 +41,7 @@ def create_service_accounts(
     # --- Project-level roles for the functions SA ---
     for role in [
         "roles/datastore.user",           # Firestore read/write
-        "roles/secretmanager.secretAccessor",  # Read secrets
+        "roles/secretmanager.admin",       # Create/read/manage secrets (connect flow)
         "roles/workflows.invoker",         # Start workflow executions
         "roles/logging.logWriter",         # Cloud Logging
     ]:

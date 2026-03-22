@@ -209,30 +209,35 @@ def delete_client_route(client_id: str):
 
 @app.route("/clients/<client_id>/connect", methods=["POST"])
 def connect_client_manual(client_id: str):
-    """Manually connect a client's API credentials by pasting a refresh token."""
+    """Manually connect a client's API credentials.
+
+    SP API: stores refresh_token in Secret Manager.
+    Ads API: stores profile_id directly in Firestore (refresh_token lives
+    in the app-level secret).
+    """
     client = get_client(client_id)
     if not client:
         return flask.jsonify({"error": "Client not found", "code": "NOT_FOUND"}), 404
 
     data = flask.request.get_json(silent=True) or {}
     api_source = data.get("api_source")
-    refresh_token = data.get("refresh_token", "").strip()
 
     if api_source not in VALID_API_SOURCES:
         return flask.jsonify({"error": f"Invalid api_source, must be one of {VALID_API_SOURCES}", "code": "INVALID_REQUEST"}), 400
-    if not refresh_token:
-        return flask.jsonify({"error": "Missing refresh_token", "code": "INVALID_REQUEST"}), 400
 
     try:
-        secret_data: dict[str, str] = {"refresh_token": refresh_token}
-        if api_source == "ads_api":
-            profile_id = data.get("profile_id", "").strip()
-            if profile_id:
-                secret_data["profile_id"] = profile_id
+        if api_source == "sp_api":
+            refresh_token = data.get("refresh_token", "").strip()
+            if not refresh_token:
+                return flask.jsonify({"error": "Missing refresh_token", "code": "INVALID_REQUEST"}), 400
+            secret_name = _store_client_secret(client_id, api_source, {"refresh_token": refresh_token})
+            upsert_client(client_id, {"sp_api_secret_name": secret_name})
 
-        secret_name = _store_client_secret(client_id, api_source, secret_data)
-        field = "sp_api_secret_name" if api_source == "sp_api" else "ads_api_secret_name"
-        upsert_client(client_id, {field: secret_name})
+        elif api_source == "ads_api":
+            profile_id = data.get("profile_id", "").strip()
+            if not profile_id:
+                return flask.jsonify({"error": "Missing profile_id", "code": "INVALID_REQUEST"}), 400
+            upsert_client(client_id, {"ads_profile_id": profile_id})
 
         logger.info("Manual connect completed", extra={"client_id": client_id, "api_source": api_source})
         return flask.jsonify({"id": client_id, "api_source": api_source, "status": "connected"}), 200
@@ -660,10 +665,13 @@ def oauth_callback():
         tokens = token_resp.json()
 
         refresh_token = tokens["refresh_token"]
-        secret_data: dict[str, str] = {"refresh_token": refresh_token}
 
-        if api_source == "ads_api":
+        if api_source == "sp_api":
+            secret_name = _store_client_secret(client_id, api_source, {"refresh_token": refresh_token})
+            upsert_client(client_id, {"sp_api_secret_name": secret_name})
+        elif api_source == "ads_api":
             access_token = tokens["access_token"]
+            update_fields: dict[str, str] = {}
             try:
                 profiles_resp = requests.get(
                     "https://advertising-api.amazon.com/v2/profiles",
@@ -676,15 +684,10 @@ def oauth_callback():
                 profiles_resp.raise_for_status()
                 profiles = profiles_resp.json()
                 if profiles:
-                    secret_data["profile_id"] = str(profiles[0]["profileId"])
-                    secret_data["profiles"] = json.dumps(profiles)
+                    update_fields["ads_profile_id"] = str(profiles[0]["profileId"])
             except Exception as exc:
-                logger.warning("Profile discovery failed, storing token anyway", extra={"error": str(exc)})
-
-        secret_name = _store_client_secret(client_id, api_source, secret_data)
-
-        field = "sp_api_secret_name" if api_source == "sp_api" else "ads_api_secret_name"
-        upsert_client(client_id, {field: secret_name})
+                logger.warning("Profile discovery failed during OAuth", extra={"error": str(exc)})
+            upsert_client(client_id, update_fields)
 
         logger.info("OAuth completed", extra={"client_id": client_id, "api_source": api_source})
         return flask.redirect(f"{_get_frontend_url()}/clients?oauth=success&api_source={api_source}&client_id={client_id}")
@@ -703,7 +706,7 @@ def oauth_status(client_id: str):
     return flask.jsonify({
         "client_id": client_id,
         "sp_api_connected": bool(client.get("sp_api_secret_name")),
-        "ads_api_connected": bool(client.get("ads_api_secret_name")),
+        "ads_api_connected": bool(client.get("ads_profile_id")),
     }), 200
 
 

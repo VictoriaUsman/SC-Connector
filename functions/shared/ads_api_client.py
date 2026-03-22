@@ -16,9 +16,13 @@ from ad_api.base import Marketplaces
 logger = logging.getLogger(__name__)
 
 ADS_API_STATUS_MAP = {
+    "PENDING": "pending",
+    "PROCESSING": "pending",
     "IN_PROGRESS": "pending",
+    "COMPLETED": "ready",
     "SUCCESS": "ready",
     "FAILURE": "failed",
+    "FAILED": "failed",
 }
 
 _MARKETPLACE_ENUM: dict[str, Marketplaces] = {
@@ -58,7 +62,10 @@ def get_report(credentials: dict, marketplace: str, report_id: str) -> dict:
 
 def download_report(credentials: dict, marketplace: str, download_url: str) -> bytes:
     """Download and decompress a completed Ads report (always GZIP JSON)."""
-    resp = _client(credentials, marketplace).download_report(url=download_url)
-    if isinstance(resp, bytes):
-        return gzip.decompress(resp)
-    return gzip.decompress(resp.encode("utf-8"))
+    resp = _client(credentials, marketplace).download_report(url=download_url, format="raw")
+    payload = resp.payload if hasattr(resp, "payload") else resp
+    if isinstance(payload, bytes):
+        if payload[:2] == b"\x1f\x8b":
+            return gzip.decompress(payload)
+        return payload
+    return gzip.decompress(payload.encode("utf-8"))

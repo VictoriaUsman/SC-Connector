@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -40,6 +40,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { EmptyState } from "@/components/empty-state";
 import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import { FolderConfig } from "@/components/folder-config";
@@ -70,8 +76,77 @@ import {
   Settings2,
   Pencil,
   Play,
+  List,
+  FolderOpen,
+  Inbox,
+  ChevronsUpDown,
 } from "lucide-react";
 import { toast } from "sonner";
+
+// ---------------------------------------------------------------------------
+// View mode persistence
+// ---------------------------------------------------------------------------
+
+type ViewMode = "list" | "grouped";
+const VIEW_MODE_KEY = "schedules-view-mode";
+
+function getPersistedViewMode(): ViewMode {
+  try {
+    const v = localStorage.getItem(VIEW_MODE_KEY);
+    return v === "grouped" ? "grouped" : "list";
+  } catch {
+    return "list";
+  }
+}
+
+function persistViewMode(mode: ViewMode) {
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, mode);
+  } catch { /* noop */ }
+}
+
+// ---------------------------------------------------------------------------
+// Grouped schedule helpers
+// ---------------------------------------------------------------------------
+
+const DEFAULT_GROUP_KEY = "__default__";
+const DEFAULT_GROUP_LABEL = "Default Layout";
+
+interface ScheduleGroup {
+  key: string;
+  label: string;
+  isDefault: boolean;
+  schedules: Schedule[];
+  activeCount: number;
+}
+
+function buildGroups(schedules: Schedule[]): ScheduleGroup[] {
+  const map = new Map<string, Schedule[]>();
+  for (const s of schedules) {
+    const key = s.folder_name?.trim() || DEFAULT_GROUP_KEY;
+    const arr = map.get(key);
+    if (arr) arr.push(s);
+    else map.set(key, [s]);
+  }
+
+  const groups: ScheduleGroup[] = [];
+  for (const [key, items] of map) {
+    groups.push({
+      key,
+      label: key === DEFAULT_GROUP_KEY ? DEFAULT_GROUP_LABEL : key,
+      isDefault: key === DEFAULT_GROUP_KEY,
+      schedules: items,
+      activeCount: items.filter((s) => s.is_active).length,
+    });
+  }
+
+  groups.sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? 1 : -1;
+    return a.label.localeCompare(b.label);
+  });
+
+  return groups;
+}
 
 // ---------------------------------------------------------------------------
 // Schedule Form (supports both create and edit)
@@ -351,6 +426,128 @@ function ScheduleForm({
 }
 
 // ---------------------------------------------------------------------------
+// Schedule Table (reused in flat and grouped views)
+// ---------------------------------------------------------------------------
+
+function ScheduleTable({
+  schedules,
+  showFolderColumn,
+  resolveClientNames,
+  formatFrequencyLabel,
+  onToggleActive,
+  onTriggerNow,
+  onEdit,
+  onDelete,
+}: {
+  schedules: Schedule[];
+  showFolderColumn: boolean;
+  resolveClientNames: (s: Schedule) => string;
+  formatFrequencyLabel: (s: Schedule) => string;
+  onToggleActive: (s: Schedule) => void;
+  onTriggerNow: (s: Schedule) => void;
+  onEdit: (s: Schedule) => void;
+  onDelete: (s: Schedule) => void;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Active</TableHead>
+          <TableHead>Clients</TableHead>
+          <TableHead>Source</TableHead>
+          <TableHead>Report Type</TableHead>
+          <TableHead>Marketplaces</TableHead>
+          <TableHead>Schedule</TableHead>
+          <TableHead>Timeframe</TableHead>
+          {showFolderColumn && <TableHead>Folder</TableHead>}
+          <TableHead>Last Run</TableHead>
+          <TableHead>Next Run</TableHead>
+          <TableHead className="w-10" />
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {schedules.map((sched) => (
+          <TableRow key={sched.id} className={sched.is_active ? "" : "opacity-50"}>
+            <TableCell>
+              <Switch
+                checked={sched.is_active}
+                onCheckedChange={() => onToggleActive(sched)}
+              />
+            </TableCell>
+            <TableCell className="font-medium max-w-[140px] truncate" title={resolveClientNames(sched)}>
+              {resolveClientNames(sched)}
+            </TableCell>
+            <TableCell>{formatApiSource(sched.api_source)}</TableCell>
+            <TableCell className="max-w-[180px] truncate" title={sched.report_type}>
+              {formatReportType(sched.report_type)}
+            </TableCell>
+            <TableCell>
+              {(sched.marketplaces ?? []).length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {(sched.marketplaces ?? []).map((m: string) => (
+                    <Badge key={m} variant="secondary" className="text-xs">
+                      {m}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <span className="text-muted-foreground">-</span>
+              )}
+            </TableCell>
+            <TableCell className="text-xs max-w-[160px]">
+              {formatFrequencyLabel(sched)}
+            </TableCell>
+            <TableCell className="text-xs max-w-[140px] truncate" title={formatTimeframeLabel(sched.timeframe)}>
+              {formatTimeframeLabel(sched.timeframe)}
+            </TableCell>
+            {showFolderColumn && (
+              <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate" title={sched.folder_name || "default"}>
+                {sched.folder_name || "default"}
+              </TableCell>
+            )}
+            <TableCell className="text-muted-foreground">
+              {formatDate(sched.last_run_at)}
+            </TableCell>
+            <TableCell className="text-muted-foreground">
+              {formatDate(sched.next_run_at)}
+            </TableCell>
+            <TableCell>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button variant="ghost" size="icon" className="h-8 w-8">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => onTriggerNow(sched)}>
+                    <Play className="mr-2 h-4 w-4" />
+                    Run Now
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onEdit(sched)}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => onDelete(sched)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Schedules Page
 // ---------------------------------------------------------------------------
 
@@ -365,17 +562,33 @@ export function Schedules() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Schedule | null>(null);
 
+  const [viewMode, setViewMode] = useState<ViewMode>(getPersistedViewMode);
+  const [openGroups, setOpenGroups] = useState<string[]>([]);
+
   const clientMap = new Map((clients ?? []).map((c) => [c.id, c.name]));
   const activeClients = (clients ?? []).filter((c) => c.is_active);
+
+  const groups = useMemo(() => buildGroups(schedules ?? []), [schedules]);
+
+  const allGroupKeys = useMemo(() => groups.map((g) => g.key), [groups]);
+  const allExpanded = openGroups.length === allGroupKeys.length;
+
+  const toggleViewMode = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    persistViewMode(mode);
+    if (mode === "grouped") {
+      setOpenGroups(allGroupKeys);
+    }
+  }, [allGroupKeys]);
+
+  const toggleExpandAll = useCallback(() => {
+    setOpenGroups(allExpanded ? [] : allGroupKeys);
+  }, [allExpanded, allGroupKeys]);
 
   const resolveClientNames = (sched: Schedule) => {
     const ids = sched.client_ids ?? [];
     if (!ids.length) return "-";
     return ids.map((id) => clientMap.get(id) ?? id).join(", ");
-  };
-
-  const resolveMarketplaces = (sched: Schedule): string[] => {
-    return sched.marketplaces ?? [];
   };
 
   const handleToggleActive = (schedule: Schedule) => {
@@ -397,12 +610,15 @@ export function Schedules() {
     });
   };
 
-  const handleTriggerNow = (schedule: Schedule) => {
+  const computeJobCount = (schedule: Schedule) => {
     const mktCount = (schedule.marketplaces ?? []).length;
     const clientCount = (schedule.client_ids ?? []).length;
     const reconCount = (schedule.reconciliation_days ?? []).length + 1;
-    const totalJobs = clientCount * mktCount * reconCount;
+    return clientCount * mktCount * reconCount;
+  };
 
+  const handleTriggerNow = (schedule: Schedule) => {
+    const totalJobs = computeJobCount(schedule);
     if (!confirm(`Run now? This will launch ${totalJobs} job${totalJobs > 1 ? "s" : ""} immediately.`)) return;
 
     triggerSchedule.mutate(schedule.id, {
@@ -413,6 +629,39 @@ export function Schedules() {
       },
       onError: (err) => toast.error(err.message),
     });
+  };
+
+  const handleTriggerGroup = (group: ScheduleGroup) => {
+    const activeSchedules = group.schedules.filter((s) => s.is_active);
+    if (!activeSchedules.length) {
+      toast.error("No active schedules in this folder");
+      return;
+    }
+    const totalJobs = activeSchedules.reduce((sum, s) => sum + computeJobCount(s), 0);
+    if (!confirm(
+      `Run all ${activeSchedules.length} active schedule${activeSchedules.length > 1 ? "s" : ""} in "${group.label}"?\n\nThis will launch ${totalJobs} job${totalJobs > 1 ? "s" : ""} immediately.`
+    )) return;
+
+    let started = 0;
+    let failed = 0;
+    for (const sched of activeSchedules) {
+      triggerSchedule.mutate(sched.id, {
+        onSuccess: (result) => {
+          started += result.jobs_started;
+          if (started + failed === activeSchedules.length) {
+            toast.success(`Triggered ${started} job${started !== 1 ? "s" : ""} across ${activeSchedules.length} schedule${activeSchedules.length > 1 ? "s" : ""}`, {
+              description: "Check the Dashboard for progress",
+            });
+          }
+        },
+        onError: () => {
+          failed++;
+          if (started + failed === activeSchedules.length) {
+            toast.error(`${failed} schedule${failed > 1 ? "s" : ""} failed to trigger`);
+          }
+        },
+      });
+    }
   };
 
   const handleEdit = (schedule: Schedule, data: ScheduleFormData) => {
@@ -503,29 +752,68 @@ export function Schedules() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex items-center gap-3">
-        <Label className="text-sm text-muted-foreground">Filter by client:</Label>
-        <Select value={filterClient} onValueChange={(v) => setFilterClient(v === "all" ? "" : (v ?? ""))}>
-          <SelectTrigger className="w-[200px]">
-            <SelectValue placeholder="All clients" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All clients</SelectItem>
-            {(clients ?? []).map((c) => (
-              <SelectItem key={c.id} value={c.id}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Toolbar: filter + view toggle */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Label className="text-sm text-muted-foreground">Filter by client:</Label>
+          <Select value={filterClient} onValueChange={(v) => setFilterClient(v === "all" ? "" : (v ?? ""))}>
+            <SelectTrigger className="w-[200px]">
+              <SelectValue placeholder="All clients" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All clients</SelectItem>
+              {(clients ?? []).map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {viewMode === "grouped" && (schedules?.length ?? 0) > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggleExpandAll}
+              className="text-xs text-muted-foreground gap-1.5"
+            >
+              <ChevronsUpDown className="h-3.5 w-3.5" />
+              {allExpanded ? "Collapse All" : "Expand All"}
+            </Button>
+          )}
+          <div className="flex items-center rounded-lg border bg-muted p-0.5">
+            <button
+              onClick={() => toggleViewMode("list")}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                viewMode === "list"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <List className="h-3.5 w-3.5" />
+              List
+            </button>
+            <button
+              onClick={() => toggleViewMode("grouped")}
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                viewMode === "grouped"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Grouped
+            </button>
+          </div>
+        </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Report Schedules</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {!schedules?.length ? (
+      {/* Content */}
+      {!schedules?.length ? (
+        <Card>
+          <CardContent className="pt-6">
             <EmptyState
               icon={CalendarClock}
               title="No schedules"
@@ -537,103 +825,83 @@ export function Schedules() {
                 </Button>
               }
             />
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Active</TableHead>
-                  <TableHead>Clients</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Report Type</TableHead>
-                  <TableHead>Marketplaces</TableHead>
-                  <TableHead>Schedule</TableHead>
-                  <TableHead>Timeframe</TableHead>
-                  <TableHead>Folder</TableHead>
-                  <TableHead>Last Run</TableHead>
-                  <TableHead>Next Run</TableHead>
-                  <TableHead className="w-10" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {schedules.map((sched) => (
-                  <TableRow key={sched.id} className={sched.is_active ? "" : "opacity-50"}>
-                    <TableCell>
-                      <Switch
-                        checked={sched.is_active}
-                        onCheckedChange={() => handleToggleActive(sched)}
-                      />
-                    </TableCell>
-                    <TableCell className="font-medium max-w-[140px] truncate" title={resolveClientNames(sched)}>
-                      {resolveClientNames(sched)}
-                    </TableCell>
-                    <TableCell>{formatApiSource(sched.api_source)}</TableCell>
-                    <TableCell className="max-w-[180px] truncate" title={sched.report_type}>
-                      {formatReportType(sched.report_type)}
-                    </TableCell>
-                    <TableCell>
-                      {resolveMarketplaces(sched).length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {resolveMarketplaces(sched).map((m: string) => (
-                            <Badge key={m} variant="secondary" className="text-xs">
-                              {m}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-xs max-w-[160px]">
-                      {formatFrequencyLabel(sched)}
-                    </TableCell>
-                    <TableCell className="text-xs max-w-[140px] truncate" title={formatTimeframeLabel(sched.timeframe)}>
-                      {formatTimeframeLabel(sched.timeframe)}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate" title={sched.folder_name || "default"}>
-                      {sched.folder_name || "default"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {formatDate(sched.last_run_at)}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {formatDate(sched.next_run_at)}
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger
-                          render={
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          }
-                        />
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => handleTriggerNow(sched)}>
-                            <Play className="mr-2 h-4 w-4" />
-                            Run Now
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setEditTarget(sched)}>
-                            <Pencil className="mr-2 h-4 w-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onClick={() => handleDelete(sched)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : viewMode === "list" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Report Schedules</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScheduleTable
+              schedules={schedules}
+              showFolderColumn
+              resolveClientNames={resolveClientNames}
+              formatFrequencyLabel={formatFrequencyLabel}
+              onToggleActive={handleToggleActive}
+              onTriggerNow={handleTriggerNow}
+              onEdit={setEditTarget}
+              onDelete={handleDelete}
+            />
+          </CardContent>
+        </Card>
+      ) : (
+        <Accordion
+          multiple
+          value={openGroups}
+          onValueChange={setOpenGroups}
+          className="space-y-3"
+        >
+          {groups.map((group) => (
+            <AccordionItem
+              key={group.key}
+              value={group.key}
+              className="rounded-lg border bg-card shadow-sm not-last:border-b"
+            >
+              <AccordionTrigger className="px-4 py-3 hover:no-underline">
+                <div className="flex flex-1 items-center gap-3 mr-2">
+                  {group.isDefault ? (
+                    <Inbox className="h-4 w-4 text-muted-foreground shrink-0" />
+                  ) : (
+                    <FolderOpen className="h-4 w-4 text-muted-foreground shrink-0" />
+                  )}
+                  <span className="font-semibold text-sm">{group.label}</span>
+                  <Badge variant="secondary" className="text-xs tabular-nums">
+                    {group.schedules.length} schedule{group.schedules.length !== 1 ? "s" : ""}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {group.activeCount} active
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs gap-1.5 mr-2 shrink-0"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTriggerGroup(group);
+                  }}
+                >
+                  <Play className="h-3 w-3" />
+                  Run All
+                </Button>
+              </AccordionTrigger>
+              <AccordionContent className="px-4 pb-4">
+                <ScheduleTable
+                  schedules={group.schedules}
+                  showFolderColumn={false}
+                  resolveClientNames={resolveClientNames}
+                  formatFrequencyLabel={formatFrequencyLabel}
+                  onToggleActive={handleToggleActive}
+                  onTriggerNow={handleTriggerNow}
+                  onEdit={setEditTarget}
+                  onDelete={handleDelete}
+                />
+              </AccordionContent>
+            </AccordionItem>
+          ))}
+        </Accordion>
+      )}
     </div>
   );
 }
