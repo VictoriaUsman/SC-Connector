@@ -1,5 +1,40 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { FolderTree } from "lucide-react";
+
+function PathPreview({
+  folderName,
+  subfolderStrategy,
+}: {
+  folderName: string;
+  subfolderStrategy: "date" | "none";
+}) {
+  const root = "Google Drive";
+  const folder = folderName.trim();
+  const date = subfolderStrategy === "date" ? "YYYY-MM-DD" : null;
+
+  const segments = [
+    root,
+    folder || null,
+    date,
+    "{client}",
+    "{marketplace}",
+    "{report_type}",
+  ].filter(Boolean) as string[];
+
+  const filename = date
+    ? "{report}_{date}_{client}_{mkt}.tsv"
+    : "{report}_{date}_{client}_{mkt}.tsv";
+
+  return (
+    <div className="flex items-start gap-2 rounded-md bg-muted/50 border border-dashed px-3 py-2">
+      <FolderTree className="h-3.5 w-3.5 shrink-0 text-muted-foreground mt-0.5" />
+      <p className="text-xs text-muted-foreground font-mono leading-relaxed break-all">
+        {segments.join(" / ")} / <span className="text-foreground/70">{filename}</span>
+      </p>
+    </div>
+  );
+}
 
 export function FolderConfig({
   folderName,
@@ -51,6 +86,8 @@ export function FolderConfig({
           </label>
         </div>
       </div>
+
+      <PathPreview folderName={folderName} subfolderStrategy={subfolderStrategy} />
     </div>
   );
 }
