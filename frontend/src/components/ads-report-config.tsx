@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -11,6 +11,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useAdsReportConfig } from "@/hooks/use-ads-report-config";
 import type { AdsReportConfig } from "@/types";
+import { ChevronRight, Settings2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export interface AdsReportParams {
   columns?: string[];
@@ -28,6 +30,7 @@ export function AdsReportConfigPanel({
 }) {
   const { data: configMap, isLoading } = useAdsReportConfig();
   const config: AdsReportConfig | undefined = configMap?.[reportType];
+  const [expanded, setExpanded] = useState(false);
 
   const allColumns = useMemo(() => {
     if (!config) return [];
@@ -49,6 +52,8 @@ export function AdsReportConfigPanel({
 
   const isSummary = (value.timeUnit ?? "DAILY") === "SUMMARY";
   const selectedColumns = value.columns ?? allColumns;
+  const allSelected = selectedColumns.length === allColumns.length;
+  const timeUnitLabel = (value.timeUnit ?? "DAILY") === "SUMMARY" ? "Summary" : "Daily";
 
   const toggleColumn = (col: string) => {
     const next = selectedColumns.includes(col)
@@ -102,55 +107,75 @@ export function AdsReportConfigPanel({
   };
 
   return (
-    <div className="space-y-3 rounded-md border p-3">
-      <div className="flex items-center justify-between">
-        <Label className="text-sm font-medium">Ads Report Configuration</Label>
-        <Badge variant="secondary" className="text-xs">
-          {config.adProduct.replace("SPONSORED_", "").toLowerCase()}
-        </Badge>
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-xs">Time Unit</Label>
-        <Select
-          value={value.timeUnit ?? "DAILY"}
-          onValueChange={(v) => {
-            const unit = v ?? undefined;
-            const cols = unit === "SUMMARY"
-              ? selectedColumns.filter((c) => c !== "date")
-              : selectedColumns;
-            onChange({ ...value, timeUnit: unit, columns: cols });
-          }}
-        >
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {config.timeUnits.map((tu) => (
-              <SelectItem key={tu} value={tu} className="text-xs">
-                {tu === "DAILY" ? "Daily (one row per day)" : "Summary (aggregated)"}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs">
-            Columns ({selectedColumns.length}/{allColumns.length})
-          </Label>
-        </div>
-        <div className="space-y-3 max-h-48 overflow-y-auto pr-1">
-          {renderColumnGroup(
-            "Dimensions",
-            isSummary
-              ? config.columns.dimensions.filter((c) => c !== "date")
-              : config.columns.dimensions,
+    <div className="rounded-md border">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/50 transition-colors rounded-md"
+      >
+        <ChevronRight
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+            expanded && "rotate-90",
           )}
-          {renderColumnGroup("Metrics", config.columns.metrics)}
+        />
+        <Settings2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-sm font-medium flex-1 truncate">
+          {config.adProduct.replace("SPONSORED_", "").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {allSelected ? "All" : `${selectedColumns.length}/${allColumns.length}`} columns
+        </span>
+        <Badge variant="outline" className="text-xs px-1.5 py-0 shrink-0">
+          {timeUnitLabel}
+        </Badge>
+      </button>
+
+      {expanded && (
+        <div className="space-y-3 px-3 pb-3 pt-1 border-t">
+          <div className="space-y-2">
+            <Label className="text-xs">Time Unit</Label>
+            <Select
+              value={value.timeUnit ?? "DAILY"}
+              onValueChange={(v) => {
+                const unit = v ?? undefined;
+                const cols = unit === "SUMMARY"
+                  ? selectedColumns.filter((c) => c !== "date")
+                  : selectedColumns;
+                onChange({ ...value, timeUnit: unit, columns: cols });
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {config.timeUnits.map((tu) => (
+                  <SelectItem key={tu} value={tu} className="text-xs">
+                    {tu === "DAILY" ? "Daily (one row per day)" : "Summary (aggregated)"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">
+                Columns ({selectedColumns.length}/{allColumns.length})
+              </Label>
+            </div>
+            <div className="space-y-3 max-h-48 overflow-y-auto pr-1">
+              {renderColumnGroup(
+                "Dimensions",
+                isSummary
+                  ? config.columns.dimensions.filter((c) => c !== "date")
+                  : config.columns.dimensions,
+              )}
+              {renderColumnGroup("Metrics", config.columns.metrics)}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

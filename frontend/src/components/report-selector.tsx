@@ -8,7 +8,10 @@ import {
 } from "@/components/ui/select";
 import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import { AdsReportConfigPanel, type AdsReportParams } from "@/components/ads-report-config";
+import { SpReportConfigPanel, type SpReportParams } from "@/components/sp-report-config";
+import { ReportColumnsPreview } from "@/components/report-columns-preview";
 import { formatReportType } from "@/lib/format";
+import { hasSpReportOptions } from "@/data/report-metadata";
 import {
   API_SOURCES,
   MARKETPLACES,
@@ -59,6 +62,12 @@ export function ReportSelector({
   const selectedAdsTypes = reportTypes.filter((rt) => isAdsReportType(rt));
 
   const handleSpChange = (ids: string[]) => {
+    const removed = selectedSpTypes.filter((rt) => !ids.includes(rt));
+    if (removed.length) {
+      const next = { ...reportParamsMap };
+      for (const rt of removed) delete next[rt];
+      onReportParamsMapChange(next);
+    }
     onReportTypesChange([...ids, ...selectedAdsTypes]);
   };
 
@@ -78,6 +87,15 @@ export function ReportSelector({
     if (params.timeUnit) entry.timeUnit = params.timeUnit;
     onReportParamsMapChange({ ...reportParamsMap, [rt]: entry });
   };
+
+  const handleSpParamsChange = (rt: string, params: SpReportParams) => {
+    const entry: Record<string, unknown> = {};
+    if (params.reportOptions) entry.reportOptions = params.reportOptions;
+    onReportParamsMapChange({ ...reportParamsMap, [rt]: entry });
+  };
+
+  const spTypesWithOptions = selectedSpTypes.filter(hasSpReportOptions);
+  const spTypesWithoutOptions = selectedSpTypes.filter((rt) => !hasSpReportOptions(rt));
 
   return (
     <>
@@ -106,12 +124,45 @@ export function ReportSelector({
       </div>
 
       {showSp && (
-        <MultiSelectDropdown
-          label={apiSource === "both" ? "SP API Report Types" : "Report Types"}
-          options={SP_REPORT_OPTIONS}
-          selected={selectedSpTypes}
-          onChange={handleSpChange}
-        />
+        <>
+          <MultiSelectDropdown
+            label={apiSource === "both" ? "SP API Report Types" : "Report Types"}
+            options={SP_REPORT_OPTIONS}
+            selected={selectedSpTypes}
+            onChange={handleSpChange}
+          />
+
+          {/* SP types with configurable options get a config panel */}
+          {spTypesWithOptions.map((rt) => (
+            <SpReportConfigPanel
+              key={rt}
+              reportType={rt}
+              value={(reportParamsMap[rt] as SpReportParams | undefined) ?? {}}
+              onChange={(params) => handleSpParamsChange(rt, params)}
+            />
+          ))}
+
+          {/* Column preview for SP types without config options */}
+          {spTypesWithoutOptions.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">
+                {spTypesWithoutOptions.length} report{spTypesWithoutOptions.length > 1 ? "s" : ""} selected — expand to preview columns
+              </p>
+              {spTypesWithoutOptions.map((rt) => (
+                <ReportColumnsPreview key={rt} reportType={rt} />
+              ))}
+            </div>
+          )}
+
+          {/* Column preview for SP types WITH options (shown below their config) */}
+          {spTypesWithOptions.length > 0 && (
+            <div className="space-y-1.5">
+              {spTypesWithOptions.map((rt) => (
+                <ReportColumnsPreview key={rt} reportType={rt} />
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {showAds && (
@@ -123,16 +174,23 @@ export function ReportSelector({
             onChange={handleAdsChange}
           />
 
-          {selectedAdsTypes.map((rt) => (
-            <AdsReportConfigPanel
-              key={rt}
-              reportType={rt}
-              value={
-                (reportParamsMap[rt] as AdsReportParams | undefined) ?? {}
-              }
-              onChange={(params) => handleAdsParamsChange(rt, params)}
-            />
-          ))}
+          {selectedAdsTypes.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">
+                Expand to customize columns and time unit (defaults to all columns, daily)
+              </p>
+              {selectedAdsTypes.map((rt) => (
+                <AdsReportConfigPanel
+                  key={rt}
+                  reportType={rt}
+                  value={
+                    (reportParamsMap[rt] as AdsReportParams | undefined) ?? {}
+                  }
+                  onChange={(params) => handleAdsParamsChange(rt, params)}
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
 
