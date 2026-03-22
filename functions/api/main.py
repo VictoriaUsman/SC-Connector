@@ -52,6 +52,14 @@ VALID_SCHEDULE_TYPES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SUBFOLDER_STRATEGIES = {"date", "none"}
 
 
+def _client_has_credentials(client: dict, api_source: str) -> bool:
+    if api_source == "sp_api":
+        return bool(client.get("sp_api_secret_name"))
+    if api_source == "ads_api":
+        return bool(client.get("ads_profile_id"))
+    return False
+
+
 def _validate_timeframe(timeframe: dict) -> str | None:
     """Return an error message if the timeframe config is invalid, or None if valid."""
     if not isinstance(timeframe, dict):
@@ -381,17 +389,25 @@ def trigger_schedule_route(schedule_id: str):
     if not client_ids or not marketplaces:
         return flask.jsonify({"error": "Schedule has no clients or marketplaces", "code": "INVALID_STATE"}), 400
 
+    api_source = schedule.get("api_source", "")
+    clients_by_id: dict[str, dict] = {}
     for cid in client_ids:
         client = get_client(cid)
         if not client or not client.get("is_active", True):
             return flask.jsonify({"error": f"Client '{cid}' not found or inactive", "code": "NOT_FOUND"}), 404
+        clients_by_id[cid] = client
 
     parent = get_workflow_parent()
     now = datetime.now(timezone.utc)
     job_ids: list[str] = []
+    skipped_clients: list[str] = []
     errors: list[dict[str, str]] = []
 
     for cid in client_ids:
+        if not _client_has_credentials(clients_by_id[cid], api_source):
+            skipped_clients.append(cid)
+            logger.info("Skipping client — missing credentials", extra={"client_id": cid, "api_source": api_source})
+            continue
         for marketplace in marketplaces:
             try:
                 ids = launch_for_marketplace(
@@ -405,12 +421,16 @@ def trigger_schedule_route(schedule_id: str):
 
     update_schedule(schedule_id, {"last_run_at": now, "updated_at": now})
 
-    logger.info("Manual schedule trigger", extra={"schedule_id": schedule_id, "jobs": len(job_ids), "errors": len(errors)})
+    logger.info("Manual schedule trigger", extra={
+        "schedule_id": schedule_id, "jobs": len(job_ids),
+        "skipped_clients": skipped_clients, "errors": len(errors),
+    })
     return flask.jsonify({
         "schedule_id": schedule_id,
         "status": "triggered",
         "jobs_started": len(job_ids),
         "job_ids": job_ids,
+        "skipped_clients": skipped_clients,
         "errors": len(errors),
     }), 201
 

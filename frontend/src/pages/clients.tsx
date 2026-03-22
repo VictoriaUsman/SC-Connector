@@ -68,6 +68,14 @@ function ConnectionStatus({ connected, label }: { connected: boolean; label: str
   );
 }
 
+interface ClientFormData {
+  id: string;
+  name: string;
+  marketplaces: string[];
+  sp_refresh_token?: string;
+  ads_profile_id?: string;
+}
+
 function ClientForm({
   initial,
   onSubmit,
@@ -75,15 +83,18 @@ function ClientForm({
   isPending,
 }: {
   initial?: Client;
-  onSubmit: (data: { id: string; name: string; marketplaces: string[] }) => void;
+  onSubmit: (data: ClientFormData) => void;
   onCancel: () => void;
   isPending: boolean;
 }) {
+  const isEdit = !!initial;
   const [id, setId] = useState(initial?.id ?? "");
   const [name, setName] = useState(initial?.name ?? "");
   const [selected, setSelected] = useState<Set<string>>(
     new Set(initial?.marketplaces ?? []),
   );
+  const [spToken, setSpToken] = useState("");
+  const [adsProfileId, setAdsProfileId] = useState("");
 
   const toggle = (mkt: string) => {
     const next = new Set(selected);
@@ -96,9 +107,15 @@ function ClientForm({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit({ id, name, marketplaces: [...selected] });
+        onSubmit({
+          id,
+          name,
+          marketplaces: [...selected],
+          ...(spToken.trim() && { sp_refresh_token: spToken.trim() }),
+          ...(adsProfileId.trim() && { ads_profile_id: adsProfileId.trim() }),
+        });
       }}
-      className="space-y-4"
+      className="space-y-4 max-h-[70vh] overflow-y-auto pr-1"
     >
       <div className="space-y-2">
         <Label htmlFor="client-id">Client ID</Label>
@@ -107,12 +124,15 @@ function ClientForm({
           value={id}
           onChange={(e) => setId(e.target.value)}
           placeholder="acme-corp"
-          disabled={!!initial}
+          disabled={isEdit}
           required
         />
+        <p className="text-xs text-muted-foreground">
+          {isEdit ? "Cannot be changed after creation." : "Unique identifier for this client (e.g. acme-corp). Cannot be changed later."}
+        </p>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="client-name">Name</Label>
+        <Label htmlFor="client-name">Display Name</Label>
         <Input
           id="client-name"
           value={name}
@@ -120,9 +140,12 @@ function ClientForm({
           placeholder="Acme Corporation"
           required
         />
+        <p className="text-xs text-muted-foreground">
+          Shown in schedules, reports, and Drive folder names.
+        </p>
       </div>
       <div className="space-y-2">
-        <Label>Marketplaces</Label>
+        <Label>Amazon Marketplaces</Label>
         <div className="flex flex-wrap gap-2">
           {MARKETPLACES.map((mkt) => (
             <button
@@ -139,14 +162,53 @@ function ClientForm({
             </button>
           ))}
         </div>
+        <p className="text-xs text-muted-foreground">
+          Select the Amazon marketplaces where this client sells. Credentials are configured below.
+        </p>
       </div>
+
+      {!isEdit && (
+        <div className="space-y-3 rounded-md border p-3">
+          <p className="text-sm font-medium">API Integrations <span className="text-xs font-normal text-muted-foreground">(optional — can be added later)</span></p>
+
+          <div className="space-y-2">
+            <Label htmlFor="sp-token" className="text-xs">SP API Refresh Token</Label>
+            <Textarea
+              id="sp-token"
+              value={spToken}
+              onChange={(e) => setSpToken(e.target.value)}
+              placeholder="Atzr|IwEBxxxxxxx..."
+              rows={2}
+              className="font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Amazon Selling Partner API refresh token. Stored securely in Secret Manager.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="ads-profile" className="text-xs">Ads API Profile ID</Label>
+            <Input
+              id="ads-profile"
+              value={adsProfileId}
+              onChange={(e) => setAdsProfileId(e.target.value)}
+              placeholder="1234567890"
+              className="font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              Amazon Advertising profile ID. Found in the Ads console under Account Settings.
+            </p>
+          </div>
+        </div>
+      )}
+
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending || !id || !name}>
           {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {initial ? "Update" : "Create"}
+          {isEdit ? "Update" : "Create"}
         </Button>
       </DialogFooter>
     </form>
@@ -181,18 +243,36 @@ export function Clients() {
     }
   }, [searchParams, setSearchParams]);
 
-  const handleCreate = (data: { id: string; name: string; marketplaces: string[] }) => {
-    createClient.mutate(data, {
-      onSuccess: () => {
+  const handleCreate = (data: ClientFormData) => {
+    const { sp_refresh_token, ads_profile_id, ...clientData } = data;
+    createClient.mutate(clientData, {
+      onSuccess: async () => {
+        const connectResults: string[] = [];
+        try {
+          if (sp_refresh_token) {
+            await api.connectManual(data.id, { api_source: "sp_api", refresh_token: sp_refresh_token });
+            connectResults.push("SP API");
+          }
+          if (ads_profile_id) {
+            await api.connectManual(data.id, { api_source: "ads_api", profile_id: ads_profile_id });
+            connectResults.push("Ads API");
+          }
+        } catch (err) {
+          toast.error(`Client created but failed to connect: ${err instanceof Error ? err.message : "Unknown error"}`);
+          setCreateOpen(false);
+          return;
+        }
         setCreateOpen(false);
-        toast.success("Client created");
+        const suffix = connectResults.length ? ` — connected ${connectResults.join(" & ")}` : "";
+        toast.success(`Client created${suffix}`);
       },
       onError: (err) => toast.error(err.message),
     });
   };
 
-  const handleUpdate = (data: { id: string; name: string; marketplaces: string[] }) => {
-    updateClient.mutate(data, {
+  const handleUpdate = (data: ClientFormData) => {
+    const { sp_refresh_token: _sp, ads_profile_id: _ads, ...clientData } = data;
+    updateClient.mutate(clientData, {
       onSuccess: () => {
         setEditOpen(false);
         setEditingClient(null);

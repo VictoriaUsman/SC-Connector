@@ -68,6 +68,14 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             )
 
         for sched in capped:
+            if not _client_has_credentials(client, sched.get("api_source", "")):
+                skipped += len(_get_marketplaces(sched))
+                logger.info(
+                    "Skipping schedule — client missing credentials for api_source",
+                    extra={"client_id": client_id, "schedule_id": sched["id"], "api_source": sched.get("api_source")},
+                )
+                continue
+
             marketplaces = _get_marketplaces(sched)
             for marketplace in marketplaces:
                 try:
@@ -108,3 +116,12 @@ def _get_marketplaces(schedule: dict[str, Any]) -> list[str]:
     if "marketplace" in schedule and schedule["marketplace"]:
         return [schedule["marketplace"]]
     return []
+
+
+def _client_has_credentials(client: dict[str, Any], api_source: str) -> bool:
+    """Check whether the client has the required credentials for the given API source."""
+    if api_source == "sp_api":
+        return bool(client.get("sp_api_secret_name"))
+    if api_source == "ads_api":
+        return bool(client.get("ads_profile_id"))
+    return False
