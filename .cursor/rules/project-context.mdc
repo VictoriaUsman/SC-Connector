@@ -26,7 +26,7 @@ Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon
 
 ## Schedule Data Model
 
-Schedules support multi-select clients (`client_ids: string[]`) and marketplaces (`marketplaces: string[]`). The scheduler fans out one workflow execution per `(client, marketplace)` pair.
+Schedules support multi-select clients (`client_ids: string[]`), marketplaces (`marketplaces: string[]`), and report types (`report_types: string[]`). `api_source` can be `"sp_api"`, `"ads_api"`, or `"both"`. The scheduler fans out one workflow per `(client, marketplace, report_type)` tuple. Clients without credentials for the API source are silently skipped. Each schedule has an optional `name` field for display.
 
 Scheduling uses `schedule_config` with `type` (daily/weekly/monthly/hourly), `time` (UTC), `days_of_week`, and `day_of_month`.
 
@@ -44,7 +44,7 @@ Each schedule has `folder_name` (custom Drive folder) and `subfolder_strategy` (
 ## Key Conventions
 
 - GCP account: `nivbraz90@gmail.com`. Scripts auto-verify before any operation
-- API source branching: functions accept `api_source` ("sp_api" or "ads_api") and branch accordingly
+- API source branching: functions accept `api_source` ("sp_api", "ads_api", or "both") and branch accordingly
 - Resource naming: `kalilos-{env}-{resource}` (e.g., `kalilos-staging-create-report`)
 - Secret naming: `kalilos-{env}-{service}-{client}` (e.g., `kalilos-prod-sp-api-acme`)
 - ALL operations via Makefile — never raw gcloud, pulumi, or firebase commands
@@ -57,5 +57,5 @@ Each schedule has `folder_name` (custom Drive folder) and `subfolder_strategy` (
 - `functions/shared/schedule_compute.py` — timezone-aware date computation, `compute_date_range()` for timeframe strategies, `compute_report_dates()` for single-day and range API params, flexible `compute_next_run()`
 - `functions/shared/workflow_launcher.py` — unified workflow launch helpers: `build_payload()`, `launch_execution()` with retry, `launch_for_marketplace()` with timeframe-aware date ranges and conditional reconciliation
 - `functions/shared/drive_client.py` — Drive folder hierarchy, Firestore-coordinated concurrent folder creation, upload with replace, range-aware filenames
-- `functions/shared/report_converter.py` — JSON→TSV flattening for SP API JSON reports (Sales & Traffic, Brand Analytics, Ledger)
+- `functions/shared/report_converter.py` — JSON→TSV flattening for SP API JSON reports and Ads API columnar JSON reports
 - `functions/shared/firestore_utils.py` — CRUD for clients, schedules, jobs

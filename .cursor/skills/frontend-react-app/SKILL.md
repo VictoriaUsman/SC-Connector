@@ -25,7 +25,7 @@ All primitives from `@base-ui/react`. Use `render` prop (not `asChild`) for poly
 | Button | `@base-ui/react/button` | variants: default/outline/secondary/ghost/destructive/link; sizes: default/xs/sm/lg/icon/icon-xs/icon-sm/icon-lg |
 | Dialog | `@base-ui/react/dialog` | `DialogContent` has `showCloseButton?`; `DialogFooter` has `showCloseButton?` |
 | Select | `@base-ui/react/select` | `SelectTrigger` size: sm/default; `SelectContent` has side/align props |
-| Switch | `@base-ui/react/switch` | size: sm/default; checked = `data-checked:bg-primary` |
+| Switch | `@base-ui/react/switch` | size: sm/default; checked = green (`bg-emerald-500`) |
 | DropdownMenu | `@base-ui/react/menu` | `DropdownMenuItem` variant: default/destructive; inset prop |
 | Checkbox | `@base-ui/react/checkbox` | Uses `CheckIcon` from lucide-react |
 | Tabs | `@base-ui/react/tabs` | `TabsList` variant: default/line; orientation: horizontal/vertical |
@@ -40,11 +40,13 @@ All primitives from `@base-ui/react`. Use `render` prop (not `asChild`) for poly
 
 | Component | Purpose | Key Props |
 |-----------|---------|-----------|
-| MultiSelectDropdown | Popover with checkboxes + search | `label`, `options: {id,label}[]`, `selected`, `onChange`, `searchable?`, `maxBadges?` |
+| MultiSelectDropdown | Popover with checkboxes + search + select all | `label`, `options: {id,label}[]`, `selected`, `onChange`, `searchable?`, `maxBadges?` |
 | MultiCheckboxSelect | Inline checkbox grid | `label`, `options: {id,label}[]`, `selected`, `onChange`, `renderItem?` |
-| ReportSelector | API source + report type + marketplaces | `apiSource`, `reportType`, `marketplaceIds`, `adsConfig` + change handlers |
-| AdsReportConfigPanel | Ads column/dimension picker | `reportType`, `value: AdsReportParams`, `onChange` |
-| FolderConfig | Drive folder name + subfolder strategy | `folderName`, `subfolderStrategy: "date"|"none"` + change handlers |
+| ReportSelector | API source + multi-report type + marketplaces | `apiSource`, `reportTypes`, `marketplaceIds`, `reportParams` + change handlers; shows SP/Ads sections when `both` |
+| SpReportConfigPanel | SP API report options (e.g. dateGranularity) | `reportType`, `value: SpReportParams`, `onChange`; collapsible; reads `report-metadata.ts` |
+| AdsReportConfigPanel | Ads column/dimension picker | `reportType`, `value: AdsReportParams`, `onChange`; collapsible |
+| ReportColumnsPreview | Expandable column header preview | `reportType`; reads SP metadata or Ads config; shows column count + badges |
+| FolderConfig | Folder name + subfolder strategy + path preview | `folderName`, `subfolderStrategy` + change handlers; shows example file path |
 | TimeframeConfig | Report date range strategy | `value: Timeframe`, `onChange` |
 | StatusBadge | Job status as colored badge | `status: JobStatus` |
 | EmptyState | Placeholder with icon/title/action | `icon: LucideIcon`, `title`, `description`, `action?` |
@@ -79,13 +81,21 @@ All primitives from `@base-ui/react`. Use `render` prop (not `asChild`) for poly
 
 ## Types & Constants (`types/index.ts`)
 
-- `ApiSource`: `"sp_api" | "ads_api"`
+- `ApiSource`: `"sp_api" | "ads_api" | "both"`
+- `Schedule`: has `name?`, `report_types: string[]`, `api_source: ApiSource`
 - `Frequency` / `ScheduleType`: `"hourly" | "daily" | "weekly" | "monthly"`
 - `JobStatus`: pending/requesting/polling/downloading/uploading/completed/failed
-- `MARKETPLACES`: array of `{id, label, flag}` (US, CA, MX, BR, UK, DE, FR, IT, ES, JP, AU, IN)
+- `MARKETPLACES`: array of `{id, label, flag}` (US, CA, MX, UK, DE, FR, IT, ES, AU)
 - `SP_REPORT_TYPES`: 10 SP API report type strings
 - `ADS_REPORT_TYPES`: 8 Ads API report type strings
-- `API_SOURCES`, `FREQUENCIES`, `DAYS_OF_WEEK`, `TIMEFRAME_STRATEGIES`: UI option arrays
+- `isAdsReportType(reportType)`: helper to check if a report type is Ads
+- `API_SOURCES` (includes "Both"), `FREQUENCIES`, `DAYS_OF_WEEK`, `TIMEFRAME_STRATEGIES`
+
+## Report Metadata (`data/report-metadata.ts`)
+
+- `SP_REPORT_METADATA`: static catalog of SP report columns, format (tsv/json), description, and configurable `reportOptions`
+- `getSpReportMeta(reportType)` / `hasSpReportOptions(reportType)`: lookup helpers
+- Ads report metadata comes from the backend via `useAdsReportConfig()` hook
 
 ## Common Patterns
 

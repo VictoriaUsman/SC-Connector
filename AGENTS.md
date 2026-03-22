@@ -16,7 +16,7 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 
 **Storage & Config**: Firestore stores client configurations, report schedules, and job history. Collections: `clients`, `schedules`, `jobs`, `_drive_folder_locks` (transient coordination docs). The frontend reads these in real-time via Firestore listeners.
 
-**Scheduling**: Cloud Scheduler triggers a scheduler Cloud Function on a cron. The scheduler reads active schedules from Firestore, resolves each schedule's `timeframe` strategy into a date range (default: yesterday), and launches Cloud Workflow executions for each `(client, marketplace)` pair. For the default `yesterday` strategy it also launches reconciliation jobs (T-3, T-7) to re-pull data that may have been updated by Amazon. Multi-day strategies skip reconciliation.
+**Scheduling**: Cloud Scheduler triggers a scheduler Cloud Function on a cron. The scheduler reads active schedules from Firestore, resolves each schedule's `timeframe` strategy into a date range (default: yesterday), and launches Cloud Workflow executions for each `(client, marketplace, report_type)` tuple. When `api_source` is `"both"`, each report type's effective API source is inferred from its membership in SP or Ads report type lists. Clients without credentials for the schedule's API source are silently skipped. For the default `yesterday` strategy, reconciliation jobs (T-3, T-7) re-pull data updated by Amazon. Multi-day strategies skip reconciliation.
 
 **Three-Clock Timezone Architecture**:
 - **Backend Clock (UTC)**: All timestamps in Firestore, all scheduler logic runs on UTC.
@@ -37,9 +37,10 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 
 ```python
 {
-    "client_ids": ["acme", "globex"],       # Multi-select: one or more clients
-    "api_source": "sp_api",                  # "sp_api" or "ads_api"
-    "report_type": "GET_SALES_AND_TRAFFIC_REPORT",
+    "name": "Month to Date Reports",         # Optional display name
+    "client_ids": ["acme", "globex"],        # Multi-select: one or more clients
+    "api_source": "both",                    # "sp_api" | "ads_api" | "both"
+    "report_types": ["GET_SALES_AND_TRAFFIC_REPORT", "spCampaigns"],  # One or more
     "marketplaces": ["US", "CA", "UK"],      # Multi-select: one or more marketplaces
     "frequency": "daily",                    # "hourly" | "daily" | "weekly" | "monthly"
     "schedule_config": {                     # Flexible scheduling
@@ -76,13 +77,10 @@ Defined in `functions/shared/config.py`:
 | Marketplace | Timezone | Notes |
 |-------------|----------|-------|
 | US, CA, MX  | America/Los_Angeles | Amazon uses PST/PDT for North America |
-| BR          | America/Sao_Paulo | |
 | UK          | Europe/London | |
 | DE, FR, IT, ES, NL, SE, PL | Europe/Paris | Central European |
 | TR          | Europe/Istanbul | |
-| JP          | Asia/Tokyo | |
 | AU          | Australia/Sydney | |
-| IN          | Asia/Kolkata | |
 | SG          | Asia/Singapore | |
 
 ## Project Structure
@@ -103,7 +101,8 @@ kalilos-connector/
 │   ├── deploy-frontend.sh            # Firebase deploy wrapper
 │   ├── health-check.sh               # Post-deploy verification (12 checks)
 │   ├── seed-firestore.sh             # Seed test data
-│   └── rotate-secrets.sh             # Secret rotation helper
+│   ├── rotate-secrets.sh             # Secret rotation helper
+│   └── wipe-firestore.py             # Wipe all Firestore collections
 ├── infra/
 │   ├── __main__.py                   # Pulumi entry point
 │   ├── Pulumi.yaml                   # Pulumi project config
@@ -134,12 +133,14 @@ kalilos-connector/
 │   └── shared/
 │       ├── sp_api_client.py          # SP API HTTP client
 │       ├── ads_api_client.py         # Ads API HTTP client
+│       ├── ads_report_config.py      # Ads report type definitions (columns, groupBy)
+│       ├── credentials.py            # SP/Ads credential retrieval from Secret Manager
 │       ├── drive_client.py           # Google Drive upload, Firestore-coordinated folder creation
-│       ├── report_converter.py       # JSON→TSV flattening for spreadsheet-friendly output
+│       ├── report_converter.py       # JSON→TSV flattening for SP API + Ads API reports
 │       ├── firestore_utils.py        # Common Firestore operations
 │       ├── config.py                 # Env, config, marketplace timezones
 │       ├── schedule_compute.py       # Timezone-aware dates, date ranges, flexible next_run_at
-│       └── workflow_launcher.py      # Unified workflow launch, retry, per-marketplace fan-out
+│       └── workflow_launcher.py      # Unified workflow launch, retry, per-(client,mkt,report) fan-out
 ├── workflows/
 │   └── report_flow.yaml              # Cloud Workflow: unified report pipeline
 └── frontend/
@@ -156,6 +157,13 @@ kalilos-connector/
         │   ├── schedules.tsx          # Schedule configuration (multi-select, flexible freq)
         │   └── on-demand.tsx          # On-demand report requests
         ├── components/                # Shared UI components
+        │   ├── report-selector.tsx    # API source + report type multi-select + marketplace selector
+        │   ├── sp-report-config.tsx   # SP API report options (dateGranularity, etc.)
+        │   ├── ads-report-config.tsx  # Ads API column/dimension picker (collapsible)
+        │   ├── report-columns-preview.tsx  # Expandable column preview for any report type
+        │   └── folder-config.tsx      # Drive folder name, subfolder strategy, path preview
+        ├── data/
+        │   └── report-metadata.ts     # Static SP API report column catalog and options
         ├── hooks/                     # Custom React hooks
         ├── lib/                       # Utilities and Firebase config
         └── types/                     # TypeScript type definitions
@@ -213,7 +221,7 @@ Unified workflow launch helpers used by the scheduler, API on-demand triggers, a
 - `get_workflow_parent()` — builds the fully-qualified Cloud Workflows parent path from env vars
 - `build_payload(...)` — constructs the canonical workflow execution payload dict, including `execution_date`
 - `launch_execution(parent, payload, job_id)` — starts a Cloud Workflow execution with retry-and-backoff. Marks job as failed in Firestore on exhausted retries
-- `launch_for_marketplace(parent, now, schedule, client_id, marketplace)` — launches primary + reconciliation jobs for one `(client, marketplace)` pair. Computes `execution_date` (marketplace today) once and passes it through to all jobs. Reads the schedule's `timeframe` config (default: `yesterday`) and calls `compute_date_range()`. Reconciliation only runs for `yesterday` strategy
+- `launch_for_marketplace(parent, now, schedule, client_id, marketplace)` — launches primary + reconciliation jobs for one `(client, marketplace)` pair across all `report_types`. When `api_source` is `"both"`, infers effective api_source per report type. Computes `execution_date` (marketplace today) once and passes it through. Reconciliation only runs for `yesterday` strategy
 
 ### `functions/shared/drive_client.py`
 
@@ -233,9 +241,10 @@ Google Drive folder hierarchy and upload:
 ### `functions/shared/report_converter.py`
 
 JSON-to-TSV conversion for spreadsheet-friendly output:
-- `should_convert(report_type)` — returns True for SP API reports that return JSON (Sales & Traffic, Brand Analytics, Ledger)
-- `json_report_to_tsv(raw_bytes, report_type)` — parses JSON, locates the main data array(s), recursively flattens nested objects (e.g. `salesByDate.orderedProductSales.amount`), outputs TSV with header row
-- Called by `download_upload` before uploading to Drive; the file is saved as `.tsv` for Google Sheets compatibility
+- `should_convert(report_type, api_source)` — returns True for SP API JSON reports (Sales & Traffic, Brand Analytics, Ledger) and all Ads API reports
+- `json_report_to_tsv(raw_bytes, report_type)` — SP API: parses JSON, locates data arrays, recursively flattens nested objects, outputs TSV
+- `ads_json_report_to_tsv(raw_bytes)` — Ads API: flattens the columnar JSON format (`columns`/`index`/`data`) to TSV
+- Called by `download_upload` before uploading to Drive; files are saved as `.tsv` for Google Sheets compatibility
 
 ## Common Agent Tasks
 
@@ -256,11 +265,12 @@ For non-standard report types, add a handler branch in `functions/create_report/
 **If the report returns JSON** (not TSV/XML/CSV):
 1. Add the report type to `_SP_API_JSON_REPORTS` in `functions/shared/drive_client.py` (for correct MIME type when NOT converting).
 2. Add the report type and its main data array key(s) to `_JSON_REPORT_ARRAY_KEYS` in `functions/shared/report_converter.py` (for JSON→TSV flattening).
-3. Add the report type to the frontend: `SP_REPORT_TYPES` in `frontend/src/types/index.ts`.
+3. Add the report type to `SP_REPORT_TYPES` in `frontend/src/types/index.ts`.
+4. Add column metadata to `SP_REPORT_METADATA` in `frontend/src/data/report-metadata.ts` (columns, format, and any configurable `reportOptions`).
 
 ### Trigger a schedule immediately (Run Now)
 
-`POST /schedules/<schedule_id>/trigger` fans out workflow executions for all (client, marketplace) pairs, identical to what the cron scheduler does. Reconciliation re-pulls are only included when the schedule's timeframe strategy is `yesterday` (the default). Multi-day strategies (`last_n_days`, `last_calendar_week`, etc.) skip reconciliation since they already cover wider windows. The frontend Schedules page exposes this via the "Run Now" dropdown action.
+`POST /schedules/<schedule_id>/trigger` fans out workflow executions for all (client, marketplace, report_type) tuples, identical to what the cron scheduler does. Clients without credentials for the API source are silently skipped. Reconciliation re-pulls are only included when the schedule's timeframe strategy is `yesterday` (the default). Multi-day strategies (`last_n_days`, `last_calendar_week`, etc.) skip reconciliation since they already cover wider windows. The frontend Schedules page exposes this via the "Run Now" dropdown action.
 
 ### Add a new marketplace
 
@@ -279,7 +289,7 @@ For non-standard report types, add a handler branch in `functions/create_report/
 
 ### Add a new client
 
-Use the frontend Clients page, or seed via `make seed-firestore`. The client config includes: name, marketplace IDs, SP API credentials reference, Ads API credentials reference, Drive folder ID.
+Use the frontend Clients page, or seed via `make seed-firestore`. The create form accepts name, marketplace IDs, and optionally SP API Refresh Token and Ads API Profile ID (auto-connected on creation). Credentials can also be added later via the row dropdown menu.
 
 ### Deploy to staging
 
@@ -297,4 +307,4 @@ Production requires an interactive confirmation prompt.
 ## Further Reference
 
 - **Cursor Rules**: `.cursor/rules/` — six rules covering project context, cloud functions, Pulumi infra, workflow YAML, frontend, and devops.
-- **Cursor Skills**: `.cursor/skills/` — deep reference for Amazon SP API, Amazon Ads API, Cloud Workflows, Pulumi GCP, and Firestore patterns.
+- **Cursor Skills**: `.cursor/skills/` — deep reference for Amazon SP API, Amazon Ads API, Cloud Workflows, Pulumi GCP, Firestore patterns, and frontend React app conventions.
