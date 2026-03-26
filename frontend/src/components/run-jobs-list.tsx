@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Table,
   TableBody,
@@ -17,6 +17,7 @@ import {
   ChevronRight,
   AlertCircle,
   ExternalLink,
+  User,
 } from "lucide-react";
 import type { Job, JobStatus } from "@/types";
 import { useRealtimeJobs, useRunJobs } from "@/hooks/use-jobs";
@@ -77,6 +78,36 @@ function SummaryBar({ jobs }: { jobs: Job[] }) {
   );
 }
 
+interface ClientGroup {
+  clientId: string;
+  jobs: Job[];
+  completed: number;
+  failed: number;
+  inProgress: number;
+}
+
+function groupByClient(jobs: Job[]): ClientGroup[] {
+  const map = new Map<string, Job[]>();
+  for (const job of jobs) {
+    const arr = map.get(job.client_id);
+    if (arr) arr.push(job);
+    else map.set(job.client_id, [job]);
+  }
+  const groups: ClientGroup[] = [];
+  for (const [clientId, clientJobs] of map) {
+    groups.push({
+      clientId,
+      jobs: clientJobs,
+      completed: clientJobs.filter((j) => j.status === "completed").length,
+      failed: clientJobs.filter((j) => j.status === "failed").length,
+      inProgress: clientJobs.filter((j) => IN_PROGRESS_STATUSES.includes(j.status)).length,
+    });
+  }
+  return groups;
+}
+
+const COL_COUNT = 7;
+
 function JobRow({ job }: { job: Job }) {
   const [expanded, setExpanded] = useState(false);
   const canExpand = job.status === "failed" && !!job.error_details?.message;
@@ -108,7 +139,6 @@ function JobRow({ job }: { job: Job }) {
           )}
         </TableCell>
         <TableCell><StatusBadge status={job.status} /></TableCell>
-        <TableCell className="font-medium">{job.client_id}</TableCell>
         <TableCell>
           <span className="max-w-[180px] truncate block" title={job.report_type}>
             {formatReportType(job.report_type)}
@@ -136,7 +166,7 @@ function JobRow({ job }: { job: Job }) {
       </TableRow>
       {expanded && (
         <TableRow className="bg-destructive/5 hover:bg-destructive/5">
-          <TableCell colSpan={8} className="p-0">
+          <TableCell colSpan={COL_COUNT} className="p-0">
             <div className="px-4 py-2.5 pl-9">
               <div className="flex items-start gap-2.5">
                 <div className="rounded-full bg-destructive/10 p-1 shrink-0 mt-0.5">
@@ -161,6 +191,43 @@ function JobRow({ job }: { job: Job }) {
         </TableRow>
       )}
     </>
+  );
+}
+
+function ClientGroupHeader({ group, expanded, onToggle }: { group: ClientGroup; expanded: boolean; onToggle: () => void }) {
+  return (
+    <TableRow className="bg-muted/40 hover:bg-muted/50 cursor-pointer" onClick={onToggle}>
+      <TableCell colSpan={COL_COUNT} className="py-2">
+        <div className="flex items-center gap-2.5">
+          <ChevronRight
+            className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`}
+          />
+          <User className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="font-semibold text-xs">{group.clientId}</span>
+          <span className="text-[11px] text-muted-foreground">
+            {group.jobs.length} job{group.jobs.length !== 1 ? "s" : ""}
+          </span>
+          {group.completed > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground">
+              <CheckCircle className="h-3 w-3 text-emerald-500" />
+              {group.completed}
+            </span>
+          )}
+          {group.failed > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground">
+              <XCircle className="h-3 w-3 text-destructive" />
+              {group.failed}
+            </span>
+          )}
+          {group.inProgress > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {group.inProgress}
+            </span>
+          )}
+        </div>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -195,6 +262,9 @@ export function RunJobsList({
   const jobs = preloadedJobs ?? (useRunQuery ? runJobs : scheduleJobs);
   const loading = useRunQuery ? runLoading : useScheduleQuery ? scheduleLoading : false;
 
+  const clientGroups = useMemo(() => groupByClient(jobs), [jobs]);
+  const multipleClients = clientGroups.length > 1;
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-6">
@@ -217,7 +287,6 @@ export function RunJobsList({
           <TableRow className="text-xs">
             <TableHead className="w-7" />
             <TableHead>Status</TableHead>
-            <TableHead>Client</TableHead>
             <TableHead>Report Type</TableHead>
             <TableHead>Marketplace</TableHead>
             <TableHead>Source</TableHead>
@@ -226,11 +295,26 @@ export function RunJobsList({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {jobs.map((job) => (
-            <JobRow key={job.id} job={job} />
+          {clientGroups.map((group) => (
+            <ClientGroupRows key={group.clientId} group={group} showHeader={multipleClients} />
           ))}
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+function ClientGroupRows({ group, showHeader }: { group: ClientGroup; showHeader: boolean }) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <>
+      {showHeader && (
+        <ClientGroupHeader group={group} expanded={expanded} onToggle={() => setExpanded(!expanded)} />
+      )}
+      {(!showHeader || expanded) && group.jobs.map((job) => (
+        <JobRow key={job.id} job={job} />
+      ))}
+    </>
   );
 }
