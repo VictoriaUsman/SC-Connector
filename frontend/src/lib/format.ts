@@ -30,7 +30,19 @@ export function formatApiSource(source: string): string {
   return source;
 }
 
+const ADS_REPORT_LABELS: Record<string, string> = {
+  spCampaigns: "SP - Campaigns",
+  spSearchTerm: "SP - Search Term",
+  spTargeting: "SP - Targeting",
+  spAdvertisedProduct: "SP - Advertised Product",
+  sbCampaigns: "SB - Campaigns",
+  sbSearchTerm: "SB - Search Term",
+  sdCampaigns: "SD - Campaigns",
+  sdTargeting: "SD - Targeting",
+};
+
 export function formatReportType(type: string): string {
+  if (ADS_REPORT_LABELS[type]) return ADS_REPORT_LABELS[type];
   return type
     .replace(/^GET_/, "")
     .replace(/_/g, " ")

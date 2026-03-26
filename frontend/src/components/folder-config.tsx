@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { FolderTree } from "lucide-react";
+import { FolderTree, AlertCircle } from "lucide-react";
 
 function PathPreview({
   folderName,
@@ -10,12 +11,15 @@ function PathPreview({
   subfolderStrategy: "date" | "none";
 }) {
   const root = "Google Drive";
-  const folder = folderName.trim();
+  const folderParts = folderName
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const date = subfolderStrategy === "date" ? "YYYY-MM-DD" : null;
 
   const segments = [
     root,
-    folder || null,
+    ...folderParts,
     date,
     "{client}",
     "{marketplace}",
@@ -36,6 +40,12 @@ function PathPreview({
   );
 }
 
+const INVALID_FOLDER_CHARS = /\\/g;
+
+function sanitizeFolderName(raw: string): string {
+  return raw.replace(INVALID_FOLDER_CHARS, "/");
+}
+
 export function FolderConfig({
   folderName,
   onFolderNameChange,
@@ -47,6 +57,19 @@ export function FolderConfig({
   subfolderStrategy: "date" | "none";
   onSubfolderStrategyChange: (value: "date" | "none") => void;
 }) {
+  const [showHint, setShowHint] = useState(false);
+
+  const handleFolderChange = (raw: string) => {
+    const sanitized = sanitizeFolderName(raw);
+    if (sanitized !== raw) {
+      setShowHint(true);
+      setTimeout(() => setShowHint(false), 3000);
+    }
+    onFolderNameChange(sanitized);
+  };
+
+  const hasNestedFolders = folderName.includes("/");
+
   return (
     <div className="space-y-3">
       <div className="space-y-2">
@@ -54,11 +77,22 @@ export function FolderConfig({
         <Input
           placeholder="e.g. WoW Weekly Reports"
           value={folderName}
-          onChange={(e) => onFolderNameChange(e.target.value)}
+          onChange={(e) => handleFolderChange(e.target.value)}
         />
-        <p className="text-xs text-muted-foreground">
-          Leave empty to use the default layout: date / client / marketplace / report type
-        </p>
+        {showHint ? (
+          <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <AlertCircle className="h-3 w-3 shrink-0" />
+            Backslashes are converted to forward slashes
+          </p>
+        ) : hasNestedFolders ? (
+          <p className="text-xs text-muted-foreground">
+            Slashes create nested sub-folders in Google Drive
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Leave empty for default layout. Use / to create nested folders.
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">

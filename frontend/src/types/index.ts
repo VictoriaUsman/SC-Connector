@@ -50,6 +50,9 @@ export interface Schedule {
   report_params: Record<string, unknown>;
   is_active: boolean;
   last_run_at?: string;
+  last_run_status?: "success" | "partial" | "failed";
+  last_run_job_count?: { completed: number; failed: number; total: number };
+  last_drive_folder_id?: string;
   next_run_at?: string;
   created_at?: string;
   updated_at?: string;
@@ -59,18 +62,22 @@ export interface Job {
   id: string;
   client_id: string;
   schedule_id?: string;
+  execution_date?: string;
   status: JobStatus;
   api_source: ApiSource;
   report_type: string;
   marketplace: string;
   amazon_report_id?: string;
   gdrive_file_id?: string;
+  gdrive_folder_id?: string;
   gdrive_path?: string;
   error_details?: { message?: string; phase?: string };
   retry_count: number;
   poll_count: number;
   frequency?: string;
   report_date?: string;
+  report_end_date?: string;
+  trigger?: string;
   started_at?: string;
   completed_at?: string;
 }

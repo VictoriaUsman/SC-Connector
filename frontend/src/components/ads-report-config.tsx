@@ -13,6 +13,7 @@ import { useAdsReportConfig } from "@/hooks/use-ads-report-config";
 import type { AdsReportConfig } from "@/types";
 import { ChevronRight, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatReportType } from "@/lib/format";
 
 export interface AdsReportParams {
   columns?: string[];
@@ -121,7 +122,7 @@ export function AdsReportConfigPanel({
         />
         <Settings2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="text-sm font-medium flex-1 truncate">
-          {config.adProduct.replace("SPONSORED_", "").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())}
+          {formatReportType(reportType)}
         </span>
         <span className="text-xs text-muted-foreground">
           {allSelected ? "All" : `${selectedColumns.length}/${allColumns.length}`} columns
@@ -139,10 +140,12 @@ export function AdsReportConfigPanel({
               value={value.timeUnit ?? "DAILY"}
               onValueChange={(v) => {
                 const unit = v ?? undefined;
-                const cols = unit === "SUMMARY"
-                  ? selectedColumns.filter((c) => c !== "date")
-                  : selectedColumns;
-                onChange({ ...value, timeUnit: unit, columns: cols });
+                if (unit === "SUMMARY") {
+                  onChange({ ...value, timeUnit: unit, columns: selectedColumns.filter((c) => c !== "date") });
+                } else {
+                  const cols = selectedColumns.includes("date") ? selectedColumns : ["date", ...selectedColumns];
+                  onChange({ ...value, timeUnit: unit, columns: cols });
+                }
               }}
             >
               <SelectTrigger className="h-8 text-xs">

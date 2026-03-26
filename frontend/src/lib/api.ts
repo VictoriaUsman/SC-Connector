@@ -70,10 +70,12 @@ export const api = {
     ),
 
   // Jobs
-  listJobs: (params?: { client_id?: string; status?: string; limit?: number }) => {
+  listJobs: (params?: { client_id?: string; status?: string; schedule_id?: string; execution_date?: string; limit?: number }) => {
     const sp = new URLSearchParams();
     if (params?.client_id) sp.set("client_id", params.client_id);
     if (params?.status) sp.set("status", params.status);
+    if (params?.schedule_id) sp.set("schedule_id", params.schedule_id);
+    if (params?.execution_date) sp.set("execution_date", params.execution_date);
     if (params?.limit) sp.set("limit", String(params.limit));
     const qs = sp.toString();
     return request<Job[]>(`/jobs${qs ? `?${qs}` : ""}`);

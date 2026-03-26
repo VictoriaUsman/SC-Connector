@@ -151,13 +151,85 @@ def update_job_status(job_id: str, status: str, **extra: Any) -> None:
         updates["completed_at"] = datetime.now(timezone.utc)
     update_job(job_id, updates)
 
+    if status in ("completed", "failed"):
+        _maybe_update_schedule_run_status(job_id)
+
+
+_TERMINAL_STATUSES = {"completed", "failed"}
+
+
+def _maybe_update_schedule_run_status(job_id: str) -> None:
+    """When all sibling jobs (same schedule + execution_date) are terminal,
+    compute an aggregate status and write it back on the schedule document.
+    Also stores the Drive folder ID from the first completed sibling for 2B."""
+    job = get_job(job_id)
+    if not job:
+        return
+
+    schedule_id = job.get("schedule_id")
+    execution_date = job.get("execution_date")
+    if not schedule_id or not execution_date:
+        return
+
+    siblings = list(
+        get_db()
+        .collection("jobs")
+        .where("schedule_id", "==", schedule_id)
+        .where("execution_date", "==", execution_date)
+        .stream()
+    )
+    if not siblings:
+        return
+
+    sibling_dicts = [doc.to_dict() for doc in siblings]
+    if not all(d.get("status") in _TERMINAL_STATUSES for d in sibling_dicts):
+        return
+
+    completed = sum(1 for d in sibling_dicts if d["status"] == "completed")
+    failed = sum(1 for d in sibling_dicts if d["status"] == "failed")
+    total = len(sibling_dicts)
+
+    if failed == total:
+        agg = "failed"
+    elif failed > 0:
+        agg = "partial"
+    else:
+        agg = "success"
+
+    folder_id = next(
+        (d["gdrive_folder_id"] for d in sibling_dicts
+         if d.get("status") == "completed" and d.get("gdrive_folder_id")),
+        None,
+    )
+
+    patch: dict[str, Any] = {
+        "last_run_status": agg,
+        "last_run_job_count": {"completed": completed, "failed": failed, "total": total},
+    }
+    if folder_id:
+        patch["last_drive_folder_id"] = folder_id
+
+    try:
+        update_schedule(schedule_id, patch)
+    except Exception:
+        logger.warning(
+            "Failed to update schedule run status",
+            extra={"schedule_id": schedule_id, "job_id": job_id},
+        )
+
 
 def list_jobs(
     client_id: str | None = None,
     status: str | None = None,
+    schedule_id: str | None = None,
+    execution_date: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     ref = get_db().collection("jobs")
+    if schedule_id:
+        ref = ref.where("schedule_id", "==", schedule_id)
+    if execution_date:
+        ref = ref.where("execution_date", "==", execution_date)
     if client_id:
         ref = ref.where("client_id", "==", client_id)
     if status:

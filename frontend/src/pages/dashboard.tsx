@@ -1,24 +1,5 @@
 import { useMemo, useState } from "react";
-import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  flexRender,
-  type ColumnDef,
-  type SortingState,
-  type ColumnFiltersState,
-} from "@tanstack/react-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   Select,
   SelectContent,
@@ -26,22 +7,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { DataTableColumnHeader } from "@/components/ui/data-table-column-header";
-import { DataTablePagination } from "@/components/ui/data-table-pagination";
-import { StatusBadge } from "@/components/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
+import { RunJobsList } from "@/components/run-jobs-list";
 import { useRealtimeJobs } from "@/hooks/use-jobs";
-import { timeAgo, formatApiSource, formatReportType } from "@/lib/format";
+import { useSchedules } from "@/hooks/use-schedules";
+import {
+  groupJobsBySchedule,
+  runStatusLabel,
+  runStatusVariant,
+  type ScheduleGroup,
+  type ScheduleRun,
+} from "@/lib/group-jobs";
+import { timeAgo, formatApiSource } from "@/lib/format";
 import {
   CheckCircle,
   XCircle,
   Loader2,
   Clock,
   Activity,
-  ExternalLink,
   FilterX,
+  ChevronRight,
+  CalendarClock,
+  AlertTriangle,
 } from "lucide-react";
 import type { Job, JobStatus } from "@/types";
 
@@ -54,14 +43,11 @@ const IN_PROGRESS_STATUSES: JobStatus[] = [
 ];
 
 const STATUS_OPTIONS = [
+  { value: "all", label: "All statuses" },
   { value: "completed", label: "Completed" },
   { value: "failed", label: "Failed" },
   { value: "in_progress", label: "In Progress" },
-];
-
-const SOURCE_OPTIONS = [
-  { value: "sp_api", label: "SP API" },
-  { value: "ads_api", label: "Ads API" },
+  { value: "partial", label: "Partial" },
 ];
 
 const TIME_RANGE_OPTIONS = [
@@ -70,122 +56,6 @@ const TIME_RANGE_OPTIONS = [
   { value: "24", label: "Last 24 hours" },
   { value: "168", label: "Last 7 days" },
   { value: "720", label: "Last 30 days" },
-];
-
-function statusGroupFilterFn(
-  row: { getValue: (id: string) => unknown },
-  _columnId: string,
-  filterValue: string,
-): boolean {
-  const status = row.getValue("status") as JobStatus;
-  if (filterValue === "in_progress") return IN_PROGRESS_STATUSES.includes(status);
-  return status === filterValue;
-}
-
-function timeRangeFilterFn(
-  row: { getValue: (id: string) => unknown },
-  _columnId: string,
-  filterValue: string,
-): boolean {
-  const iso = row.getValue("started_at") as string | undefined;
-  if (!iso) return false;
-  const hours = Number(filterValue);
-  const cutoff = Date.now() - hours * 3_600_000;
-  return new Date(iso).getTime() >= cutoff;
-}
-
-const columns: ColumnDef<Job>[] = [
-  {
-    accessorKey: "status",
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title="Status" />
-    ),
-    cell: ({ row }) => <StatusBadge status={row.getValue("status")} />,
-    filterFn: statusGroupFilterFn,
-  },
-  {
-    accessorKey: "client_id",
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title="Client" />
-    ),
-    cell: ({ row }) => (
-      <span className="font-medium">{row.getValue("client_id")}</span>
-    ),
-    filterFn: "includesString",
-  },
-  {
-    accessorKey: "api_source",
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title="Source" />
-    ),
-    cell: ({ row }) => formatApiSource(row.getValue("api_source")),
-    filterFn: "equals",
-  },
-  {
-    accessorKey: "report_type",
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title="Report Type" />
-    ),
-    cell: ({ row }) => (
-      <span
-        className="max-w-[200px] truncate block"
-        title={row.getValue("report_type")}
-      >
-        {formatReportType(row.getValue("report_type"))}
-      </span>
-    ),
-  },
-  {
-    accessorKey: "marketplace",
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title="Marketplace" />
-    ),
-    filterFn: "equals",
-  },
-  {
-    accessorKey: "report_date",
-    header: ({ column }) => (
-      <DataTableColumnHeader column={column} title="Report Date" />
-    ),
-    cell: ({ row }) => row.getValue("report_date") ?? "—",
-  },
-  {
-    id: "drive",
-    header: "Drive",
-    enableSorting: false,
-    cell: ({ row }) => {
-      const fileId = row.original.gdrive_file_id;
-      if (!fileId) return <span className="text-muted-foreground">—</span>;
-      return (
-        <a
-          href={`https://drive.google.com/file/d/${fileId}/view`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 text-primary hover:underline text-xs"
-          title={row.original.gdrive_path}
-        >
-          Open
-          <ExternalLink className="h-3 w-3" />
-        </a>
-      );
-    },
-  },
-  {
-    accessorKey: "started_at",
-    header: ({ column }) => (
-      <DataTableColumnHeader
-        column={column}
-        title="Started"
-        className="justify-end"
-      />
-    ),
-    cell: ({ row }) => (
-      <span className="text-muted-foreground">
-        {timeAgo(row.getValue("started_at"))}
-      </span>
-    ),
-    filterFn: timeRangeFilterFn,
-  },
 ];
 
 function StatCard({
@@ -213,70 +83,203 @@ function StatCard({
   );
 }
 
+function RunStatusIcon({ variant }: { variant: ReturnType<typeof runStatusVariant> }) {
+  switch (variant) {
+    case "success":
+      return <CheckCircle className="h-3.5 w-3.5 text-emerald-500" />;
+    case "failed":
+      return <XCircle className="h-3.5 w-3.5 text-destructive" />;
+    case "partial":
+      return <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />;
+    case "running":
+      return <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />;
+  }
+}
+
+function RunRow({ run, isLast }: { run: ScheduleRun; isLast: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const variant = runStatusVariant(run);
+
+  return (
+    <div className={!isLast && !expanded ? "border-b border-border/50" : ""}>
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent/50 transition-colors text-left"
+      >
+        <ChevronRight
+          className={`h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+        />
+        <RunStatusIcon variant={variant} />
+        <span className="font-medium">{run.executionDate}</span>
+        <span className="text-xs text-muted-foreground">{runStatusLabel(run)}</span>
+        <span className="text-xs text-muted-foreground ml-auto">{timeAgo(run.latestStartedAt)}</span>
+      </button>
+      {expanded && (
+        <div className="border-t border-border/40 bg-muted/30 px-2 pb-3">
+          <RunJobsList jobs={run.jobs} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduleGroupCard({ group }: { group: ScheduleGroup }) {
+  const [expanded, setExpanded] = useState(false);
+  const schedule = group.schedule;
+  const latestRun = group.runs[0];
+  const latestVariant = latestRun ? runStatusVariant(latestRun) : undefined;
+
+  return (
+    <Card className="overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-accent/30 transition-colors"
+      >
+        <ChevronRight
+          className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+        />
+        <div className="flex flex-1 items-center gap-3 min-w-0">
+          <CalendarClock className="h-4 w-4 text-muted-foreground shrink-0" />
+          <span className="font-semibold text-sm truncate">{group.scheduleName}</span>
+          {latestVariant && <RunStatusIcon variant={latestVariant} />}
+          {latestRun && (
+            <span className="text-xs text-muted-foreground">
+              {runStatusLabel(latestRun)}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {schedule && (
+            <Badge variant="outline" className="text-xs">
+              {formatApiSource(schedule.api_source)}
+            </Badge>
+          )}
+          <Badge variant="secondary" className="text-xs tabular-nums">
+            {group.runs.length} run{group.runs.length !== 1 ? "s" : ""}
+          </Badge>
+          <Badge variant="secondary" className="text-xs tabular-nums">
+            {group.totalJobs} job{group.totalJobs !== 1 ? "s" : ""}
+          </Badge>
+          <span className="text-xs text-muted-foreground w-16 text-right">
+            {timeAgo(group.latestStartedAt)}
+          </span>
+        </div>
+      </button>
+      {expanded && (
+        <div className="border-t">
+          {group.runs.map((run, idx) => (
+            <RunRow key={run.executionDate} run={run} isLast={idx === group.runs.length - 1} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function AdhocJobsCard({ jobs }: { jobs: Job[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!jobs.length) return null;
+
+  return (
+    <Card className="overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-accent/30 transition-colors"
+      >
+        <ChevronRight
+          className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform ${expanded ? "rotate-90" : ""}`}
+        />
+        <div className="flex flex-1 items-center gap-3 min-w-0">
+          <Activity className="h-4 w-4 text-muted-foreground shrink-0" />
+          <span className="font-semibold text-sm">On-Demand</span>
+        </div>
+        <Badge variant="secondary" className="text-xs tabular-nums">
+          {jobs.length} job{jobs.length !== 1 ? "s" : ""}
+        </Badge>
+      </button>
+      {expanded && (
+        <div className="border-t bg-muted/30 px-2 pb-3">
+          <RunJobsList jobs={jobs} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export function Dashboard() {
-  const { jobs, loading } = useRealtimeJobs({ max: 500 });
+  const { jobs, loading: jobsLoading } = useRealtimeJobs({ max: 500 });
+  const { data: schedules, isLoading: schedulesLoading } = useSchedules();
 
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "started_at", desc: true },
-  ]);
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [filterSchedule, setFilterSchedule] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterTimeRange, setFilterTimeRange] = useState("");
 
-  const distinctClients = useMemo(
-    () => [...new Set(jobs.map((j) => j.client_id))].sort(),
-    [jobs],
+  const loading = jobsLoading || schedulesLoading;
+
+  const filteredJobs = useMemo(() => {
+    let result = jobs;
+
+    if (filterTimeRange) {
+      const hours = Number(filterTimeRange);
+      const cutoff = Date.now() - hours * 3_600_000;
+      result = result.filter((j) => j.started_at && new Date(j.started_at).getTime() >= cutoff);
+    }
+
+    return result;
+  }, [jobs, filterTimeRange]);
+
+  const { groups, adhocJobs } = useMemo(
+    () => groupJobsBySchedule(filteredJobs, schedules ?? []),
+    [filteredJobs, schedules],
   );
 
-  const distinctMarketplaces = useMemo(
-    () => [...new Set(jobs.map((j) => j.marketplace))].sort(),
-    [jobs],
-  );
+  const visibleGroups = useMemo(() => {
+    let result = groups;
 
-  const table = useReactTable({
-    data: jobs,
-    columns,
-    state: { sorting, columnFilters },
-    onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: 25 } },
-  });
+    if (filterSchedule) {
+      result = result.filter((g) => g.scheduleId === filterSchedule);
+    }
 
-  const filteredRows = table.getFilteredRowModel().rows;
-  const hasFilters = columnFilters.length > 0;
+    if (filterStatus) {
+      result = result.filter((g) => {
+        const latestRun = g.runs[0];
+        if (!latestRun) return false;
+        switch (filterStatus) {
+          case "completed":
+            return latestRun.failed === 0 && latestRun.inProgress === 0;
+          case "failed":
+            return latestRun.completed === 0 && latestRun.inProgress === 0;
+          case "in_progress":
+            return latestRun.inProgress > 0;
+          case "partial":
+            return latestRun.failed > 0 && latestRun.completed > 0 && latestRun.inProgress === 0;
+          default:
+            return true;
+        }
+      });
+    }
+
+    return result;
+  }, [groups, filterSchedule, filterStatus]);
 
   const stats = useMemo(() => {
-    const rows = filteredRows.map((r) => r.original);
-    const completed = rows.filter((j) => j.status === "completed").length;
-    const failed = rows.filter((j) => j.status === "failed").length;
-    const inProgress = rows.filter((j) =>
-      IN_PROGRESS_STATUSES.includes(j.status),
-    ).length;
-    return { completed, failed, inProgress, total: rows.length };
-  }, [filteredRows]);
+    const allJobs = filteredJobs;
+    const completed = allJobs.filter((j) => j.status === "completed").length;
+    const failed = allJobs.filter((j) => j.status === "failed").length;
+    const inProgress = allJobs.filter((j) => IN_PROGRESS_STATUSES.includes(j.status)).length;
+    return { completed, failed, inProgress, total: allJobs.length };
+  }, [filteredJobs]);
 
+  const hasFilters = !!filterSchedule || !!filterStatus || !!filterTimeRange;
   const statsDescription = hasFilters ? "Filtered results" : "Last 500 jobs";
 
-  const activeStatus =
-    (columnFilters.find((f) => f.id === "status")?.value as string) ?? "";
-  const activeClient =
-    (columnFilters.find((f) => f.id === "client_id")?.value as string) ?? "";
-  const activeSource =
-    (columnFilters.find((f) => f.id === "api_source")?.value as string) ?? "";
-  const activeMarketplace =
-    (columnFilters.find((f) => f.id === "marketplace")?.value as string) ?? "";
-  const activeTimeRange =
-    (columnFilters.find((f) => f.id === "started_at")?.value as string) ?? "";
-
-  function setFilter(id: string, value: string | null) {
-    setColumnFilters((prev) => {
-      const next = prev.filter((f) => f.id !== id);
-      if (value) next.push({ id, value });
-      return next;
-    });
-  }
+  const distinctSchedules = useMemo(() => {
+    return groups.map((g) => ({ id: g.scheduleId, name: g.scheduleName }));
+  }, [groups]);
 
   if (loading) {
     return (
@@ -317,170 +320,97 @@ export function Dashboard() {
         />
       </div>
 
-      <Card>
-        <CardHeader className="pb-4">
-          <CardTitle>Jobs</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Filter toolbar */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              value={activeStatus}
-              onValueChange={(v) => setFilter("status", v)}
-            >
-              <SelectTrigger size="sm" className="w-[130px]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                {STATUS_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+      {/* Filter toolbar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={filterSchedule}
+          onValueChange={(v) => setFilterSchedule(v === "all" ? "" : (v ?? ""))}
+        >
+          <SelectTrigger size="sm" className="w-[200px]">
+            <SelectValue placeholder="All schedules" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All schedules</SelectItem>
+            {distinctSchedules.map((s) => (
+              <SelectItem key={s.id} value={s.id}>
+                {s.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-            <Select
-              value={activeClient}
-              onValueChange={(v) => setFilter("client_id", v)}
-            >
-              <SelectTrigger size="sm" className="w-[140px]">
-                <SelectValue placeholder="Client" />
-              </SelectTrigger>
-              <SelectContent>
-                {distinctClients.map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {c}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <Select
+          value={filterStatus}
+          onValueChange={(v) => setFilterStatus(v === "all" ? "" : (v ?? ""))}
+        >
+          <SelectTrigger size="sm" className="w-[150px]">
+            <SelectValue placeholder="All statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            {STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-            <Select
-              value={activeSource}
-              onValueChange={(v) => setFilter("api_source", v)}
-            >
-              <SelectTrigger size="sm" className="w-[120px]">
-                <SelectValue placeholder="Source" />
-              </SelectTrigger>
-              <SelectContent>
-                {SOURCE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <Select
+          value={filterTimeRange}
+          onValueChange={(v) => setFilterTimeRange(v === "all" ? "" : (v ?? ""))}
+        >
+          <SelectTrigger size="sm" className="w-[150px]">
+            <SelectValue placeholder="Time range" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All time</SelectItem>
+            {TIME_RANGE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-            <Select
-              value={activeMarketplace}
-              onValueChange={(v) => setFilter("marketplace", v)}
-            >
-              <SelectTrigger size="sm" className="w-[130px]">
-                <SelectValue placeholder="Marketplace" />
-              </SelectTrigger>
-              <SelectContent>
-                {distinctMarketplaces.map((m) => (
-                  <SelectItem key={m} value={m}>
-                    {m}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        {hasFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setFilterSchedule("");
+              setFilterStatus("");
+              setFilterTimeRange("");
+            }}
+          >
+            <FilterX className="mr-1 h-3.5 w-3.5" />
+            Clear
+          </Button>
+        )}
+      </div>
 
-            <Select
-              value={activeTimeRange}
-              onValueChange={(v) => setFilter("started_at", v)}
-            >
-              <SelectTrigger size="sm" className="w-[140px]">
-                <SelectValue placeholder="Time range" />
-              </SelectTrigger>
-              <SelectContent>
-                {TIME_RANGE_OPTIONS.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Input
-              placeholder="Search report type…"
-              className="h-7 w-[180px] text-sm"
-              value={
-                (table.getColumn("report_type")?.getFilterValue() as string) ??
-                ""
-              }
-              onChange={(e) =>
-                table
-                  .getColumn("report_type")
-                  ?.setFilterValue(e.target.value || undefined)
-              }
-            />
-
-            {hasFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setColumnFilters([])}
-              >
-                <FilterX className="mr-1 h-3.5 w-3.5" />
-                Clear
-              </Button>
-            )}
-          </div>
-
-          {/* Table */}
-          {table.getRowModel().rows.length === 0 ? (
+      {/* Schedule groups */}
+      {visibleGroups.length === 0 && adhocJobs.length === 0 ? (
+        <Card>
+          <CardContent className="pt-6">
             <EmptyState
               icon={Activity}
-              title={hasFilters ? "No matching jobs" : "No jobs yet"}
+              title={hasFilters ? "No matching runs" : "No jobs yet"}
               description={
                 hasFilters
                   ? "Try adjusting your filters."
                   : "Trigger an on-demand report or configure a schedule to get started."
               }
             />
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  {table.getHeaderGroups().map((headerGroup) => (
-                    <TableRow key={headerGroup.id}>
-                      {headerGroup.headers.map((header) => (
-                        <TableHead key={header.id}>
-                          {header.isPlaceholder
-                            ? null
-                            : flexRender(
-                                header.column.columnDef.header,
-                                header.getContext(),
-                              )}
-                        </TableHead>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableHeader>
-                <TableBody>
-                  {table.getRowModel().rows.map((row) => (
-                    <TableRow key={row.id}>
-                      {row.getVisibleCells().map((cell) => (
-                        <TableCell key={cell.id}>
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext(),
-                          )}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-
-              <DataTablePagination table={table} />
-            </>
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {visibleGroups.map((group) => (
+            <ScheduleGroupCard key={group.scheduleId} group={group} />
+          ))}
+          {!filterSchedule && <AdhocJobsCard jobs={adhocJobs} />}
+        </div>
+      )}
     </div>
   );
 }

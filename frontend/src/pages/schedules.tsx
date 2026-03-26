@@ -47,6 +47,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { EmptyState } from "@/components/empty-state";
+import { RunJobsList } from "@/components/run-jobs-list";
 import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import { FolderConfig } from "@/components/folder-config";
 import { TimeframeConfig } from "@/components/timeframe-config";
@@ -80,6 +81,11 @@ import {
   FolderOpen,
   Inbox,
   ChevronsUpDown,
+  CheckCircle,
+  AlertTriangle,
+  XCircle,
+  ExternalLink,
+  Eye,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -455,6 +461,35 @@ function ScheduleForm({
 }
 
 // ---------------------------------------------------------------------------
+// Last Run Status Indicator
+// ---------------------------------------------------------------------------
+
+function RunStatusIndicator({ schedule }: { schedule: Schedule }) {
+  const status = schedule.last_run_status;
+  const counts = schedule.last_run_job_count;
+
+  if (!status) return null;
+
+  const config = {
+    success: { icon: CheckCircle, className: "text-emerald-500", label: "All succeeded" },
+    partial: { icon: AlertTriangle, className: "text-amber-500", label: "Partial failure" },
+    failed: { icon: XCircle, className: "text-destructive", label: "All failed" },
+  }[status];
+
+  if (!config) return null;
+  const Icon = config.icon;
+  const tooltip = counts
+    ? `${config.label} (${counts.completed}/${counts.total} completed)`
+    : config.label;
+
+  return (
+    <span title={tooltip} className="inline-flex items-center">
+      <Icon className={`h-3.5 w-3.5 ${config.className}`} />
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Schedule Table (reused in flat and grouped views)
 // ---------------------------------------------------------------------------
 
@@ -467,6 +502,7 @@ function ScheduleTable({
   onTriggerNow,
   onEdit,
   onDelete,
+  onViewLastRun,
 }: {
   schedules: Schedule[];
   showFolderColumn: boolean;
@@ -476,6 +512,7 @@ function ScheduleTable({
   onTriggerNow: (s: Schedule) => void;
   onEdit: (s: Schedule) => void;
   onDelete: (s: Schedule) => void;
+  onViewLastRun: (s: Schedule) => void;
 }) {
   return (
     <Table>
@@ -553,7 +590,19 @@ function ScheduleTable({
               </TableCell>
             )}
             <TableCell className="text-muted-foreground">
-              {formatDate(sched.last_run_at)}
+              {sched.last_run_at ? (
+                <button
+                  type="button"
+                  onClick={() => onViewLastRun(sched)}
+                  className="inline-flex items-center gap-1.5 hover:text-foreground hover:underline transition-colors cursor-pointer"
+                  title="View last run details"
+                >
+                  <RunStatusIndicator schedule={sched} />
+                  {formatDate(sched.last_run_at)}
+                </button>
+              ) : (
+                <span>{formatDate(sched.last_run_at)}</span>
+              )}
             </TableCell>
             <TableCell className="text-muted-foreground">
               {formatDate(sched.next_run_at)}
@@ -572,6 +621,25 @@ function ScheduleTable({
                     <Play className="mr-2 h-4 w-4" />
                     Run Now
                   </DropdownMenuItem>
+                  {sched.last_run_at && (
+                    <DropdownMenuItem onClick={() => onViewLastRun(sched)}>
+                      <Eye className="mr-2 h-4 w-4" />
+                      View Last Run
+                    </DropdownMenuItem>
+                  )}
+                  {sched.last_drive_folder_id && (
+                    <DropdownMenuItem
+                      onClick={() =>
+                        window.open(
+                          `https://drive.google.com/drive/folders/${sched.last_drive_folder_id}`,
+                          "_blank",
+                        )
+                      }
+                    >
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      Open Drive Folder
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onClick={() => onEdit(sched)}>
                     <Pencil className="mr-2 h-4 w-4" />
                     Edit
@@ -608,6 +676,7 @@ export function Schedules() {
   const triggerSchedule = useTriggerSchedule();
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Schedule | null>(null);
+  const [viewRunTarget, setViewRunTarget] = useState<Schedule | null>(null);
 
   const [viewMode, setViewMode] = useState<ViewMode>(getPersistedViewMode);
   const [openGroups, setOpenGroups] = useState<string[]>([]);
@@ -807,6 +876,20 @@ export function Schedules() {
         </DialogContent>
       </Dialog>
 
+      {/* View Last Run Dialog */}
+      <Dialog open={!!viewRunTarget} onOpenChange={(open) => { if (!open) setViewRunTarget(null); }}>
+        <DialogContent className="sm:max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Last Run {viewRunTarget?.name ? `\u2014 ${viewRunTarget.name}` : ""}
+            </DialogTitle>
+          </DialogHeader>
+          {viewRunTarget && (
+            <RunJobsList scheduleId={viewRunTarget.id} />
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Toolbar: filter + view toggle */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -897,6 +980,7 @@ export function Schedules() {
               onTriggerNow={handleTriggerNow}
               onEdit={setEditTarget}
               onDelete={handleDelete}
+              onViewLastRun={setViewRunTarget}
             />
           </CardContent>
         </Card>
@@ -951,6 +1035,7 @@ export function Schedules() {
                   onTriggerNow={handleTriggerNow}
                   onEdit={setEditTarget}
                   onDelete={handleDelete}
+                  onViewLastRun={setViewRunTarget}
                 />
               </AccordionContent>
             </AccordionItem>

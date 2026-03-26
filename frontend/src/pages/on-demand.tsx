@@ -13,7 +13,7 @@ import { useClients } from "@/hooks/use-clients";
 import { useRealtimeJobs, useTriggerOnDemand } from "@/hooks/use-jobs";
 import { formatApiSource, formatReportType, timeAgo } from "@/lib/format";
 import type { ApiSource, Job } from "@/types";
-import { Loader2, Zap, Send, FileText, ExternalLink } from "lucide-react";
+import { Loader2, Zap, Send, FileText, ExternalLink, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 
 function JobProgressCard({ job }: { job: Job }) {
@@ -99,8 +99,25 @@ export function OnDemand() {
   const activeClients = (clients ?? []).filter((c) => c.is_active);
   const clientOptions = activeClients.map((c) => ({ id: c.id, label: c.name }));
 
+  const MAX_LOOKBACK_DAYS = 60;
+
+  const dateValidationError = (() => {
+    if (!startDate || !endDate) return null;
+    if (startDate > endDate) return "Start date must be on or before end date";
+    const diffMs = new Date(endDate).getTime() - new Date(startDate).getTime();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays > MAX_LOOKBACK_DAYS) return `Date range cannot exceed ${MAX_LOOKBACK_DAYS} days`;
+    return null;
+  })();
+
   const canSubmit =
-    clientIds.length > 0 && marketplaceIds.length > 0 && reportTypes.length > 0 && !submitting;
+    clientIds.length > 0 &&
+    marketplaceIds.length > 0 &&
+    reportTypes.length > 0 &&
+    !!startDate &&
+    !!endDate &&
+    !dateValidationError &&
+    !submitting;
 
   const totalJobs = clientIds.length * marketplaceIds.length * reportTypes.length;
 
@@ -129,8 +146,13 @@ export function OnDemand() {
       );
       const total = results.reduce((sum, r) => sum + r.jobs_started, 0);
       toast.success(`Triggered ${total} report${total !== 1 ? "s" : ""}`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to trigger reports");
+    } catch (err: unknown) {
+      const apiErr = err as { status?: number; message?: string };
+      if (apiErr.status === 429) {
+        toast.error(apiErr.message || "Too many active reports for this client. Please wait.");
+      } else {
+        toast.error(err instanceof Error ? err.message : "Failed to trigger reports");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -178,23 +200,39 @@ export function OnDemand() {
 
               <Separator />
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Start Date (optional)</Label>
-                  <Input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                  />
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>
+                      Start Date <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                      max={endDate || undefined}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>
+                      End Date <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      min={startDate || undefined}
+                      required
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>End Date (optional)</Label>
-                  <Input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                  />
-                </div>
+                {dateValidationError && (
+                  <p className="flex items-center gap-1.5 text-xs text-destructive">
+                    <AlertCircle className="h-3 w-3 shrink-0" />
+                    {dateValidationError}
+                  </p>
+                )}
               </div>
 
               <FolderConfig

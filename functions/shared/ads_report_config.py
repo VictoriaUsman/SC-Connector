@@ -76,8 +76,8 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
             "metrics": [
                 "impressions", "clicks", "cost",
-                "purchases14d", "sales14d", "unitsSoldClicks14d",
-                "detailPageViews14d", "newToBrandPurchases14d", "newToBrandSales14d",
+                "purchases", "sales", "unitsSoldClicks",
+                "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
             ],
         },
     },
@@ -91,7 +91,7 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
             "metrics": [
                 "impressions", "clicks", "cost",
-                "purchases14d", "sales14d",
+                "purchases", "sales",
             ],
         },
     },
@@ -105,8 +105,8 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
             "metrics": [
                 "impressions", "clicks", "cost",
-                "purchases14d", "sales14d",
-                "viewImpressions", "viewAttributedSales14d", "viewAttributedPurchases14d",
+                "purchases", "sales", "unitsSoldClicks",
+                "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
             ],
         },
     },
@@ -120,7 +120,7 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
             "metrics": [
                 "impressions", "clicks", "cost",
-                "purchases14d", "sales14d", "viewImpressions",
+                "purchases", "sales", "unitsSoldClicks",
             ],
         },
     },

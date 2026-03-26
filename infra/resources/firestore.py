@@ -47,6 +47,30 @@ def create(
         project=project,
     )
 
+    # Jobs: query by schedule_id ordered by started_at (dashboard schedule filter)
+    gcp.firestore.Index(
+        f"kalilos-{env}-idx-jobs-schedule-started",
+        database=db.name,
+        collection="jobs",
+        fields=[
+            gcp.firestore.IndexFieldArgs(field_path="schedule_id", order="ASCENDING"),
+            gcp.firestore.IndexFieldArgs(field_path="started_at", order="DESCENDING"),
+        ],
+        project=project,
+    )
+
+    # Jobs: query by schedule_id + execution_date (run-specific job lookups)
+    gcp.firestore.Index(
+        f"kalilos-{env}-idx-jobs-schedule-execdate",
+        database=db.name,
+        collection="jobs",
+        fields=[
+            gcp.firestore.IndexFieldArgs(field_path="schedule_id", order="ASCENDING"),
+            gcp.firestore.IndexFieldArgs(field_path="execution_date", order="ASCENDING"),
+        ],
+        project=project,
+    )
+
     # Schedules: query active schedules by next_run_at (for scheduler fan-out)
     gcp.firestore.Index(
         f"kalilos-{env}-idx-schedules-active-nextrun",

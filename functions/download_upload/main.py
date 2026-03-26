@@ -99,6 +99,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 job_id,
                 "completed",
                 gdrive_file_id=result["file_id"],
+                gdrive_folder_id=result["folder_id"],
                 gdrive_path=result["path"],
             )
 

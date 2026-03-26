@@ -291,7 +291,7 @@ def build_folder_path(
     """
     parts: list[str] = []
     if folder_name:
-        parts.append(folder_name)
+        parts.extend(seg for seg in folder_name.split("/") if seg.strip())
     if subfolder_strategy != "none":
         parts.append(report_date.isoformat())
     parts.extend([client_name, marketplace, report_type])
@@ -434,7 +434,7 @@ def upload_report(
     path = f"{path_prefix}/{filename}"
 
     logger.info("Report uploaded to Drive", extra={"file_id": file_id, "path": path})
-    return {"file_id": file_id, "path": path, "filename": filename}
+    return {"file_id": file_id, "folder_id": folder_id, "path": path, "filename": filename}
 
 
 _SP_API_JSON_REPORTS = {

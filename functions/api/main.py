@@ -20,7 +20,7 @@ import requests
 from google.cloud import secretmanager
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, TIME_UNITS, get_report_defaults
 from shared.config import LWA_TOKEN_URL, get_environment, get_project
-from shared.schedule_compute import VALID_TIMEFRAME_STRATEGIES, compute_next_run
+from shared.schedule_compute import VALID_TIMEFRAME_STRATEGIES, compute_next_run, marketplace_today
 from shared.firestore_utils import (
     create_job,
     create_schedule,
@@ -454,8 +454,16 @@ def trigger_schedule_route(schedule_id: str):
 def list_jobs_route():
     client_id = flask.request.args.get("client_id")
     status = flask.request.args.get("status")
+    schedule_id = flask.request.args.get("schedule_id")
+    execution_date = flask.request.args.get("execution_date")
     limit = min(int(flask.request.args.get("limit", "50")), 200)
-    return flask.jsonify(_serialize(list_jobs(client_id=client_id, status=status, limit=limit))), 200
+    return flask.jsonify(_serialize(list_jobs(
+        client_id=client_id,
+        status=status,
+        schedule_id=schedule_id,
+        execution_date=execution_date,
+        limit=limit,
+    ))), 200
 
 
 @app.route("/jobs/<job_id>", methods=["GET"])
@@ -506,10 +514,40 @@ def on_demand_route():
     if not client or not client.get("is_active", True):
         return flask.jsonify({"error": "Client not found or inactive", "code": "NOT_FOUND"}), 404
 
-    parent = get_workflow_parent()
-    report_params_map: dict = data.get("report_params", {})
+    from shared.firestore_utils import get_db
+    active_statuses = ["pending", "requesting", "polling", "downloading", "uploading"]
+    active_jobs = (
+        get_db().collection("jobs")
+        .where("client_id", "==", data["client_id"])
+        .where("status", "in", active_statuses)
+        .limit(11)
+        .get()
+    )
+    if len(active_jobs) >= 10:
+        return flask.jsonify({
+            "error": "Too many active reports for this client. Please wait for current jobs to finish.",
+            "code": "RATE_LIMITED",
+        }), 429
+
     start_date = data.get("start_date", "")
     end_date = data.get("end_date", "")
+    if not start_date or not end_date:
+        return flask.jsonify({"error": "start_date and end_date are required", "code": "INVALID_REQUEST"}), 400
+    try:
+        sd = date.fromisoformat(start_date)
+        ed = date.fromisoformat(end_date)
+    except ValueError:
+        return flask.jsonify({"error": "start_date and end_date must be valid YYYY-MM-DD dates", "code": "INVALID_REQUEST"}), 400
+    if sd > ed:
+        return flask.jsonify({"error": "start_date must be on or before end_date", "code": "INVALID_REQUEST"}), 400
+    if (ed - sd).days > 60:
+        return flask.jsonify({"error": "Date range cannot exceed 60 days", "code": "INVALID_REQUEST"}), 400
+
+    parent = get_workflow_parent()
+    report_params_map: dict = data.get("report_params", {})
+
+    now = datetime.now(timezone.utc)
+    execution_date = marketplace_today(data["marketplace"], now).isoformat()
 
     job_ids: list[str] = []
     errors: list[dict[str, str]] = []
@@ -535,6 +573,7 @@ def on_demand_route():
             "marketplace": data["marketplace"],
             "report_type": report_type,
             "frequency": "on_demand",
+            "execution_date": execution_date,
         })
 
         payload = build_payload(
@@ -547,6 +586,7 @@ def on_demand_route():
             frequency="on_demand",
             folder_name=data.get("folder_name", ""),
             subfolder_strategy=data.get("subfolder_strategy", "date"),
+            execution_date=execution_date,
         )
 
         try:
