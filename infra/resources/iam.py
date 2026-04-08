@@ -55,13 +55,18 @@ def create_service_accounts(
         )
 
     # --- Project-level roles for the workflow SA ---
-    gcp.projects.IAMMember(
-        f"kalilos-{env}-wf-logWriter",
-        project=project,
-        role="roles/logging.logWriter",
-        member=pulumi.Output.concat("serviceAccount:", workflow_sa.email),
-        opts=opts,
-    )
+    for role in [
+        "roles/logging.logWriter",
+        "roles/datastore.user",
+    ]:
+        role_short = role.split("/")[-1]
+        gcp.projects.IAMMember(
+            f"kalilos-{env}-wf-{role_short}",
+            project=project,
+            role=role,
+            member=pulumi.Output.concat("serviceAccount:", workflow_sa.email),
+            opts=opts,
+        )
 
     return {
         "functions": functions_sa,

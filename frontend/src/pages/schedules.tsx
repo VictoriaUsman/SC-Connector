@@ -52,6 +52,7 @@ import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import { FolderConfig } from "@/components/folder-config";
 import { TimeframeConfig } from "@/components/timeframe-config";
 import { ReportSelector } from "@/components/report-selector";
+import { ReportTypeSummary } from "@/components/report-type-summary";
 import { useClients } from "@/hooks/use-clients";
 import {
   useSchedules,
@@ -60,11 +61,10 @@ import {
   useDeleteSchedule,
   useTriggerSchedule,
 } from "@/hooks/use-schedules";
-import { formatDate, formatApiSource, formatReportType, formatTimeframeLabel } from "@/lib/format";
+import { formatDate, formatApiSource, formatTimeframeLabel } from "@/lib/format";
 import {
   FREQUENCIES,
   DAYS_OF_WEEK,
-  isAdsReportType,
 } from "@/types";
 import type { ApiSource, Frequency, Schedule, ScheduleConfig, Timeframe } from "@/types";
 import {
@@ -549,22 +549,8 @@ function ScheduleTable({
               {resolveClientNames(sched)}
             </TableCell>
             <TableCell>{formatApiSource(sched.api_source)}</TableCell>
-            <TableCell className="max-w-[220px]">
-              <div className="flex flex-wrap gap-1">
-                {sched.report_types.map((rt) => (
-                  <Badge
-                    key={rt}
-                    variant="secondary"
-                    className={`text-xs ${
-                      isAdsReportType(rt)
-                        ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
-                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
-                    }`}
-                  >
-                    {formatReportType(rt)}
-                  </Badge>
-                ))}
-              </div>
+            <TableCell>
+              <ReportTypeSummary reportTypes={sched.report_types} />
             </TableCell>
             <TableCell>
               {(sched.marketplaces ?? []).length > 0 ? (

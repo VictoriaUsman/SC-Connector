@@ -6,17 +6,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
+import { MultiSelectDropdown, type DropdownGroup, type DropdownOption } from "@/components/multi-select-dropdown";
 import { AdsReportConfigPanel, type AdsReportParams } from "@/components/ads-report-config";
 import { SpReportConfigPanel, type SpReportParams } from "@/components/sp-report-config";
 import { ReportColumnsPreview } from "@/components/report-columns-preview";
-import { formatReportType } from "@/lib/format";
 import { hasSpReportOptions } from "@/data/report-metadata";
+import {
+  SP_REPORT_CATEGORIES,
+  ADS_REPORT_CATEGORIES,
+} from "@/data/report-categories";
 import {
   API_SOURCES,
   MARKETPLACES,
-  SP_REPORT_TYPES,
-  ADS_REPORT_TYPES,
   isAdsReportType,
 } from "@/types";
 import type { ApiSource } from "@/types";
@@ -26,15 +27,22 @@ const MARKETPLACE_OPTIONS = MARKETPLACES.map((m) => ({
   label: `${m.flag} ${m.id}`,
 }));
 
-const SP_REPORT_OPTIONS = SP_REPORT_TYPES.map((rt) => ({
-  id: rt,
-  label: formatReportType(rt),
-}));
+function toDropdownGroups(
+  categories: typeof SP_REPORT_CATEGORIES,
+): DropdownGroup<DropdownOption>[] {
+  return categories.map((cat) => ({
+    label: cat.label,
+    options: cat.reports.map((r) => ({
+      id: r.id,
+      label: r.label,
+      description: r.description,
+      constraint: r.constraint,
+    })),
+  }));
+}
 
-const ADS_REPORT_OPTIONS = ADS_REPORT_TYPES.map((rt) => ({
-  id: rt,
-  label: formatReportType(rt),
-}));
+const SP_REPORT_GROUPS = toDropdownGroups(SP_REPORT_CATEGORIES);
+const ADS_REPORT_GROUPS = toDropdownGroups(ADS_REPORT_CATEGORIES);
 
 export function ReportSelector({
   apiSource,
@@ -127,7 +135,7 @@ export function ReportSelector({
         <>
           <MultiSelectDropdown
             label={apiSource === "both" ? "SP API Report Types" : "Report Types"}
-            options={SP_REPORT_OPTIONS}
+            groups={SP_REPORT_GROUPS}
             selected={selectedSpTypes}
             onChange={handleSpChange}
           />
@@ -162,7 +170,7 @@ export function ReportSelector({
         <>
           <MultiSelectDropdown
             label={apiSource === "both" ? "Ads API Report Types" : "Report Types"}
-            options={ADS_REPORT_OPTIONS}
+            groups={ADS_REPORT_GROUPS}
             selected={selectedAdsTypes}
             onChange={handleAdsChange}
           />

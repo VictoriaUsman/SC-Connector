@@ -13,7 +13,7 @@ main:
             - log_global_error:
                 call: sys.log
                 args:
-                  text: '${"Workflow failed - job=" + args.job_id + " error=" + string(e)}'
+                  text: '${"Workflow failed - job=" + args.job_id + " error=" + json.encode(e)}'
                   severity: ERROR
             - mark_job_failed:
                 call: http.patch
@@ -31,7 +31,7 @@ main:
                         mapValue:
                           fields:
                             message:
-                              stringValue: ${string(e)}
+                              stringValue: ${json.encode(e)}
                             phase:
                               stringValue: "workflow_error"
             - raise_final:

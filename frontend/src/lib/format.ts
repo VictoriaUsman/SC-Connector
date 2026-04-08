@@ -39,6 +39,7 @@ const ADS_REPORT_LABELS: Record<string, string> = {
   sbSearchTerm: "SB - Search Term",
   sdCampaigns: "SD - Campaigns",
   sdTargeting: "SD - Targeting",
+  sdAdvertisedProduct: "SD - Advertised Product",
 };
 
 export function formatReportType(type: string): string {

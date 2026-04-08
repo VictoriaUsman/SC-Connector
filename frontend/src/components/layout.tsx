@@ -19,7 +19,7 @@ export function Layout() {
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4">
+        <div className="mx-auto flex h-14 max-w-[1440px] items-center gap-6 px-6">
           <span className="text-lg font-semibold tracking-tight">Kalilos</span>
           <nav className="flex items-center gap-1">
             {NAV_ITEMS.map(({ to, icon: Icon, label }) => (
@@ -46,7 +46,7 @@ export function Layout() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-6">
+      <main className="mx-auto max-w-[1440px] px-6 py-6">
         <Outlet />
       </main>
     </div>

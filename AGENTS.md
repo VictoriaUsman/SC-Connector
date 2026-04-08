@@ -1,6 +1,6 @@
 # Kalilos Amazon Reports Connector
 
-> **GCP Identity**: This project uses `nivbraz90@gmail.com`. All deployment scripts verify the active gcloud account and abort if wrong. To authenticate: `gcloud auth login nivbraz90@gmail.com`. The Makefile `check-auth` target runs automatically before any deploy.
+> **GCP Identity**: This project uses `nivbraz90@gmail.com`. All deployment scripts verify the active gcloud account and abort if wrong. Use gcloud named configurations to avoid switching: `gcloud config configurations activate kalilos`. The Makefile `check-auth` target runs automatically before any deploy. When Pulumi fails with permission errors, set `export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token --account=nivbraz90@gmail.com)` before running `make deploy-infra`.
 
 ## Purpose
 
@@ -27,7 +27,9 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 
 **Report Storage**: Google Drive via a GCP service account with native IAM. Default folder layout is date-first: `{root}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`. A custom `folder_name` acts as a prefix: `{root}/{folder_name}/{YYYY-MM-DD}/{client}/{marketplace}/{report_type}/`. Setting `subfolder_strategy` to "none" drops the date segment. Folder creation is coordinated across concurrent workflow executions using Firestore-based distributed locks (`_drive_folder_locks` collection) to prevent duplicate folders from Drive's eventually-consistent search API.
 
-**Frontend**: React + Vite + shadcn/ui on Firebase Hosting. Uses Firestore real-time listeners for live job status. Calls an API Gateway backed by a Cloud Function for mutations. The Schedules page supports inline editing (Edit dialog) and immediate triggering (Run Now) from the row dropdown menu.
+**Frontend**: React + Vite + shadcn/ui on Firebase Hosting. Uses Firestore real-time listeners for live job status. Calls an API Gateway backed by a Cloud Function for mutations. The Schedules page supports inline editing (Edit dialog) and immediate triggering (Run Now) from the row dropdown menu. Report types are organized by domain in the selector dropdown (Listings, Orders, FBA, Returns, Financial, Brand Analytics for SP; Sponsored Products/Brands/Display for Ads), with descriptions and constraint warnings visible inline.
+
+**Workflow Error Handling**: The workflow YAML uses a global try/except pattern — `main` calls a `report_pipeline` subworkflow, and any unhandled error (auth failure, create_report error, etc.) is caught by the global handler which marks the Firestore job as `"failed"` using `args.job_id`. This prevents zombie "pending" jobs. Error serialization uses `json.encode(e)` (not `string(e)`, which crashes on dicts). The workflow service account has `roles/datastore.user` for Firestore REST API access.
 
 **Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Local file backend (`file://~/.pulumi-local`). Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
 
@@ -141,8 +143,16 @@ kalilos-connector/
 │       ├── config.py                 # Env, config, marketplace timezones
 │       ├── schedule_compute.py       # Timezone-aware dates, date ranges, flexible next_run_at
 │       └── workflow_launcher.py      # Unified workflow launch, retry, per-(client,mkt,report) fan-out
+├── tests/
+│   ├── seed_report_test_schedules.py  # Seed test schedules covering all report types
+│   ├── test_drive_client.py
+│   ├── test_report_converter.py
+│   ├── test_scheduler.py
+│   ├── test_workflow_launcher.py
+│   ├── test_api.py
+│   └── test_schedule_compute.py
 ├── workflows/
-│   └── report_flow.yaml              # Cloud Workflow: unified report pipeline
+│   └── report_flow.yaml              # Cloud Workflow: unified report pipeline (global error handler)
 └── frontend/
     ├── package.json
     ├── vite.config.ts
@@ -163,7 +173,8 @@ kalilos-connector/
         │   ├── report-columns-preview.tsx  # Expandable column preview for any report type
         │   └── folder-config.tsx      # Drive folder name, subfolder strategy, path preview
         ├── data/
-        │   └── report-metadata.ts     # Static SP API report column catalog and options
+        │   ├── report-metadata.ts     # Static SP API report column catalog and options
+        │   └── report-categories.ts   # Report type categorization by domain, with descriptions
         ├── hooks/                     # Custom React hooks
         ├── lib/                       # Utilities and Firebase config
         └── types/                     # TypeScript type definitions
@@ -258,15 +269,57 @@ JSON-to-TSV conversion for spreadsheet-friendly output:
 
 ### Add a new report type
 
-If the report type follows the standard SP API or Ads API pattern, add it to the report type configuration in Firestore (via the UI or seed script). No code changes needed — the workflow handles arbitrary report types parametrically.
+**For a new SP API report (TSV format):**
+1. Add the report type ID to `SP_REPORT_TYPES` in `frontend/src/types/index.ts`.
+2. Add it to the appropriate category in `frontend/src/data/report-categories.ts` (with label, description, and optional constraint).
+3. Add column metadata to `SP_REPORT_METADATA` in `frontend/src/data/report-metadata.ts`.
+4. Add it to `ALL_SP_REPORT_TYPES` in `tests/seed_report_test_schedules.py` (and to `_MONTHLY_ONLY_SP` if it requires `last_calendar_month`).
+5. Re-run: `python3 tests/seed_report_test_schedules.py` to update test schedules.
 
-For non-standard report types, add a handler branch in `functions/create_report/main.py` and `functions/download_upload/main.py`.
+**For a new SP API report (JSON format):**
+All of the above, plus:
+6. Add to `_SP_API_JSON_REPORTS` in `functions/shared/drive_client.py`.
+7. Add the report type and its array key(s) to `_SP_API_ARRAY_KEYS` in `functions/shared/report_converter.py`.
 
-**If the report returns JSON** (not TSV/XML/CSV):
-1. Add the report type to `_SP_API_JSON_REPORTS` in `functions/shared/drive_client.py` (for correct MIME type when NOT converting).
-2. Add the report type and its main data array key(s) to `_JSON_REPORT_ARRAY_KEYS` in `functions/shared/report_converter.py` (for JSON→TSV flattening).
-3. Add the report type to `SP_REPORT_TYPES` in `frontend/src/types/index.ts`.
-4. Add column metadata to `SP_REPORT_METADATA` in `frontend/src/data/report-metadata.ts` (columns, format, and any configurable `reportOptions`).
+**For a new Brand Analytics report:** also add to `_BRAND_ANALYTICS_REPORT_PERIOD` in `functions/create_report/main.py` with its allowed periods (DAY, WEEK, MONTH, QUARTER). The `create_report` function auto-injects `reportOptions.reportPeriod` based on the date range when not explicitly provided.
+
+**For a new Ads API report:**
+1. Add the config to `functions/shared/ads_report_config.py` (adProduct, groupBy, columns).
+2. Add to `ADS_REPORT_TYPES` in `frontend/src/types/index.ts`.
+3. Add to the appropriate category in `frontend/src/data/report-categories.ts`.
+4. Add a label entry to `ADS_REPORT_LABELS` in `frontend/src/lib/format.ts`.
+5. Re-run: `python3 tests/seed_report_test_schedules.py`.
+
+### Report timeframe requirements
+
+Not all reports support all timeframe strategies. Key constraints:
+
+| Report Group | Supported Timeframes | Notes |
+|---|---|---|
+| Most SP API reports | Any (yesterday, last_n_days, etc.) | Standard TSV reports |
+| Sales & Traffic | Any | Auto-injects `dateGranularity: DAY`, `asinGranularity: CHILD` |
+| Brand Analytics Search Terms | Any | Supports DAY reportPeriod |
+| Brand Analytics (Market Basket, Repeat Purchase) | `last_calendar_week`, `last_calendar_month` | No DAY support — dates must align to period boundaries |
+| Brand Analytics (Search Query/Catalog Performance) | `last_calendar_week`, `last_calendar_month` | Same as above |
+| Settlement Reports | N/A | Auto-generated by Amazon, cannot be requested |
+| All Ads API reports | Any | Standard date range support |
+
+### Test report schedules
+
+`tests/seed_report_test_schedules.py` creates test schedules covering all report types:
+
+```bash
+python3 tests/seed_report_test_schedules.py                    # staging (default)
+python3 tests/seed_report_test_schedules.py --project kalilos-connector-prod --client acme
+python3 tests/seed_report_test_schedules.py --dry-run          # preview without writing
+```
+
+Creates 3 inactive schedules (trigger via "Run Now" in the UI):
+- **Test: SP Daily Reports** — all SP reports that work with `yesterday` timeframe
+- **Test: SP Monthly Reports** — Brand Analytics reports needing `last_calendar_month`
+- **Test: Ads Daily Reports** — all Ads API reports
+
+Re-running is idempotent — removes existing test schedules and recreates from current report registry. Non-requestable reports (settlements) are automatically skipped.
 
 ### Trigger a schedule immediately (Run Now)
 
