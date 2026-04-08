@@ -836,7 +836,7 @@ export function Schedules() {
             <Plus className="mr-2 h-4 w-4" />
             New Schedule
           </Button>
-          <DialogContent className="sm:max-w-2xl">
+          <DialogContent className="sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>Create Schedule</DialogTitle>
             </DialogHeader>
@@ -860,7 +860,7 @@ export function Schedules() {
 
       {/* Edit Dialog */}
       <Dialog open={!!editTarget} onOpenChange={(open) => { if (!open) setEditTarget(null); }}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit Schedule</DialogTitle>
           </DialogHeader>
