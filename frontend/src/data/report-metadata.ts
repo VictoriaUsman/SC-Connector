@@ -167,6 +167,177 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
       "sku", "quantity-purchased", "promotion-id",
     ],
   },
+
+  GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL: {
+    description: "FBA shipment details including tracking and item info",
+    format: "tsv",
+    columns: [
+      "amazon-order-id", "merchant-order-id", "shipment-id",
+      "shipment-item-id", "amazon-order-item-id",
+      "purchase-date", "payments-date", "shipment-date",
+      "reporting-date", "buyer-email", "buyer-name",
+      "buyer-phone-number", "sku", "product-name", "quantity-shipped",
+      "currency", "item-price", "item-tax",
+      "shipping-price", "shipping-tax",
+      "ship-service-level", "recipient-name",
+      "ship-address-1", "ship-city", "ship-state",
+      "ship-postal-code", "ship-country",
+      "tracking-number", "carrier", "asin",
+      "fulfillment-center-id",
+    ],
+  },
+
+  GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE: {
+    description: "FBM (merchant-fulfilled) returns by return date",
+    format: "tsv",
+    columns: [
+      "return-date", "order-id", "sku", "asin",
+      "fnsku", "product-name", "quantity",
+      "fulfillment-center-id", "detailed-disposition",
+      "reason", "status", "license-plate-number",
+      "customer-comments",
+    ],
+  },
+
+  GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA: {
+    description: "FBA customer returns with reason and disposition",
+    format: "tsv",
+    columns: [
+      "return-date", "order-id", "sku", "asin",
+      "fnsku", "product-name", "quantity",
+      "fulfillment-center-id", "detailed-disposition",
+      "reason", "status", "license-plate-number",
+      "customer-comments",
+    ],
+  },
+
+  GET_FBA_FULFILLMENT_REMOVAL_SHIPMENT_DETAIL_DATA: {
+    description: "FBA removal shipment details (returns to seller or disposal)",
+    format: "tsv",
+    columns: [
+      "request-date", "order-id", "order-type",
+      "order-status", "last-updated-date", "sku",
+      "fnsku", "disposition", "shipped-quantity",
+      "cancelled-quantity", "disposed-quantity",
+      "ship-to-city", "ship-to-state", "ship-to-country",
+      "carrier", "tracking-number", "shipment-date",
+    ],
+  },
+
+  GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT: {
+    description: "Brand Analytics search terms with click and conversion share",
+    format: "json",
+    columns: [
+      "departmentName", "searchTerm", "searchFrequencyRank",
+      "clickedAsin", "clickShareRank", "clickShare",
+      "conversionShare",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "DAY", label: "Day" },
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+        ],
+        default: "DAY",
+      },
+    ],
+  },
+
+  GET_BRAND_ANALYTICS_MARKET_BASKET_REPORT: {
+    description: "Market basket analysis — products frequently bought together",
+    format: "json",
+    columns: [
+      "departmentName", "asin", "title",
+      "combinationAsin", "combinationTitle",
+      "combinationPercentage",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+        ],
+        default: "MONTH",
+      },
+    ],
+  },
+
+  GET_BRAND_ANALYTICS_REPEAT_PURCHASE_REPORT: {
+    description: "Repeat purchase behavior — customer order frequency by ASIN",
+    format: "json",
+    columns: [
+      "departmentName", "asin", "title",
+      "ordersCount", "uniqueCustomersCount",
+      "repeatCustomersCount", "repeatCustomersPctTotal",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+        ],
+        default: "MONTH",
+      },
+    ],
+  },
+
+  GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT: {
+    description: "Search query performance — impressions, clicks, cart adds, purchases per query per ASIN",
+    format: "json",
+    columns: [
+      "asin", "searchQuery", "searchQueryScore", "searchQueryVolume",
+      "totalQueryImpressionCount", "asinImpressionCount", "asinImpressionShare",
+      "totalClickCount", "totalClickRate", "asinClickCount", "asinClickShare",
+      "totalCartAddCount", "totalCartAddRate", "asinCartAddCount", "asinCartAddShare",
+      "totalPurchaseCount", "totalPurchaseRate", "asinPurchaseCount", "asinPurchaseShare",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+        ],
+        default: "MONTH",
+      },
+    ],
+  },
+
+  GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT: {
+    description: "Search catalog performance — impressions, clicks, cart adds, purchases per ASIN across all queries",
+    format: "json",
+    columns: [
+      "asin", "impressionCount", "impressionMedianPrice",
+      "clickCount", "clickRate", "clickedMedianPrice",
+      "cartAddCount", "cartAddedMedianPrice",
+      "purchaseCount", "searchTrafficSales", "conversionRate", "purchaseMedianPrice",
+      "sameDayShippingImpressionCount", "oneDayShippingImpressionCount", "twoDayShippingImpressionCount",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+        ],
+        default: "MONTH",
+      },
+    ],
+  },
 };
 
 export function getSpReportMeta(reportType: string): SpReportMeta | undefined {

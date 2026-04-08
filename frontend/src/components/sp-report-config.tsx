@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/select";
 import { getSpReportMeta } from "@/data/report-metadata";
 import type { SpReportOption } from "@/data/report-metadata";
+import { formatReportType } from "@/lib/format";
 import { ChevronRight, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -69,7 +70,9 @@ export function SpReportConfigPanel({
           )}
         />
         <Settings2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-sm font-medium flex-1">Report Options</span>
+        <span className="text-sm font-medium flex-1 truncate">
+          {formatReportType(reportType)}
+        </span>
         <span className="text-xs text-muted-foreground">{summaryParts.join(" · ")}</span>
       </button>
 

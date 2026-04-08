@@ -142,21 +142,14 @@ export function ReportSelector({
             />
           ))}
 
-          {/* Column preview for SP types without config options */}
-          {spTypesWithoutOptions.length > 0 && (
+          {(spTypesWithoutOptions.length > 0 || spTypesWithOptions.length > 0) && (
             <div className="space-y-1.5">
               <p className="text-xs text-muted-foreground">
-                {spTypesWithoutOptions.length} report{spTypesWithoutOptions.length > 1 ? "s" : ""} selected — expand to preview columns
+                {selectedSpTypes.length} report{selectedSpTypes.length > 1 ? "s" : ""} selected &mdash; expand to preview columns
               </p>
               {spTypesWithoutOptions.map((rt) => (
                 <ReportColumnsPreview key={rt} reportType={rt} />
               ))}
-            </div>
-          )}
-
-          {/* Column preview for SP types WITH options (shown below their config) */}
-          {spTypesWithOptions.length > 0 && (
-            <div className="space-y-1.5">
               {spTypesWithOptions.map((rt) => (
                 <ReportColumnsPreview key={rt} reportType={rt} />
               ))}

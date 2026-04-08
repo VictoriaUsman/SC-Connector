@@ -275,23 +275,24 @@ function ScheduleForm({
           is_active: isActive,
         });
       }}
-      className="space-y-4 max-h-[70vh] overflow-y-auto pr-1"
+      className="space-y-5 max-h-[80vh] overflow-y-auto pr-2"
     >
-      <div className="space-y-2">
-        <Label>Schedule Name</Label>
-        <Input
-          placeholder="e.g. Month to Date, Weekly WoW"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label>Schedule Name</Label>
+          <Input
+            placeholder="e.g. Month to Date, Weekly WoW"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+        <MultiSelectDropdown
+          label="Clients"
+          options={clientOptions}
+          selected={clientIds}
+          onChange={setClientIds}
         />
       </div>
-
-      <MultiSelectDropdown
-        label="Clients"
-        options={clientOptions}
-        selected={clientIds}
-        onChange={setClientIds}
-      />
 
       <ReportSelector
         apiSource={apiSource}
@@ -835,7 +836,7 @@ export function Schedules() {
             <Plus className="mr-2 h-4 w-4" />
             New Schedule
           </Button>
-          <DialogContent className="sm:max-w-lg">
+          <DialogContent className="sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>Create Schedule</DialogTitle>
             </DialogHeader>
@@ -859,7 +860,7 @@ export function Schedules() {
 
       {/* Edit Dialog */}
       <Dialog open={!!editTarget} onOpenChange={(open) => { if (!open) setEditTarget(null); }}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Edit Schedule</DialogTitle>
           </DialogHeader>

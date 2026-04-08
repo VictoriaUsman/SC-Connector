@@ -124,6 +124,21 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
         },
     },
+    "sdAdvertisedProduct": {
+        "adProduct": "SPONSORED_DISPLAY",
+        "groupBy": ["advertiser"],
+        "columns": {
+            "dimensions": [
+                "date", "advertisedAsin", "advertisedSku",
+                "campaignName", "campaignId", "adGroupName", "adGroupId",
+            ],
+            "metrics": [
+                "impressions", "clicks", "cost",
+                "purchases", "sales", "unitsSoldClicks",
+                "viewImpressions", "viewAttributedSales14d", "viewAttributedPurchases14d",
+            ],
+        },
+    },
 }
 
 TIME_UNITS = ["DAILY", "SUMMARY"]
