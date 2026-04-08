@@ -140,3 +140,9 @@ export function useTriggerOnDemand() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
   });
 }
+
+export function useRetryJob() {
+  return useMutation({
+    mutationFn: (jobId: string) => api.retryJob(jobId),
+  });
+}

@@ -81,6 +81,10 @@ export const api = {
     return request<Job[]>(`/jobs${qs ? `?${qs}` : ""}`);
   },
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
+  retryJob: (id: string) =>
+    request<{ status: string; original_job_id: string; new_job_id: string }>(`/jobs/${id}/retry`, {
+      method: "POST",
+    }),
 
   // OAuth
   getOAuthStatus: (clientId: string) =>

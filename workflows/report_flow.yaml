@@ -13,7 +13,7 @@ main:
             - log_global_error:
                 call: sys.log
                 args:
-                  text: '${"Workflow failed - job=" + args.job_id + " error=" + json.encode(e)}'
+                  text: '${"Workflow failed - job=" + args.job_id + " error=" + text.decode(json.encode(e))}'
                   severity: ERROR
             - mark_job_failed:
                 call: http.patch
@@ -31,7 +31,7 @@ main:
                         mapValue:
                           fields:
                             message:
-                              stringValue: ${json.encode(e)}
+                              stringValue: ${text.decode(json.encode(e))}
                             phase:
                               stringValue: "workflow_error"
             - raise_final:
@@ -203,7 +203,7 @@ report_pipeline:
                 text: '${"Report failed - job=" + create_response.body.job_id + " status=" + poll_response.body.raw_status}'
                 severity: ERROR
           - raise_failure:
-              raise: '${"Report generation failed: " + poll_response.body.raw_status}'
+              raise: '${if(poll_response.body.raw_status == "FATAL" or poll_response.body.raw_status == "CANCELLED", "No data available — Amazon could not generate this report. The account may lack access (e.g. Brand Registry) or there is no data for the requested date range.", "Report generation failed: " + poll_response.body.raw_status)}'
 
     - poll_timeout:
         steps:

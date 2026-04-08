@@ -165,22 +165,22 @@ export const ADS_REPORT_CATEGORIES: ReportCategory[] = [
       {
         id: "spCampaigns",
         label: "SP \u2014 Campaigns",
-        description: "Campaign-level spend, clicks, and sales",
+        description: "Campaign-level metrics: campaignName, status, budget, impressions, clicks, cost, purchases (1/7/14/30d), sales (1/7/14/30d)",
       },
       {
         id: "spSearchTerm",
         label: "SP \u2014 Search Term",
-        description: "Search term performance with keyword targeting",
+        description: "Search term performance: searchTerm, targeting, keywordId, keywordType, impressions, clicks, cost, purchases, sales",
       },
       {
         id: "spTargeting",
         label: "SP \u2014 Targeting",
-        description: "Targeting-level performance metrics",
+        description: "Keyword/targeting performance: targeting, keyword, keywordId, keywordType, matchType, impressions, clicks, cost, purchases, sales",
       },
       {
         id: "spAdvertisedProduct",
         label: "SP \u2014 Advertised Product",
-        description: "ASIN-level performance for Sponsored Products",
+        description: "ASIN-level performance: advertisedAsin, advertisedSku, impressions, clicks, cost, purchases, sales per ad group",
       },
     ],
   },
@@ -190,12 +190,12 @@ export const ADS_REPORT_CATEGORIES: ReportCategory[] = [
       {
         id: "sbCampaigns",
         label: "SB \u2014 Campaigns",
-        description: "Campaign-level performance for Sponsored Brands",
+        description: "Campaign-level metrics: campaignName, status, budget, impressions, clicks, cost, purchases, sales, detailPageViews, newToBrand",
       },
       {
         id: "sbSearchTerm",
         label: "SB \u2014 Search Term",
-        description: "Search term performance for Sponsored Brands",
+        description: "Search term performance: searchTerm, campaignName, adGroupName, impressions, clicks, cost, purchases, sales",
       },
     ],
   },
@@ -205,17 +205,17 @@ export const ADS_REPORT_CATEGORIES: ReportCategory[] = [
       {
         id: "sdCampaigns",
         label: "SD \u2014 Campaigns",
-        description: "Campaign-level performance for Sponsored Display",
+        description: "Campaign-level metrics: campaignName, status, budget, impressions, clicks, cost, purchases, sales, detailPageViews, newToBrand",
       },
       {
         id: "sdTargeting",
         label: "SD \u2014 Targeting",
-        description: "Targeting-level performance for Sponsored Display",
+        description: "Targeting performance: targetingText, impressions, clicks, cost, purchases, sales, detailPageViews, newToBrand",
       },
       {
         id: "sdAdvertisedProduct",
         label: "SD \u2014 Advertised Product",
-        description: "ASIN-level performance for Sponsored Display",
+        description: "ASIN-level performance: promotedAsin, promotedSku, impressions, clicks, cost, purchases, sales, detailPageViews, newToBrand",
       },
     ],
   },

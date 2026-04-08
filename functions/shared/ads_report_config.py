@@ -43,12 +43,13 @@ ADS_REPORT_TYPES: dict[str, dict] = {
         "groupBy": ["targeting"],
         "columns": {
             "dimensions": [
-                "date", "targeting", "targetingId", "targetingType",
+                "date", "targeting", "keyword", "keywordId", "keywordType", "matchType",
                 "campaignName", "campaignId", "adGroupName", "adGroupId",
             ],
             "metrics": [
-                "impressions", "clicks", "cost",
+                "impressions", "clicks", "cost", "costPerClick",
                 "purchases7d", "sales7d", "unitsSoldClicks7d",
+                "topOfSearchImpressionShare",
             ],
         },
     },
@@ -115,12 +116,13 @@ ADS_REPORT_TYPES: dict[str, dict] = {
         "groupBy": ["targeting"],
         "columns": {
             "dimensions": [
-                "date", "targeting", "targetingId",
+                "date", "targetingText",
                 "campaignName", "campaignId", "adGroupName", "adGroupId",
             ],
             "metrics": [
                 "impressions", "clicks", "cost",
                 "purchases", "sales", "unitsSoldClicks",
+                "detailPageViewsClicks", "newToBrandSalesClicks",
             ],
         },
     },
@@ -129,13 +131,13 @@ ADS_REPORT_TYPES: dict[str, dict] = {
         "groupBy": ["advertiser"],
         "columns": {
             "dimensions": [
-                "date", "advertisedAsin", "advertisedSku",
+                "date", "promotedAsin", "promotedSku",
                 "campaignName", "campaignId", "adGroupName", "adGroupId",
             ],
             "metrics": [
                 "impressions", "clicks", "cost",
                 "purchases", "sales", "unitsSoldClicks",
-                "viewImpressions", "viewAttributedSales14d", "viewAttributedPurchases14d",
+                "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
             ],
         },
     },

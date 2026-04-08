@@ -474,6 +474,80 @@ def get_job_route(job_id: str):
     return flask.jsonify(_serialize(job)), 200
 
 
+@app.route("/jobs/<job_id>/retry", methods=["POST"])
+def retry_job_route(job_id: str):
+    """Re-launch a failed job with the same parameters."""
+    job = get_job(job_id)
+    if not job:
+        return flask.jsonify({"error": "Job not found", "code": "NOT_FOUND"}), 404
+    if job.get("status") != "failed":
+        return flask.jsonify({"error": "Only failed jobs can be retried", "code": "INVALID_STATE"}), 400
+
+    client = get_client(job["client_id"])
+    if not client or not client.get("is_active", True):
+        return flask.jsonify({"error": "Client not found or inactive", "code": "NOT_FOUND"}), 404
+
+    effective_source = job["api_source"]
+    marketplace = job["marketplace"]
+    report_type = job["report_type"]
+
+    now = datetime.now(timezone.utc)
+    execution_date = job.get("execution_date") or marketplace_today(marketplace, now).isoformat()
+
+    report_date_str = job.get("report_date", "")
+    report_end_str = job.get("report_end_date", "")
+
+    rt_params: dict[str, Any] = {}
+    if report_date_str:
+        if effective_source == "sp_api":
+            rt_params["dataStartTime"] = report_date_str
+            rt_params["dataEndTime"] = report_end_str or report_date_str
+        else:
+            rt_params["startDate"] = report_date_str
+            rt_params["endDate"] = report_end_str or report_date_str
+
+    new_job_id = create_job({
+        "client_id": job["client_id"],
+        "api_source": effective_source,
+        "marketplace": marketplace,
+        "report_type": report_type,
+        "schedule_id": job.get("schedule_id"),
+        "frequency": job.get("frequency", "on_demand"),
+        "report_date": report_date_str,
+        "report_end_date": report_end_str or None,
+        "execution_date": execution_date,
+        "trigger": "retry",
+        "retry_of": job_id,
+    })
+
+    parent = get_workflow_parent()
+    payload = build_payload(
+        api_source=effective_source,
+        client_id=job["client_id"],
+        marketplace=marketplace,
+        report_type=report_type,
+        report_params=rt_params,
+        job_id=new_job_id,
+        frequency=job.get("frequency", "on_demand"),
+        folder_name=job.get("folder_name", ""),
+        subfolder_strategy=job.get("subfolder_strategy", "date"),
+        schedule_id=job.get("schedule_id"),
+        execution_date=execution_date,
+    )
+
+    try:
+        launch_execution(parent, payload, new_job_id, error_phase="retry")
+        logger.info("Job retry launched", extra={"original_job": job_id, "new_job": new_job_id})
+        return flask.jsonify({
+            "status": "retried",
+            "original_job_id": job_id,
+            "new_job_id": new_job_id,
+        }), 201
+    except Exception as exc:
+        logger.exception("Retry failed", extra={"job_id": job_id})
+        return flask.jsonify({"error": str(exc)[:200], "code": "RETRY_FAILED"}), 500
+
+
 # ---------------------------------------------------------------------------
 # On-demand report trigger
 # ---------------------------------------------------------------------------

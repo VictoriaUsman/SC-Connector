@@ -30,10 +30,12 @@ Targeting-level performance for Sponsored Products.
 
 **groupBy options:** `targeting`
 
-**Key columns:**
-- Dimensions: `targeting`, `targetingId`, `targetingType`, `campaignName`, `campaignId`, `adGroupName`, `adGroupId`
-- Metrics: `impressions`, `clicks`, `cost`, `purchases7d`, `sales7d`, `unitsSoldClicks7d`
+**Key columns (validated against API Apr 2026):**
+- Dimensions: `targeting`, `keyword`, `keywordId`, `keywordType`, `matchType`, `campaignName`, `campaignId`, `adGroupName`, `adGroupId`
+- Metrics: `impressions`, `clicks`, `cost`, `costPerClick`, `purchases7d`, `sales7d`, `unitsSoldClicks7d`, `topOfSearchImpressionShare`
 - Time: `date`
+
+**NOT valid:** `targetingId`, `targetingType` (these don't exist in v3 SP targeting reports)
 
 ### spAdvertisedProduct
 
@@ -82,10 +84,12 @@ Campaign-level performance for Sponsored Display.
 
 **groupBy options:** `campaign`
 
-**Key columns:**
+**Key columns (validated against API Apr 2026):**
 - Dimensions: `campaignName`, `campaignId`, `campaignStatus`, `campaignBudgetAmount`
-- Metrics: `impressions`, `clicks`, `cost`, `purchases14d`, `sales14d`, `viewImpressions`, `viewAttributedSales14d`, `viewAttributedPurchases14d`
+- Metrics: `impressions`, `clicks`, `cost`, `purchases`, `sales`, `unitsSoldClicks`, `detailPageViewsClicks`, `newToBrandPurchases`, `newToBrandSales`
 - Time: `date`
+
+**Note:** SD uses non-suffixed metrics (not `purchases14d`). View-through metrics like `viewImpressions`, `viewAttributedSales14d` are NOT valid in v3.
 
 ### sdTargeting
 
@@ -93,10 +97,25 @@ Targeting-level performance for Sponsored Display.
 
 **groupBy options:** `targeting`
 
-**Key columns:**
-- Dimensions: `targeting`, `targetingId`, `campaignName`, `campaignId`, `adGroupName`, `adGroupId`
-- Metrics: `impressions`, `clicks`, `cost`, `purchases14d`, `sales14d`, `viewImpressions`
+**Key columns (validated against API Apr 2026):**
+- Dimensions: `targetingText`, `campaignName`, `campaignId`, `adGroupName`, `adGroupId`
+- Metrics: `impressions`, `clicks`, `cost`, `purchases`, `sales`, `unitsSoldClicks`, `detailPageViewsClicks`, `newToBrandSalesClicks`
 - Time: `date`
+
+**NOT valid:** `targeting` (use `targetingText` for SD), `targetingId` (not available for SD targeting)
+
+### sdAdvertisedProduct
+
+ASIN-level performance for Sponsored Display.
+
+**groupBy options:** `advertiser`
+
+**Key columns (validated against API Apr 2026):**
+- Dimensions: `promotedAsin`, `promotedSku`, `campaignName`, `campaignId`, `adGroupName`, `adGroupId`
+- Metrics: `impressions`, `clicks`, `cost`, `purchases`, `sales`, `unitsSoldClicks`, `detailPageViewsClicks`, `newToBrandPurchases`, `newToBrandSales`
+- Time: `date`
+
+**NOT valid:** `advertisedAsin` (use `promotedAsin`), `advertisedSku` (use `promotedSku`), `viewImpressions`, `viewAttributedSales14d`, `viewAttributedPurchases14d` (v2 columns, not available in v3)
 
 ---
 

@@ -8,6 +8,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { formatReportType, formatApiSource } from "@/lib/format";
 import {
@@ -18,9 +19,12 @@ import {
   AlertCircle,
   ExternalLink,
   User,
+  Info,
+  RefreshCw,
+  Zap,
 } from "lucide-react";
 import type { Job, JobStatus } from "@/types";
-import { useRealtimeJobs, useRunJobs } from "@/hooks/use-jobs";
+import { useRealtimeJobs, useRunJobs, useRetryJob } from "@/hooks/use-jobs";
 
 const IN_PROGRESS_STATUSES: JobStatus[] = [
   "pending",
@@ -30,8 +34,36 @@ const IN_PROGRESS_STATUSES: JobStatus[] = [
   "uploading",
 ];
 
-function extractErrorSummary(raw: string | undefined): string {
-  if (!raw) return "Unknown error";
+function isNoDataError(raw: string): boolean {
+  const lower = raw.toLowerCase();
+  return (
+    lower.includes("no data available") ||
+    lower.includes("fatal") && !lower.includes("invalid") ||
+    lower.includes("cancelled") && lower.includes("no data")
+  );
+}
+
+function isThrottledError(raw: string): boolean {
+  const lower = raw.toLowerCase();
+  return lower.includes("throttled") || lower.includes("quota") || lower.includes("429");
+}
+
+function extractErrorSummary(raw: string | undefined): { message: string; kind: "no_data" | "throttled" | "error" } {
+  if (!raw) return { message: "Unknown error", kind: "error" };
+
+  if (isNoDataError(raw)) {
+    return {
+      message: "No data available \u2014 Amazon could not generate this report. The account may lack access (e.g. Brand Registry) or there is no data for the requested date range.",
+      kind: "no_data",
+    };
+  }
+
+  if (isThrottledError(raw)) {
+    return {
+      message: "Rate limited by Amazon \u2014 too many concurrent requests. Use the retry button to try again.",
+      kind: "throttled",
+    };
+  }
 
   let msg = raw;
   const detailMatch = raw.match(/'detail':\s*'([^']+)'/);
@@ -43,9 +75,9 @@ function extractErrorSummary(raw: string | undefined): string {
 
   const allowedIdx = msg.indexOf("Allowed values:");
   if (allowedIdx > 0) msg = msg.slice(0, allowedIdx).trimEnd();
-  if (msg.endsWith(".")) return msg;
-  if (msg.length > 180) return msg.slice(0, 180).trimEnd() + "\u2026";
-  return msg;
+  if (msg.endsWith(".")) return { message: msg, kind: "error" };
+  if (msg.length > 180) return { message: msg.slice(0, 180).trimEnd() + "\u2026", kind: "error" };
+  return { message: msg, kind: "error" };
 }
 
 function SummaryBar({ jobs }: { jobs: Job[] }) {
@@ -111,6 +143,7 @@ const COL_COUNT = 7;
 function JobRow({ job }: { job: Job }) {
   const [expanded, setExpanded] = useState(false);
   const canExpand = job.status === "failed" && !!job.error_details?.message;
+  const retryMutation = useRetryJob();
 
   const folderId = job.gdrive_folder_id;
   const fileId = job.gdrive_file_id;
@@ -119,6 +152,8 @@ function JobRow({ job }: { job: Job }) {
     : fileId
       ? `https://drive.google.com/file/d/${fileId}/view`
       : null;
+
+  const errorInfo = canExpand ? extractErrorSummary(job.error_details?.message) : null;
 
   return (
     <>
@@ -164,16 +199,38 @@ function JobRow({ job }: { job: Job }) {
           )}
         </TableCell>
       </TableRow>
-      {expanded && (
-        <TableRow className="bg-destructive/5 hover:bg-destructive/5">
+      {expanded && errorInfo && (
+        <TableRow
+          className={
+            errorInfo.kind === "no_data"
+              ? "bg-muted/40 hover:bg-muted/40"
+              : errorInfo.kind === "throttled"
+                ? "bg-amber-500/5 hover:bg-amber-500/5"
+                : "bg-destructive/5 hover:bg-destructive/5"
+          }
+        >
           <TableCell colSpan={COL_COUNT} className="p-0">
             <div className="px-4 py-2.5 pl-9">
               <div className="flex items-start gap-2.5">
-                <div className="rounded-full bg-destructive/10 p-1 shrink-0 mt-0.5">
-                  <AlertCircle className="h-3 w-3 text-destructive" />
+                <div
+                  className={`rounded-full p-1 shrink-0 mt-0.5 ${
+                    errorInfo.kind === "no_data"
+                      ? "bg-muted-foreground/10"
+                      : errorInfo.kind === "throttled"
+                        ? "bg-amber-500/10"
+                        : "bg-destructive/10"
+                  }`}
+                >
+                  {errorInfo.kind === "no_data" ? (
+                    <Info className="h-3 w-3 text-muted-foreground" />
+                  ) : errorInfo.kind === "throttled" ? (
+                    <Zap className="h-3 w-3 text-amber-500" />
+                  ) : (
+                    <AlertCircle className="h-3 w-3 text-destructive" />
+                  )}
                 </div>
-                <div className="min-w-0 space-y-1">
-                  {job.error_details?.phase && (
+                <div className="min-w-0 space-y-1.5 flex-1">
+                  {job.error_details?.phase && errorInfo.kind === "error" && (
                     <Badge
                       variant="outline"
                       className="text-[10px] font-mono px-1.5 py-0 border-destructive/30 text-destructive"
@@ -181,10 +238,32 @@ function JobRow({ job }: { job: Job }) {
                       {job.error_details.phase}
                     </Badge>
                   )}
-                  <p className="text-xs text-foreground/80 leading-relaxed">
-                    {extractErrorSummary(job.error_details?.message)}
+                  <p
+                    className={`text-xs leading-relaxed ${
+                      errorInfo.kind === "no_data"
+                        ? "text-muted-foreground"
+                        : "text-foreground/80"
+                    }`}
+                  >
+                    {errorInfo.message}
                   </p>
                 </div>
+                {errorInfo.kind !== "no_data" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 h-7 text-xs gap-1"
+                    disabled={retryMutation.isPending}
+                    onClick={() => retryMutation.mutate(job.id)}
+                  >
+                    {retryMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    {retryMutation.isSuccess ? "Retried" : "Retry"}
+                  </Button>
+                )}
               </div>
             </div>
           </TableCell>

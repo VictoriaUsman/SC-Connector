@@ -357,6 +357,84 @@ make env-prod && make preview && make deploy-all && make health
 ```
 Production requires an interactive confirmation prompt.
 
+## Observability & Log Access
+
+This project does **not** use Coralogix or any external log aggregator. All logs live in **GCP Cloud Logging** and **Firestore**.
+
+### Querying Cloud Function logs
+
+```bash
+# Errors from a specific function (last 2 hours)
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="kalilos-staging-create-report" AND severity>=ERROR AND timestamp>="2026-04-08T10:00:00Z"' \
+  --project=kalilos-connector-staging --limit=20 --format=json
+
+# All function names follow: kalilos-{env}-{function}
+# Functions: auth, create-report, poll-status, download-upload, scheduler, api
+```
+
+### Querying Cloud Workflow logs
+
+```bash
+# Workflow execution errors (most useful for debugging failed jobs)
+gcloud logging read \
+  'resource.type="workflows.googleapis.com/Workflow" AND severity>=ERROR AND timestamp>="2026-04-08T10:00:00Z"' \
+  --project=kalilos-connector-staging --limit=20 --format=json
+
+# Workflow INFO logs (poll status, completion, report IDs)
+gcloud logging read \
+  'resource.type="workflows.googleapis.com/Workflow" AND severity=INFO AND timestamp>="2026-04-08T10:00:00Z"' \
+  --project=kalilos-connector-staging --limit=20 --format=json
+```
+
+### Searching for specific errors
+
+```bash
+# Find specific error types (FATAL, invalid columns, throttled, etc.)
+gcloud logging read \
+  'resource.type="workflows.googleapis.com/Workflow" AND textPayload:"FATAL"' \
+  --project=kalilos-connector-staging --limit=10 --format=json
+
+gcloud logging read \
+  'resource.type="workflows.googleapis.com/Workflow" AND textPayload:"invalid values"' \
+  --project=kalilos-connector-staging --limit=10 --format=json
+```
+
+### Looking up Firestore job records
+
+```python
+# Get a specific job by ID
+python3 -c "
+from google.cloud import firestore
+db = firestore.Client(project='kalilos-connector-staging')
+doc = db.collection('jobs').document('JOB_ID_HERE').get()
+if doc.exists:
+    import json
+    print(json.dumps(doc.to_dict(), default=str, indent=2))
+"
+```
+
+### Key log patterns
+
+| What you see | Where to look | Log filter |
+|---|---|---|
+| Job stuck in "Pending" | Workflow errors | `textPayload:"Workflow failed"` |
+| "Report generation failed: FATAL" | Workflow + poll_status | `textPayload:"FATAL"` — usually means Amazon has no data or account lacks access |
+| "invalid values" (Ads API columns) | Workflow errors | `textPayload:"invalid values"` — check `ads_report_config.py` |
+| "Throttled" / "QuotaExceeded" | Workflow errors | `textPayload:"Throttled" OR textPayload:"QuotaExceeded"` — retry later |
+| Job shows "failed" but no error | Global error handler | Check workflow logs for the `job_id` — the error is in the Firestore `error_details` field |
+
+### Dashboard error display
+
+The frontend categorizes errors for employees:
+- **No data available** (grey info icon): Amazon returned FATAL/CANCELLED — account may lack Brand Registry or no data for the date range. Not retriable.
+- **Rate limited** (amber icon): Throttled/QuotaExceeded — shows a **Retry** button.
+- **Error** (red icon): Actual failures (invalid config, auth issues, etc.) — shows a **Retry** button and the error detail.
+
+### Retry mechanism
+
+Failed jobs can be retried via the dashboard (Retry button) or API: `POST /jobs/{job_id}/retry`. This creates a new job with the same parameters and launches a fresh workflow execution.
+
 ## Further Reference
 
 - **Cursor Rules**: `.cursor/rules/` — six rules covering project context, cloud functions, Pulumi infra, workflow YAML, frontend, and devops.

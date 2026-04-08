@@ -1,10 +1,10 @@
 /**
- * Static metadata for SP API report types.
+ * Static metadata for all report types.
  *
- * Includes output column names, format, description, and any
- * configurable reportOptions that the SP API accepts.
- *
- * Ads API metadata comes from the backend via /ads-report-config.
+ * SP API: output column names, format, description, configurable reportOptions.
+ * Ads API: dimensions + metrics columns per report type (aligned with
+ *   functions/shared/ads_report_config.py — the backend also serves these
+ *   via /ads-report-config for runtime column pickers).
  */
 
 export interface SpReportOption {
@@ -19,6 +19,13 @@ export interface SpReportMeta {
   format: "tsv" | "json";
   columns: string[];
   options?: SpReportOption[];
+}
+
+export interface AdsReportMeta {
+  description: string;
+  adProduct: string;
+  dimensions: string[];
+  metrics: string[];
 }
 
 export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
@@ -340,8 +347,136 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
   },
 };
 
+/**
+ * Ads API report metadata — mirrors functions/shared/ads_report_config.py.
+ * Keep in sync when adding/changing Ads report types or columns.
+ *
+ * Validated against Amazon Ads API v3 (Apr 2026).
+ */
+export const ADS_REPORT_METADATA: Record<string, AdsReportMeta> = {
+  spCampaigns: {
+    description: "Campaign-level spend, clicks, and sales with 1/7/14/30d attribution windows",
+    adProduct: "SPONSORED_PRODUCTS",
+    dimensions: [
+      "date", "campaignName", "campaignId", "campaignStatus",
+      "campaignBudgetAmount", "campaignBudgetType",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases1d", "purchases7d", "purchases14d", "purchases30d",
+      "sales1d", "sales7d", "sales14d", "sales30d",
+      "unitsSoldClicks1d", "unitsSoldClicks7d", "unitsSoldClicks14d", "unitsSoldClicks30d",
+    ],
+  },
+  spSearchTerm: {
+    description: "Search term performance with keyword targeting details",
+    adProduct: "SPONSORED_PRODUCTS",
+    dimensions: [
+      "date", "searchTerm", "campaignName", "campaignId",
+      "adGroupName", "adGroupId", "targeting", "keywordId", "keywordType",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases7d", "sales7d", "unitsSoldClicks7d",
+    ],
+  },
+  spTargeting: {
+    description: "Keyword/targeting performance by keyword, match type, and ad group",
+    adProduct: "SPONSORED_PRODUCTS",
+    dimensions: [
+      "date", "targeting", "keyword", "keywordId", "keywordType", "matchType",
+      "campaignName", "campaignId", "adGroupName", "adGroupId",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost", "costPerClick",
+      "purchases7d", "sales7d", "unitsSoldClicks7d",
+      "topOfSearchImpressionShare",
+    ],
+  },
+  spAdvertisedProduct: {
+    description: "ASIN-level performance per campaign and ad group",
+    adProduct: "SPONSORED_PRODUCTS",
+    dimensions: [
+      "date", "advertisedAsin", "advertisedSku",
+      "campaignName", "campaignId", "adGroupName", "adGroupId",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases7d", "sales7d", "unitsSoldClicks7d",
+    ],
+  },
+  sbCampaigns: {
+    description: "Campaign-level metrics including new-to-brand and detail page views",
+    adProduct: "SPONSORED_BRANDS",
+    dimensions: [
+      "date", "campaignName", "campaignId", "campaignStatus",
+      "campaignBudgetAmount",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases", "sales", "unitsSoldClicks",
+      "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
+    ],
+  },
+  sbSearchTerm: {
+    description: "Search term performance for Sponsored Brands campaigns",
+    adProduct: "SPONSORED_BRANDS",
+    dimensions: [
+      "date", "searchTerm", "campaignName", "campaignId",
+      "adGroupName", "adGroupId",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases", "sales",
+    ],
+  },
+  sdCampaigns: {
+    description: "Campaign-level metrics including new-to-brand and detail page views",
+    adProduct: "SPONSORED_DISPLAY",
+    dimensions: [
+      "date", "campaignName", "campaignId", "campaignStatus",
+      "campaignBudgetAmount",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases", "sales", "unitsSoldClicks",
+      "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
+    ],
+  },
+  sdTargeting: {
+    description: "Targeting-level performance using targetingText for display targeting",
+    adProduct: "SPONSORED_DISPLAY",
+    dimensions: [
+      "date", "targetingText",
+      "campaignName", "campaignId", "adGroupName", "adGroupId",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases", "sales", "unitsSoldClicks",
+      "detailPageViewsClicks", "newToBrandSalesClicks",
+    ],
+  },
+  sdAdvertisedProduct: {
+    description: "ASIN-level performance using promotedAsin/promotedSku for display ads",
+    adProduct: "SPONSORED_DISPLAY",
+    dimensions: [
+      "date", "promotedAsin", "promotedSku",
+      "campaignName", "campaignId", "adGroupName", "adGroupId",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost",
+      "purchases", "sales", "unitsSoldClicks",
+      "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
+    ],
+  },
+};
+
 export function getSpReportMeta(reportType: string): SpReportMeta | undefined {
   return SP_REPORT_METADATA[reportType];
+}
+
+export function getAdsReportMeta(reportType: string): AdsReportMeta | undefined {
+  return ADS_REPORT_METADATA[reportType];
 }
 
 export function hasSpReportOptions(reportType: string): boolean {
