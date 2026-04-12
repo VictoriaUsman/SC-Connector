@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "kalilos": {
+      "type": "url",
+      "url": "https://kalilos-staging-mcp-cz4xyfio3q-uc.a.run.app/mcp",
+      "authorization_token": "${KALILOS_MCP_API_KEY}"
+    }
+  }
+}

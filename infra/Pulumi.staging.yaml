@@ -6,3 +6,5 @@ config:
   kalilos:scheduler-timezone: America/New_York
   kalilos:gdrive-root-folder: Kalilos Reports [STAGING]
   kalilos:gdrive-root-folder-id: 0AMwE_D4Cl8OUUk9PVA
+  kalilos:api-key:
+    secure: v1:2AXdN7ZBVtwePJvg:c47KgN6yk/yGBIf2u9T/0y2nG+3Tcm+ZvlAnD2244haB+Qgsb9K33wbXZ+IY70ahAmSVR2fraeP3FXCc7cGm5hqz8/KTune94fSEOhIIh/c=

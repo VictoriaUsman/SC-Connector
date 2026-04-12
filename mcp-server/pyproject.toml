@@ -1,0 +1,23 @@
+[project]
+name = "kalilos-mcp-server"
+version = "0.1.0"
+description = "MCP server for the Kalilos Amazon Reports Connector"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "httpx>=0.28.0",
+    "uvicorn>=0.34.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools]
+py-modules = ["server", "api_client", "auth"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

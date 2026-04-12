@@ -1,6 +1,7 @@
 import type { Client, Schedule, Job, AdsReportConfigMap } from "@/types";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
+const API_KEY = import.meta.env.VITE_API_KEY || "";
 
 class ApiError extends Error {
   status: number;
@@ -14,8 +15,11 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (API_KEY) headers["X-API-Key"] = API_KEY;
+
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options,
   });
   const data = await res.json();

@@ -29,6 +29,8 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 
 **Frontend**: React + Vite + shadcn/ui on Firebase Hosting. Uses Firestore real-time listeners for live job status. Calls an API Gateway backed by a Cloud Function for mutations. The Schedules page supports inline editing (Edit dialog) and immediate triggering (Run Now) from the row dropdown menu. Report types are organized by domain in the selector dropdown (Listings, Orders, FBA, Returns, Financial, Brand Analytics for SP; Sponsored Products/Brands/Display for Ads), with descriptions and constraint warnings visible inline.
 
+**MCP Server (Agentic Interface)**: A FastMCP (Python) server deployed on Cloud Run (`kalilos-{env}-mcp`) that exposes 14 tools for Claude agents to manage reports. The MCP server is a thin proxy that delegates all operations to the existing REST API via HTTP. It supports Streamable HTTP transport for remote access (Claude.ai, Claude Desktop, Anthropic API) and stdio for local development (Cursor, Claude Code). Authentication uses a static bearer token validated against `MCP_API_KEY`. Tools cover clients (list, get), schedules (CRUD + trigger), jobs (list, get, retry), on-demand reports, and report type discovery.
+
 **Workflow Error Handling**: The workflow YAML uses a global try/except pattern — `main` calls a `report_pipeline` subworkflow, and any unhandled error (auth failure, create_report error, etc.) is caught by the global handler which marks the Firestore job as `"failed"` using `args.job_id`. This prevents zombie "pending" jobs. Error serialization uses `json.encode(e)` (not `string(e)`, which crashes on dicts). The workflow service account has `roles/datastore.user` for Firestore REST API access.
 
 **Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Local file backend (`file://~/.pulumi-local`). Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
@@ -97,10 +99,12 @@ kalilos-connector/
 ├── .cursor/
 │   ├── rules/                        # Cursor rules (6 .mdc files)
 │   └── skills/                       # Cursor skills (5 SKILL.md files)
+├── .mcp.json                          # MCP server config for Cursor/Claude Code
 ├── scripts/
 │   ├── _common.sh                    # Shared helpers, GCP guard, Pulumi backend config
 │   ├── deploy-infra.sh               # Pulumi deploy wrapper
 │   ├── deploy-frontend.sh            # Firebase deploy wrapper
+│   ├── deploy-mcp.sh                 # Build + deploy MCP server to Cloud Run
 │   ├── health-check.sh               # Post-deploy verification (12 checks)
 │   ├── seed-firestore.sh             # Seed test data
 │   ├── rotate-secrets.sh             # Secret rotation helper
@@ -117,6 +121,7 @@ kalilos-connector/
 │       ├── scheduler.py              # Cloud Scheduler jobs
 │       ├── firestore.py              # Firestore indexes and rules
 │       ├── api_gateway.py            # API Gateway for frontend
+│       ├── mcp_server.py            # MCP server Cloud Run service + Artifact Registry
 │       ├── secrets.py                # Secret Manager resources
 │       └── iam.py                    # IAM bindings
 ├── functions/
@@ -143,6 +148,13 @@ kalilos-connector/
 │       ├── config.py                 # Env, config, marketplace timezones
 │       ├── schedule_compute.py       # Timezone-aware dates, date ranges, flexible next_run_at
 │       └── workflow_launcher.py      # Unified workflow launch, retry, per-(client,mkt,report) fan-out
+├── mcp-server/
+│   ├── pyproject.toml                 # FastMCP + httpx dependencies
+│   ├── Dockerfile                     # Cloud Run container image
+│   ├── server.py                      # FastMCP app with 14 tools
+│   ├── api_client.py                  # Typed async HTTP client wrapping the REST API
+│   ├── auth.py                        # Bearer token auth (StaticTokenVerifier)
+│   └── README.md                      # Setup guide for all Claude surfaces
 ├── tests/
 │   ├── seed_report_test_schedules.py  # Seed test schedules covering all report types
 │   ├── test_drive_client.py
@@ -194,7 +206,9 @@ make env-staging && make preview && make deploy-all && make health
 make env-prod && make preview && make deploy-all && make health
 ```
 
-`make deploy-all` runs infrastructure (Pulumi) first, then frontend (Firebase Hosting), in order.
+`make deploy-all` runs infrastructure (Pulumi) first, then MCP server (Cloud Run), then frontend (Firebase Hosting), in order.
+
+To deploy the MCP server independently: `make deploy-mcp`.
 
 ## Conventions
 

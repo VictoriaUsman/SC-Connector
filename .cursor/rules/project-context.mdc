@@ -16,6 +16,7 @@ Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon
 - **Secrets**: GCP Secret Manager
 - **Report Storage**: Google Drive (date-first default layout, or custom folder per schedule)
 - **Frontend**: React + Vite + shadcn/ui on Firebase Hosting, Firestore real-time listeners
+- **MCP Server**: FastMCP (Python) on Cloud Run — agentic interface for Claude (14 tools, Streamable HTTP + stdio)
 - **IaC**: Pulumi (Python, local file backend) in `infra/`
 
 ## Three-Clock Timezone Architecture

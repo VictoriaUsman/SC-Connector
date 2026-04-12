@@ -71,6 +71,9 @@ def create(
             api_url = f"https://{region}-{project}.cloudfunctions.net/kalilos-{env}-api"
             env_vars["OAUTH_REDIRECT_URI"] = f"{api_url}/oauth/callback"
             env_vars["FRONTEND_URL"] = config.get("frontend-url") or "http://localhost:5173"
+            api_key = config.get_secret("api-key")
+            if api_key:
+                env_vars["API_KEY"] = api_key
         if fn_name == "download-upload":
             env_vars["GDRIVE_ROOT_FOLDER_NAME"] = config.get("gdrive-root-folder") or "Kalilos Reports"
             gdrive_folder_id = config.get("gdrive-root-folder-id")

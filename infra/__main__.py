@@ -12,7 +12,7 @@ Resource creation order:
 
 import pulumi
 
-from resources import apis, iam, firestore, secrets, storage, functions, workflow, scheduler
+from resources import apis, iam, firestore, secrets, storage, functions, workflow, scheduler, mcp_server
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -62,6 +62,11 @@ scheduler_job = scheduler.create(
 # 7. Function-level IAM (who can invoke what)
 # ---------------------------------------------------------------------------
 iam.bind_invokers(env, project, region, fns, sas)
+
+# ---------------------------------------------------------------------------
+# 8. MCP Server (Cloud Run)
+# ---------------------------------------------------------------------------
+mcp_service = mcp_server.create(env, project, region, fns["api"], enabled_apis)
 
 # ---------------------------------------------------------------------------
 # Exports

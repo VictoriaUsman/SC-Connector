@@ -26,8 +26,9 @@ init-prod:  ## Initialize production stack (one-time setup)
 	@./scripts/init-stack.sh prod
 
 # --- Deployment ---
-deploy-all: check-auth  ## Deploy infrastructure + frontend to current environment
+deploy-all: check-auth  ## Deploy infrastructure + MCP server + frontend
 	@./scripts/deploy-infra.sh
+	@./scripts/deploy-mcp.sh
 	@./scripts/deploy-frontend.sh
 
 deploy-infra: check-auth  ## Deploy Pulumi infrastructure only
@@ -35,6 +36,9 @@ deploy-infra: check-auth  ## Deploy Pulumi infrastructure only
 
 deploy-frontend: check-auth  ## Build and deploy frontend only
 	@./scripts/deploy-frontend.sh
+
+deploy-mcp: check-auth  ## Build and deploy MCP server to Cloud Run
+	@./scripts/deploy-mcp.sh
 
 preview: check-auth  ## Preview infrastructure changes (dry run)
 	@./scripts/preview.sh
@@ -72,6 +76,12 @@ local-fn:  ## Run a function locally. Usage: make local-fn NAME=create_report PO
 local-frontend:  ## Start frontend dev server
 	@cd frontend && npm run dev
 
+local-mcp:  ## Run MCP server locally (stdio mode for Cursor/Claude Code)
+	@cd mcp-server && MCP_TRANSPORT=stdio python server.py
+
+local-mcp-http:  ## Run MCP server locally (HTTP mode on port 8081)
+	@cd mcp-server && KALILOS_API_URL=$(or $(API_URL),http://localhost:8080) python server.py
+
 # --- Testing ---
 test:  ## Run all tests
 	@./scripts/run-tests.sh all
@@ -98,9 +108,9 @@ health:  ## Run health checks against current environment
 .PHONY: help check-auth \
 	env-staging env-prod env-status \
 	init-staging init-prod \
-	deploy-all deploy-infra deploy-frontend preview destroy \
+	deploy-all deploy-infra deploy-frontend deploy-mcp preview destroy \
 	secret-set secret-get secret-list \
 	logs-fn logs-workflow workflows-status workflows-cancel \
-	local-fn local-frontend \
+	local-fn local-frontend local-mcp local-mcp-http \
 	test test-fn test-integration seed-firestore wipe-firestore workflow-trigger \
 	health

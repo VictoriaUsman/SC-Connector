@@ -116,7 +116,7 @@ def _serialize(obj: Any) -> Any:
 _CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
     "Access-Control-Max-Age": "3600",
 }
 
@@ -131,6 +131,27 @@ def _add_cors(response: flask.Response) -> flask.Response:
 def _handle_preflight():
     if flask.request.method == "OPTIONS":
         return "", 204
+
+
+# ---------------------------------------------------------------------------
+# API Key authentication
+# ---------------------------------------------------------------------------
+
+_API_KEY: str = os.environ.get("API_KEY", "")
+
+_AUTH_EXEMPT_PREFIXES = ("/health", "/oauth/")
+
+
+@app.before_request
+def _check_api_key():
+    if not _API_KEY:
+        return None
+    path = flask.request.path
+    if path == "/" or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES):
+        return None
+    key = flask.request.headers.get("X-API-Key", "")
+    if not key or key != _API_KEY:
+        return flask.jsonify({"error": "Invalid or missing API key", "code": "UNAUTHORIZED"}), 401
 
 
 # ---------------------------------------------------------------------------
