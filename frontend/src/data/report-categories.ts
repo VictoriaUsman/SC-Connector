@@ -54,8 +54,13 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
     ],
   },
   {
-    label: "FBA Inventory",
+    label: "Inventory",
     reports: [
+      {
+        id: "GET_MERCHANT_LISTINGS_DATA",
+        label: "FBM Inventory (Active Listings)",
+        description: "Active merchant-fulfilled listings with SKU, price, quantity, and fulfillment channel",
+      },
       {
         id: "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA",
         label: "FBA Inventory (Unsuppressed)",
@@ -181,6 +186,11 @@ export const ADS_REPORT_CATEGORIES: ReportCategory[] = [
         id: "spAdvertisedProduct",
         label: "SP \u2014 Advertised Product",
         description: "ASIN-level performance: advertisedAsin, advertisedSku, impressions, clicks, cost, purchases, sales per ad group",
+      },
+      {
+        id: "spPlacement",
+        label: "SP \u2014 Placement",
+        description: "Placement performance: top of search, product pages, and other placements with impressions, clicks, cost, purchases, sales (1/7/14/30d)",
       },
     ],
   },

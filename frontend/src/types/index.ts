@@ -158,6 +158,7 @@ export const SP_REPORT_TYPES = [
   "GET_BRAND_ANALYTICS_REPEAT_PURCHASE_REPORT",
   "GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT",
   "GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT",
+  "GET_MERCHANT_LISTINGS_DATA",
 ] as const;
 
 export const ADS_REPORT_TYPES = [
@@ -170,6 +171,7 @@ export const ADS_REPORT_TYPES = [
   "sdCampaigns",
   "sdTargeting",
   "sdAdvertisedProduct",
+  "spPlacement",
 ] as const;
 
 export interface AdsReportColumns {

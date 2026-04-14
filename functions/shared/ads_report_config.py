@@ -67,6 +67,23 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
         },
     },
+    "spPlacement": {
+        "adProduct": "SPONSORED_PRODUCTS",
+        "reportTypeId": "spCampaigns",
+        "groupBy": ["campaignPlacement"],
+        "columns": {
+            "dimensions": [
+                "date", "campaignName", "campaignId",
+                "placementClassification", "campaignBiddingStrategy",
+            ],
+            "metrics": [
+                "impressions", "clicks", "cost", "costPerClick",
+                "purchases1d", "purchases7d", "purchases14d", "purchases30d",
+                "sales1d", "sales7d", "sales14d", "sales30d",
+                "unitsSoldClicks1d", "unitsSoldClicks7d", "unitsSoldClicks14d", "unitsSoldClicks30d",
+            ],
+        },
+    },
     "sbCampaigns": {
         "adProduct": "SPONSORED_BRANDS",
         "groupBy": ["campaign"],

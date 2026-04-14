@@ -229,7 +229,7 @@ def _build_ads_report_config(report_type: str, report_params: dict) -> dict:
     defaults = _ADS_REPORT_TYPES.get(report_type, {})
 
     configuration: dict = {
-        "reportTypeId": report_type,
+        "reportTypeId": defaults.get("reportTypeId", report_type),
         "format": "GZIP_JSON",
         "timeUnit": report_params.get("timeUnit", "DAILY"),
         "adProduct": report_params.get("adProduct", defaults.get("adProduct")),

@@ -35,6 +35,7 @@ const ADS_REPORT_LABELS: Record<string, string> = {
   spSearchTerm: "SP - Search Term",
   spTargeting: "SP - Targeting",
   spAdvertisedProduct: "SP - Advertised Product",
+  spPlacement: "SP - Placement",
   sbCampaigns: "SB - Campaigns",
   sbSearchTerm: "SB - Search Term",
   sdCampaigns: "SD - Campaigns",

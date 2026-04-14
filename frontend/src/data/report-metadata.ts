@@ -283,6 +283,23 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
     ],
   },
 
+  GET_MERCHANT_LISTINGS_DATA: {
+    description: "Active merchant-fulfilled listings with inventory quantities",
+    format: "tsv",
+    columns: [
+      "item-name", "item-description", "listing-id", "seller-sku",
+      "price", "quantity", "open-date", "image-url",
+      "item-is-marketplace", "product-id-type",
+      "zshop-shipping-fee", "item-note", "item-condition",
+      "zshop-category1", "zshop-browse-path", "zshop-storefront-feature",
+      "asin1", "asin2", "asin3",
+      "will-ship-internationally", "expedited-shipping", "zshop-boldface",
+      "product-id", "bid-for-featured-placement", "add-delete",
+      "pending-quantity", "fulfillment-channel",
+      "merchant-shipping-group", "status",
+    ],
+  },
+
   GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT: {
     description: "Brand Analytics search terms with click and conversion share",
     format: "json",
@@ -455,6 +472,20 @@ export const ADS_REPORT_METADATA: Record<string, AdsReportMeta> = {
     metrics: [
       "impressions", "clicks", "cost",
       "purchases7d", "sales7d", "unitsSoldClicks7d",
+    ],
+  },
+  spPlacement: {
+    description: "Placement-level performance: top of search, product pages, and other placements",
+    adProduct: "SPONSORED_PRODUCTS",
+    dimensions: [
+      "date", "campaignName", "campaignId",
+      "placementClassification", "campaignBiddingStrategy",
+    ],
+    metrics: [
+      "impressions", "clicks", "cost", "costPerClick",
+      "purchases1d", "purchases7d", "purchases14d", "purchases30d",
+      "sales1d", "sales7d", "sales14d", "sales30d",
+      "unitsSoldClicks1d", "unitsSoldClicks7d", "unitsSoldClicks14d", "unitsSoldClicks30d",
     ],
   },
   sbCampaigns: {
