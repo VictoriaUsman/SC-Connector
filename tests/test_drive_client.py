@@ -481,6 +481,67 @@ class TestUploadOrReplace:
         assert result == "new-file"
         mock_service.files().delete.assert_called_once()
 
+    def test_converts_small_tsv_to_google_sheet(self, mock_service):
+        from shared.drive_client import upload_or_replace
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "sheet-1"}
+
+        upload_or_replace(
+            "report.tsv", b"col1\tcol2\nval1\tval2", "folder-1",
+            mime_type="text/tab-separated-values",
+        )
+
+        create_call = mock_service.files().create.call_args
+        body = create_call.kwargs.get("body") or create_call[1].get("body")
+        assert body["mimeType"] == "application/vnd.google-apps.spreadsheet"
+
+    def test_converts_small_csv_to_google_sheet(self, mock_service):
+        from shared.drive_client import upload_or_replace
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "sheet-2"}
+
+        upload_or_replace(
+            "report.csv", b"col1,col2\nval1,val2", "folder-1",
+            mime_type="text/csv",
+        )
+
+        create_call = mock_service.files().create.call_args
+        body = create_call.kwargs.get("body") or create_call[1].get("body")
+        assert body["mimeType"] == "application/vnd.google-apps.spreadsheet"
+
+    def test_skips_sheets_conversion_for_large_tsv(self, mock_service):
+        from shared.drive_client import upload_or_replace, _SHEETS_SIZE_LIMIT
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "file-big"}
+
+        large_content = b"x" * (_SHEETS_SIZE_LIMIT + 1)
+        upload_or_replace(
+            "report.tsv", large_content, "folder-1",
+            mime_type="text/tab-separated-values",
+        )
+
+        create_call = mock_service.files().create.call_args
+        body = create_call.kwargs.get("body") or create_call[1].get("body")
+        assert "mimeType" not in body
+
+    def test_skips_sheets_conversion_for_json(self, mock_service):
+        from shared.drive_client import upload_or_replace
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "file-json"}
+
+        upload_or_replace(
+            "report.json", b'{"data": 1}', "folder-1",
+            mime_type="application/json",
+        )
+
+        create_call = mock_service.files().create.call_args
+        body = create_call.kwargs.get("body") or create_call[1].get("body")
+        assert "mimeType" not in body
+
 
 # ---------------------------------------------------------------------------
 # infer_report_format

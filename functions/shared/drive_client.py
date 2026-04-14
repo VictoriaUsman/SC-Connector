@@ -347,13 +347,23 @@ def _assert_no_duplicates(name: str, folder_id: str, path_so_far: list[str]) -> 
 # File upload
 # ---------------------------------------------------------------------------
 
+_SHEETS_CONVERTIBLE_MIMES = {"text/tab-separated-values", "text/csv"}
+_SHEETS_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
+_SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
+
+
 def upload_or_replace(
     filename: str,
     content: bytes,
     folder_id: str,
     mime_type: str = "application/json",
 ) -> str:
-    """Upload a file, replacing any existing file with the same name."""
+    """Upload a file, replacing any existing file with the same name.
+
+    TSV/CSV files under 10 MB are auto-converted to native Google Sheets
+    so that Claude (and other tools) can read them directly via the
+    Google Drive connector.
+    """
     from googleapiclient.errors import HttpError
 
     service = get_service()
@@ -376,9 +386,20 @@ def upload_or_replace(
             else:
                 raise
 
+    body: dict = {"name": filename, "parents": [folder_id]}
+    convert_to_sheets = (
+        mime_type in _SHEETS_CONVERTIBLE_MIMES
+        and len(content) <= _SHEETS_SIZE_LIMIT
+    )
+    if convert_to_sheets:
+        body["mimeType"] = _SHEETS_MIME
+        logger.info(
+            "Converting to Google Sheet (size=%d bytes)", len(content),
+        )
+
     media = MediaInMemoryUpload(content, mimetype=mime_type)
     uploaded = service.files().create(
-        body={"name": filename, "parents": [folder_id]},
+        body=body,
         media_body=media,
         fields="id",
         supportsAllDrives=True,
