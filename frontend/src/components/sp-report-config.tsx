@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 
 export interface SpReportParams {
   reportOptions?: Record<string, string>;
+  outputColumns?: string[];
 }
 
 export function SpReportConfigPanel({

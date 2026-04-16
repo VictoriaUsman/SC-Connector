@@ -9,8 +9,9 @@ import {
 import { MultiSelectDropdown, type DropdownGroup, type DropdownOption } from "@/components/multi-select-dropdown";
 import { AdsReportConfigPanel, type AdsReportParams } from "@/components/ads-report-config";
 import { SpReportConfigPanel, type SpReportParams } from "@/components/sp-report-config";
+import { OutputColumnsPicker } from "@/components/output-columns-picker";
 import { ReportColumnsPreview } from "@/components/report-columns-preview";
-import { hasSpReportOptions } from "@/data/report-metadata";
+import { hasSpReportOptions, getOutputColumns } from "@/data/report-metadata";
 import {
   SP_REPORT_CATEGORIES,
   ADS_REPORT_CATEGORIES,
@@ -97,13 +98,28 @@ export function ReportSelector({
   };
 
   const handleSpParamsChange = (rt: string, params: SpReportParams) => {
+    const existing = (reportParamsMap[rt] ?? {}) as Record<string, unknown>;
     const entry: Record<string, unknown> = {};
     if (params.reportOptions) entry.reportOptions = params.reportOptions;
+    if (existing.outputColumns) entry.outputColumns = existing.outputColumns;
+    if (params.outputColumns) entry.outputColumns = params.outputColumns;
+    onReportParamsMapChange({ ...reportParamsMap, [rt]: entry });
+  };
+
+  const handleOutputColumnsChange = (rt: string, columns: string[] | undefined) => {
+    const existing = (reportParamsMap[rt] ?? {}) as Record<string, unknown>;
+    const entry: Record<string, unknown> = { ...existing };
+    if (columns) {
+      entry.outputColumns = columns;
+    } else {
+      delete entry.outputColumns;
+    }
     onReportParamsMapChange({ ...reportParamsMap, [rt]: entry });
   };
 
   const spTypesWithOptions = selectedSpTypes.filter(hasSpReportOptions);
   const spTypesWithoutOptions = selectedSpTypes.filter((rt) => !hasSpReportOptions(rt));
+  const spTypesWithOutputColumns = selectedSpTypes.filter((rt) => !!getOutputColumns(rt));
 
   return (
     <>
@@ -147,6 +163,16 @@ export function ReportSelector({
               reportType={rt}
               value={(reportParamsMap[rt] as SpReportParams | undefined) ?? {}}
               onChange={(params) => handleSpParamsChange(rt, params)}
+            />
+          ))}
+
+          {/* Output column picker for JSON reports with known structure */}
+          {spTypesWithOutputColumns.map((rt) => (
+            <OutputColumnsPicker
+              key={rt}
+              reportType={rt}
+              value={(reportParamsMap[rt] as SpReportParams | undefined)?.outputColumns}
+              onChange={(cols) => handleOutputColumnsChange(rt, cols)}
             />
           ))}
 

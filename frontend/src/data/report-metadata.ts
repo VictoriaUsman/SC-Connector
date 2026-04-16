@@ -14,11 +14,17 @@ export interface SpReportOption {
   default: string;
 }
 
+export interface OutputColumnDef {
+  key: string;
+  label: string;
+}
+
 export interface SpReportMeta {
   description: string;
   format: "tsv" | "json";
   columns: string[];
   options?: SpReportOption[];
+  outputColumns?: Record<string, OutputColumnDef[]>;
 }
 
 export interface AdsReportMeta {
@@ -144,6 +150,114 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
         default: "CHILD",
       },
     ],
+    outputColumns: {
+      salesAndTrafficByDate: [
+        { key: "date", label: "Date" },
+        { key: "salesByDate.orderedProductSales.amount", label: "Ordered Product Sales" },
+        { key: "salesByDate.orderedProductSales.currencyCode", label: "Currency Code (Sales)" },
+        { key: "salesByDate.orderedProductSalesB2B.amount", label: "Ordered Product Sales (B2B)" },
+        { key: "salesByDate.orderedProductSalesB2B.currencyCode", label: "Currency Code (Sales B2B)" },
+        { key: "salesByDate.unitsOrdered", label: "Units Ordered" },
+        { key: "salesByDate.unitsOrderedB2B", label: "Units Ordered (B2B)" },
+        { key: "salesByDate.totalOrderItems", label: "Total Order Items" },
+        { key: "salesByDate.totalOrderItemsB2B", label: "Total Order Items (B2B)" },
+        { key: "salesByDate.averageSalesPerOrderItem.amount", label: "Average Sales per Order Item" },
+        { key: "salesByDate.averageSalesPerOrderItem.currencyCode", label: "Currency Code (Avg Sales)" },
+        { key: "salesByDate.averageSalesPerOrderItemB2B.amount", label: "Average Sales per Order Item (B2B)" },
+        { key: "salesByDate.averageSalesPerOrderItemB2B.currencyCode", label: "Currency Code (Avg Sales B2B)" },
+        { key: "salesByDate.averageUnitsPerOrderItem", label: "Average Units per Order Item" },
+        { key: "salesByDate.averageUnitsPerOrderItemB2B", label: "Average Units per Order Item (B2B)" },
+        { key: "salesByDate.averageSellingPrice.amount", label: "Average Selling Price" },
+        { key: "salesByDate.averageSellingPrice.currencyCode", label: "Currency Code (Avg Price)" },
+        { key: "salesByDate.averageSellingPriceB2B.amount", label: "Average Selling Price (B2B)" },
+        { key: "salesByDate.averageSellingPriceB2B.currencyCode", label: "Currency Code (Avg Price B2B)" },
+        { key: "salesByDate.unitsRefunded", label: "Units Refunded" },
+        { key: "salesByDate.refundRate", label: "Refund Rate" },
+        { key: "salesByDate.claimsGranted", label: "Claims Granted" },
+        { key: "salesByDate.claimsAmount.amount", label: "Claims Amount" },
+        { key: "salesByDate.claimsAmount.currencyCode", label: "Currency Code (Claims)" },
+        { key: "salesByDate.shippedProductSales.amount", label: "Shipped Product Sales" },
+        { key: "salesByDate.shippedProductSales.currencyCode", label: "Currency Code (Shipped)" },
+        { key: "salesByDate.unitsShipped", label: "Units Shipped" },
+        { key: "salesByDate.ordersShipped", label: "Orders Shipped" },
+        { key: "trafficByDate.browserPageViews", label: "Browser Page Views" },
+        { key: "trafficByDate.mobileAppPageViews", label: "Mobile App Page Views" },
+        { key: "trafficByDate.pageViews", label: "Page Views" },
+        { key: "trafficByDate.browserSessions", label: "Browser Sessions" },
+        { key: "trafficByDate.mobileAppSessions", label: "Mobile App Sessions" },
+        { key: "trafficByDate.sessions", label: "Sessions" },
+        { key: "trafficByDate.buyBoxPercentage", label: "Buy Box %" },
+        { key: "trafficByDate.orderItemSessionPercentage", label: "Order Item Session %" },
+        { key: "trafficByDate.orderItemSessionPercentageB2B", label: "Order Item Session % (B2B)" },
+        { key: "trafficByDate.unitSessionPercentage", label: "Unit Session %" },
+        { key: "trafficByDate.unitSessionPercentageB2B", label: "Unit Session % (B2B)" },
+        { key: "trafficByDate.averageOfferCount", label: "Average Offer Count" },
+        { key: "trafficByDate.averageParentItems", label: "Average Parent Items" },
+        { key: "trafficByDate.feedbackReceived", label: "Feedback Received" },
+        { key: "trafficByDate.negativeFeedbackReceived", label: "Negative Feedback Received" },
+        { key: "trafficByDate.receivedNegativeFeedbackRate", label: "Negative Feedback Rate" },
+        { key: "trafficByDate.browserSessionPercentage", label: "Browser Session %" },
+        { key: "trafficByDate.mobileAppSessionPercentage", label: "Mobile App Session %" },
+        { key: "trafficByDate.sessionPercentage", label: "Session %" },
+        { key: "trafficByDate.browserPageViewsPercentage", label: "Browser Page Views %" },
+        { key: "trafficByDate.mobileAppPageViewsPercentage", label: "Mobile App Page Views %" },
+        { key: "trafficByDate.pageViewsPercentage", label: "Page Views %" },
+      ],
+      salesAndTrafficByAsin: [
+        { key: "parentAsin", label: "Parent ASIN" },
+        { key: "childAsin", label: "Child ASIN" },
+        { key: "sku", label: "SKU" },
+        { key: "salesByAsin.orderedProductSales.amount", label: "Ordered Product Sales" },
+        { key: "salesByAsin.orderedProductSales.currencyCode", label: "Currency Code (Sales)" },
+        { key: "salesByAsin.orderedProductSalesB2B.amount", label: "Ordered Product Sales (B2B)" },
+        { key: "salesByAsin.orderedProductSalesB2B.currencyCode", label: "Currency Code (Sales B2B)" },
+        { key: "salesByAsin.unitsOrdered", label: "Units Ordered" },
+        { key: "salesByAsin.unitsOrderedB2B", label: "Units Ordered (B2B)" },
+        { key: "salesByAsin.totalOrderItems", label: "Total Order Items" },
+        { key: "salesByAsin.totalOrderItemsB2B", label: "Total Order Items (B2B)" },
+        { key: "salesByAsin.averageSalesPerOrderItem.amount", label: "Average Sales per Order Item" },
+        { key: "salesByAsin.averageSalesPerOrderItem.currencyCode", label: "Currency Code (Avg Sales)" },
+        { key: "salesByAsin.averageSalesPerOrderItemB2B.amount", label: "Average Sales per Order Item (B2B)" },
+        { key: "salesByAsin.averageSalesPerOrderItemB2B.currencyCode", label: "Currency Code (Avg Sales B2B)" },
+        { key: "salesByAsin.averageUnitsPerOrderItem", label: "Average Units per Order Item" },
+        { key: "salesByAsin.averageUnitsPerOrderItemB2B", label: "Average Units per Order Item (B2B)" },
+        { key: "salesByAsin.averageSellingPrice.amount", label: "Average Selling Price" },
+        { key: "salesByAsin.averageSellingPrice.currencyCode", label: "Currency Code (Avg Price)" },
+        { key: "salesByAsin.averageSellingPriceB2B.amount", label: "Average Selling Price (B2B)" },
+        { key: "salesByAsin.averageSellingPriceB2B.currencyCode", label: "Currency Code (Avg Price B2B)" },
+        { key: "salesByAsin.unitsRefunded", label: "Units Refunded" },
+        { key: "salesByAsin.refundRate", label: "Refund Rate" },
+        { key: "salesByAsin.claimsGranted", label: "Claims Granted" },
+        { key: "salesByAsin.claimsAmount.amount", label: "Claims Amount" },
+        { key: "salesByAsin.claimsAmount.currencyCode", label: "Currency Code (Claims)" },
+        { key: "salesByAsin.shippedProductSales.amount", label: "Shipped Product Sales" },
+        { key: "salesByAsin.shippedProductSales.currencyCode", label: "Currency Code (Shipped)" },
+        { key: "salesByAsin.unitsShipped", label: "Units Shipped" },
+        { key: "salesByAsin.ordersShipped", label: "Orders Shipped" },
+        { key: "trafficByAsin.browserPageViews", label: "Browser Page Views" },
+        { key: "trafficByAsin.mobileAppPageViews", label: "Mobile App Page Views" },
+        { key: "trafficByAsin.pageViews", label: "Page Views" },
+        { key: "trafficByAsin.browserSessions", label: "Browser Sessions" },
+        { key: "trafficByAsin.mobileAppSessions", label: "Mobile App Sessions" },
+        { key: "trafficByAsin.sessions", label: "Sessions" },
+        { key: "trafficByAsin.buyBoxPercentage", label: "Buy Box %" },
+        { key: "trafficByAsin.orderItemSessionPercentage", label: "Order Item Session %" },
+        { key: "trafficByAsin.orderItemSessionPercentageB2B", label: "Order Item Session % (B2B)" },
+        { key: "trafficByAsin.unitSessionPercentage", label: "Unit Session %" },
+        { key: "trafficByAsin.unitSessionPercentageB2B", label: "Unit Session % (B2B)" },
+        { key: "trafficByAsin.averageOfferCount", label: "Average Offer Count" },
+        { key: "trafficByAsin.averageParentItems", label: "Average Parent Items" },
+        { key: "trafficByAsin.feedbackReceived", label: "Feedback Received" },
+        { key: "trafficByAsin.negativeFeedbackReceived", label: "Negative Feedback Received" },
+        { key: "trafficByAsin.receivedNegativeFeedbackRate", label: "Negative Feedback Rate" },
+        { key: "trafficByAsin.browserSessionPercentage", label: "Browser Session %" },
+        { key: "trafficByAsin.mobileAppSessionPercentage", label: "Mobile App Session %" },
+        { key: "trafficByAsin.sessionPercentage", label: "Session %" },
+        { key: "trafficByAsin.browserPageViewsPercentage", label: "Browser Page Views %" },
+        { key: "trafficByAsin.mobileAppPageViewsPercentage", label: "Mobile App Page Views %" },
+        { key: "trafficByAsin.pageViewsPercentage", label: "Page Views %" },
+      ],
+    },
   },
 
   GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA: {
@@ -564,4 +678,10 @@ export function getAdsReportMeta(reportType: string): AdsReportMeta | undefined 
 
 export function hasSpReportOptions(reportType: string): boolean {
   return !!SP_REPORT_METADATA[reportType]?.options?.length;
+}
+
+export function getOutputColumns(
+  reportType: string,
+): Record<string, OutputColumnDef[]> | undefined {
+  return SP_REPORT_METADATA[reportType]?.outputColumns;
 }

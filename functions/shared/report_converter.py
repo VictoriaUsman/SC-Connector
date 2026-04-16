@@ -26,11 +26,24 @@ _SP_API_ARRAY_KEYS: dict[str, list[str]] = {
     "GET_LEDGER_SUMMARY_VIEW_DATA": ["ledgerSummaryViewData"],
 }
 
+_SP_PERCENTAGE_SUFFIXES: frozenset[str] = frozenset({
+    "Percentage", "Rate", "Share",
+})
+
+
+def _is_percentage_column(col: str) -> bool:
+    """True when *col* ends with a known SP API percentage suffix."""
+    leaf = col.rsplit(".", 1)[-1]
+    return any(leaf.endswith(suffix) for suffix in _SP_PERCENTAGE_SUFFIXES)
+
 
 def maybe_convert_to_tsv(
     raw: bytes,
     api_source: str,
     report_type: str,
+    *,
+    output_columns: list[str] | None = None,
+    normalize_percentages: bool = False,
 ) -> tuple[bytes, bool]:
     """Convert a JSON report to TSV if applicable.
 
@@ -40,13 +53,22 @@ def maybe_convert_to_tsv(
     Conversion rules:
     - **Ads API**: always converted (top-level JSON array).
     - **SP API**: converted only for known JSON report types.
+
+    Optional post-processing:
+    - *output_columns*: keep only these columns (in order). ``None`` = all.
+    - *normalize_percentages*: divide SP API percentage fields by 100.
     """
     if api_source == "ads_api":
-        result = _convert_ads(raw)
+        result = _convert_ads(raw, output_columns=output_columns)
         return (result, result is not raw)
 
     if report_type in _SP_API_ARRAY_KEYS:
-        result = _convert_sp(raw, report_type)
+        result = _convert_sp(
+            raw,
+            report_type,
+            output_columns=output_columns,
+            normalize_percentages=normalize_percentages,
+        )
         return (result, result is not raw)
 
     return raw, False
@@ -56,7 +78,13 @@ def maybe_convert_to_tsv(
 # Internal converters
 # ------------------------------------------------------------------
 
-def _convert_sp(raw: bytes, report_type: str) -> bytes:
+def _convert_sp(
+    raw: bytes,
+    report_type: str,
+    *,
+    output_columns: list[str] | None = None,
+    normalize_percentages: bool = False,
+) -> bytes:
     """SP API: locate known array key(s) inside a dict and flatten each section."""
     try:
         data = json.loads(raw)
@@ -80,21 +108,37 @@ def _convert_sp(raw: bytes, report_type: str) -> bytes:
     if not sections:
         return _extract_and_flatten(data)
 
+    prepared: list[tuple[str, list[dict[str, Any]], list[str]]] = []
+    for section_name, rows in sections:
+        flat_rows = [_flatten_dict(row) for row in rows]
+        all_keys = _stable_keys(flat_rows)
+        cols = _apply_column_filter(all_keys, output_columns)
+        if cols:
+            prepared.append((section_name, flat_rows, cols))
+
+    if not prepared:
+        return raw
+
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter="\t", lineterminator="\n")
+    multi = len(prepared) > 1
 
-    for i, (section_name, rows) in enumerate(sections):
+    for i, (section_name, flat_rows, cols) in enumerate(prepared):
         if i > 0:
             writer.writerow([])
             writer.writerow([])
-        if len(sections) > 1:
+        if multi:
             writer.writerow([f"# {section_name}"])
-        _write_rows(writer, rows)
+        _write_flat_rows(writer, flat_rows, cols, normalize_percentages)
 
     return buf.getvalue().encode("utf-8")
 
 
-def _convert_ads(raw: bytes) -> bytes:
+def _convert_ads(
+    raw: bytes,
+    *,
+    output_columns: list[str] | None = None,
+) -> bytes:
     """Ads API: parse a top-level JSON array (or dict-wrapped array) and flatten."""
     try:
         data = json.loads(raw)
@@ -106,7 +150,7 @@ def _convert_ads(raw: bytes) -> bytes:
     if rows is None:
         return raw
 
-    return _rows_to_tsv(rows)
+    return _rows_to_tsv(rows, output_columns=output_columns)
 
 
 # ------------------------------------------------------------------
@@ -138,21 +182,51 @@ def _extract_and_flatten(data: dict) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
-def _rows_to_tsv(rows: list[dict[str, Any]]) -> bytes:
+def _rows_to_tsv(
+    rows: list[dict[str, Any]],
+    *,
+    output_columns: list[str] | None = None,
+    normalize_percentages: bool = False,
+) -> bytes:
     """Flatten a list of dicts and write as TSV with a header row."""
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter="\t", lineterminator="\n")
-    _write_rows(writer, rows)
+    flat_rows = [_flatten_dict(row) for row in rows]
+    all_keys = _stable_keys(flat_rows)
+    cols = _apply_column_filter(all_keys, output_columns)
+    _write_flat_rows(writer, flat_rows, cols, normalize_percentages)
     return buf.getvalue().encode("utf-8")
 
 
-def _write_rows(writer: csv.writer, rows: list[dict[str, Any]]) -> None:
-    """Flatten *rows* and append header + data lines to *writer*."""
-    flat_rows = [_flatten_dict(row) for row in rows]
-    all_keys = _stable_keys(flat_rows)
-    writer.writerow(all_keys)
+def _apply_column_filter(
+    all_keys: list[str],
+    output_columns: list[str] | None,
+) -> list[str]:
+    """Return *output_columns* (preserving order) filtered to those in *all_keys*,
+    or *all_keys* unchanged when *output_columns* is ``None``."""
+    if output_columns is None:
+        return all_keys
+    available = set(all_keys)
+    return [c for c in output_columns if c in available]
+
+
+def _write_flat_rows(
+    writer: csv.writer,
+    flat_rows: list[dict[str, Any]],
+    columns: list[str],
+    normalize_percentages: bool,
+) -> None:
+    """Write header + data rows, optionally normalizing percentage values."""
+    pct_cols = frozenset(c for c in columns if _is_percentage_column(c)) if normalize_percentages else frozenset()
+    writer.writerow(columns)
     for flat in flat_rows:
-        writer.writerow([flat.get(k, "") for k in all_keys])
+        row: list[Any] = []
+        for k in columns:
+            v = flat.get(k, "")
+            if k in pct_cols and isinstance(v, (int, float)):
+                v = round(v / 100, 6)
+            row.append(v)
+        writer.writerow(row)
 
 
 def _flatten_dict(d: Any, prefix: str = "") -> dict[str, Any]:

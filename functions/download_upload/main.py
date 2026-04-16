@@ -73,7 +73,17 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if execution_date_str:
             execution_date_val = date.fromisoformat(execution_date_str)
 
-        content, converted = maybe_convert_to_tsv(content, api_source, report_type)
+        output_columns = report_params.pop("outputColumns", None)
+        if output_columns is None and api_source == "ads_api":
+            output_columns = report_params.get("columns")
+
+        content, converted = maybe_convert_to_tsv(
+            content,
+            api_source,
+            report_type,
+            output_columns=output_columns,
+            normalize_percentages=(api_source == "sp_api"),
+        )
         file_ext = ".tsv" if converted else None
         mime_type = "text/tab-separated-values" if converted else None
 
