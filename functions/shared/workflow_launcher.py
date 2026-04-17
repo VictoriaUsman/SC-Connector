@@ -167,6 +167,31 @@ def _get_report_params_map(
     return schedule.get("report_params", {})
 
 
+def _expand_report_option_variants(type_params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand multi-value reportOptions (e.g. asinGranularity: ["CHILD","PARENT"])
+    into one params dict per value, so each gets its own workflow execution."""
+    opts = type_params.get("reportOptions")
+    if not isinstance(opts, dict):
+        return [type_params]
+
+    multi_key: str | None = None
+    multi_vals: list[str] = []
+    for k, v in opts.items():
+        if isinstance(v, list) and len(v) > 1:
+            multi_key = k
+            multi_vals = v
+            break
+
+    if not multi_key:
+        return [type_params]
+
+    variants: list[dict[str, Any]] = []
+    for val in multi_vals:
+        variant = {**type_params, "reportOptions": {**opts, multi_key: val}}
+        variants.append(variant)
+    return variants
+
+
 def launch_for_marketplace(
     parent: str,
     now: datetime,
@@ -206,58 +231,59 @@ def launch_for_marketplace(
         effective_source = infer_api_source(report_type, schedule_api_source)
         type_params = params_map.get(report_type, {})
 
-        report_params = {**type_params}
-        report_params.update(
-            compute_report_dates(marketplace, effective_source, start_date, end_date)
-        )
-
-        dates_to_pull: list[tuple[date, date, dict]] = [
-            (start_date, end_date, report_params),
-        ]
-
-        if strategy == "yesterday":
-            reconciliation_days: list[int] = schedule.get("reconciliation_days", [3, 7])
-            for days_back in reconciliation_days:
-                recon_date = start_date - timedelta(days=days_back - 1)
-                recon_params = {**type_params}
-                recon_params.update(
-                    compute_report_dates(marketplace, effective_source, recon_date)
-                )
-                dates_to_pull.append((recon_date, recon_date, recon_params))
-
-        for pull_start, pull_end, pull_params in dates_to_pull:
-            job_data: dict[str, Any] = {
-                "client_id": client_id,
-                "api_source": effective_source,
-                "marketplace": marketplace,
-                "report_type": report_type,
-                "schedule_id": schedule["id"],
-                "frequency": frequency,
-                "report_date": pull_start.isoformat(),
-                "execution_date": execution_date_val.isoformat(),
-            }
-            if pull_start != pull_end:
-                job_data["report_end_date"] = pull_end.isoformat()
-            if extra_job_fields:
-                job_data.update(extra_job_fields)
-
-            job_id = create_job(job_data)
-
-            payload = build_payload(
-                api_source=effective_source,
-                client_id=client_id,
-                marketplace=marketplace,
-                report_type=report_type,
-                report_params=pull_params,
-                job_id=job_id,
-                frequency=frequency,
-                folder_name=schedule.get("folder_name", ""),
-                subfolder_strategy=schedule.get("subfolder_strategy", "date"),
-                schedule_id=schedule["id"],
-                execution_date=execution_date_val.isoformat(),
+        for variant_params in _expand_report_option_variants(type_params):
+            report_params = {**variant_params}
+            report_params.update(
+                compute_report_dates(marketplace, effective_source, start_date, end_date)
             )
 
-            launch_execution(parent, payload, job_id, error_phase="scheduler")
-            job_ids.append(job_id)
+            dates_to_pull: list[tuple[date, date, dict]] = [
+                (start_date, end_date, report_params),
+            ]
+
+            if strategy == "yesterday":
+                reconciliation_days: list[int] = schedule.get("reconciliation_days", [3, 7])
+                for days_back in reconciliation_days:
+                    recon_date = start_date - timedelta(days=days_back - 1)
+                    recon_params = {**variant_params}
+                    recon_params.update(
+                        compute_report_dates(marketplace, effective_source, recon_date)
+                    )
+                    dates_to_pull.append((recon_date, recon_date, recon_params))
+
+            for pull_start, pull_end, pull_params in dates_to_pull:
+                job_data: dict[str, Any] = {
+                    "client_id": client_id,
+                    "api_source": effective_source,
+                    "marketplace": marketplace,
+                    "report_type": report_type,
+                    "schedule_id": schedule["id"],
+                    "frequency": frequency,
+                    "report_date": pull_start.isoformat(),
+                    "execution_date": execution_date_val.isoformat(),
+                }
+                if pull_start != pull_end:
+                    job_data["report_end_date"] = pull_end.isoformat()
+                if extra_job_fields:
+                    job_data.update(extra_job_fields)
+
+                job_id = create_job(job_data)
+
+                payload = build_payload(
+                    api_source=effective_source,
+                    client_id=client_id,
+                    marketplace=marketplace,
+                    report_type=report_type,
+                    report_params=pull_params,
+                    job_id=job_id,
+                    frequency=frequency,
+                    folder_name=schedule.get("folder_name", ""),
+                    subfolder_strategy=schedule.get("subfolder_strategy", "date"),
+                    schedule_id=schedule["id"],
+                    execution_date=execution_date_val.isoformat(),
+                )
+
+                launch_execution(parent, payload, job_id, error_phase="scheduler")
+                job_ids.append(job_id)
 
     return job_ids

@@ -19,6 +19,9 @@ frontend/dist-ssr/
 .env.prod
 frontend/.env
 
+# Local data exports — often contain refresh tokens or PII, never commit
+studio_results_*.json
+
 # Pulumi local state
 .pulumi-local/
 

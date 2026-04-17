@@ -179,6 +179,9 @@ def _ensure_sp_report_options(report_type: str, report_params: dict) -> dict:
     if report_type == "GET_SALES_AND_TRAFFIC_REPORT":
         for k, v in _SALES_TRAFFIC_DEFAULTS.items():
             opts.setdefault(k, v)
+        gran = opts.get("asinGranularity")
+        if isinstance(gran, list):
+            opts["asinGranularity"] = gran[0] if gran else "CHILD"
 
     if opts:
         report_params["reportOptions"] = opts

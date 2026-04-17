@@ -11,7 +11,8 @@ export interface SpReportOption {
   key: string;
   label: string;
   choices: { value: string; label: string }[];
-  default: string;
+  default: string | string[];
+  multi?: boolean;
 }
 
 export interface OutputColumnDef {
@@ -147,7 +148,8 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
           { value: "PARENT", label: "Parent ASIN" },
           { value: "SKU", label: "SKU" },
         ],
-        default: "CHILD",
+        default: ["CHILD"],
+        multi: true,
       },
     ],
     outputColumns: {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -14,7 +15,7 @@ import { ChevronRight, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface SpReportParams {
-  reportOptions?: Record<string, string>;
+  reportOptions?: Record<string, string | string[]>;
   outputColumns?: string[];
 }
 
@@ -34,7 +35,7 @@ export function SpReportConfigPanel({
   useEffect(() => {
     if (!options?.length) return;
     if (value.reportOptions) return;
-    const defaults: Record<string, string> = {};
+    const defaults: Record<string, string | string[]> = {};
     for (const opt of options) {
       defaults[opt.key] = opt.default;
     }
@@ -44,16 +45,32 @@ export function SpReportConfigPanel({
   if (!options?.length) return null;
 
   const currentOptions = value.reportOptions ?? {};
-  const summaryParts = options.map(
-    (opt) =>
-      opt.choices.find((c) => c.value === (currentOptions[opt.key] ?? opt.default))?.label ??
-      opt.default,
-  );
+
+  const summaryParts = options.map((opt) => {
+    const cur = currentOptions[opt.key] ?? opt.default;
+    if (opt.multi && Array.isArray(cur)) {
+      return cur.map((v) => opt.choices.find((c) => c.value === v)?.label ?? v).join(", ");
+    }
+    return opt.choices.find((c) => c.value === cur)?.label ?? String(cur);
+  });
 
   const handleOptionChange = (opt: SpReportOption, val: string) => {
     onChange({
       ...value,
       reportOptions: { ...currentOptions, [opt.key]: val },
+    });
+  };
+
+  const handleMultiToggle = (opt: SpReportOption, val: string) => {
+    const cur = currentOptions[opt.key];
+    const selected = Array.isArray(cur) ? cur : [cur ?? opt.default].flat();
+    const next = selected.includes(val)
+      ? selected.filter((v) => v !== val)
+      : [...selected, val];
+    if (next.length === 0) return;
+    onChange({
+      ...value,
+      reportOptions: { ...currentOptions, [opt.key]: next },
     });
   };
 
@@ -79,26 +96,50 @@ export function SpReportConfigPanel({
 
       {expanded && (
         <div className="space-y-3 px-3 pb-3 pt-1 border-t">
-          {options.map((opt) => (
-            <div key={opt.key} className="space-y-1.5">
-              <Label className="text-xs">{opt.label}</Label>
-              <Select
-                value={currentOptions[opt.key] ?? opt.default}
-                onValueChange={(v) => v && handleOptionChange(opt, v)}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {opt.choices.map((c) => (
-                    <SelectItem key={c.value} value={c.value} className="text-xs">
-                      {c.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ))}
+          {options.map((opt) => {
+            if (opt.multi) {
+              const selected = (() => {
+                const cur = currentOptions[opt.key];
+                return Array.isArray(cur) ? cur : [cur ?? opt.default].flat();
+              })();
+              return (
+                <div key={opt.key} className="space-y-1.5">
+                  <Label className="text-xs">{opt.label}</Label>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    {opt.choices.map((c) => (
+                      <label key={c.value} className="flex items-center gap-2 cursor-pointer text-xs">
+                        <Checkbox
+                          checked={selected.includes(c.value)}
+                          onCheckedChange={() => handleMultiToggle(opt, c.value)}
+                        />
+                        {c.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={opt.key} className="space-y-1.5">
+                <Label className="text-xs">{opt.label}</Label>
+                <Select
+                  value={(currentOptions[opt.key] ?? opt.default) as string}
+                  onValueChange={(v) => v && handleOptionChange(opt, v)}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {opt.choices.map((c) => (
+                      <SelectItem key={c.value} value={c.value} className="text-xs">
+                        {c.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

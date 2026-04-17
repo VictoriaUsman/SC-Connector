@@ -36,6 +36,7 @@ from shared.firestore_utils import (
     upsert_client,
 )
 from shared.workflow_launcher import (
+    _expand_report_option_variants,
     build_payload,
     client_has_credentials,
     get_report_types,
@@ -650,46 +651,49 @@ def on_demand_route():
     for report_type in report_types:
         effective_source = infer_api_source(report_type, api_source)
 
-        rt_params: dict = {**report_params_map.get(report_type, {})}
-        if effective_source == "sp_api":
-            if start_date:
-                rt_params["dataStartTime"] = start_date
-            if end_date:
-                rt_params["dataEndTime"] = end_date
-        else:
-            if start_date:
-                rt_params["startDate"] = start_date
-            if end_date:
-                rt_params["endDate"] = end_date
+        base_rt_params: dict = {**report_params_map.get(report_type, {})}
 
-        job_id = create_job({
-            "client_id": data["client_id"],
-            "api_source": effective_source,
-            "marketplace": data["marketplace"],
-            "report_type": report_type,
-            "frequency": "on_demand",
-            "execution_date": execution_date,
-        })
+        for variant_params in _expand_report_option_variants(base_rt_params):
+            rt_params = {**variant_params}
+            if effective_source == "sp_api":
+                if start_date:
+                    rt_params["dataStartTime"] = start_date
+                if end_date:
+                    rt_params["dataEndTime"] = end_date
+            else:
+                if start_date:
+                    rt_params["startDate"] = start_date
+                if end_date:
+                    rt_params["endDate"] = end_date
 
-        payload = build_payload(
-            api_source=effective_source,
-            client_id=data["client_id"],
-            marketplace=data["marketplace"],
-            report_type=report_type,
-            report_params=rt_params,
-            job_id=job_id,
-            frequency="on_demand",
-            folder_name=data.get("folder_name", ""),
-            subfolder_strategy=data.get("subfolder_strategy", "date"),
-            execution_date=execution_date,
-        )
+            job_id = create_job({
+                "client_id": data["client_id"],
+                "api_source": effective_source,
+                "marketplace": data["marketplace"],
+                "report_type": report_type,
+                "frequency": "on_demand",
+                "execution_date": execution_date,
+            })
 
-        try:
-            launch_execution(parent, payload, job_id, error_phase="trigger")
-            job_ids.append(job_id)
-        except Exception as exc:
-            logger.exception("On-demand workflow failed", extra={"job_id": job_id, "report_type": report_type})
-            errors.append({"report_type": report_type, "error": str(exc)[:200]})
+            payload = build_payload(
+                api_source=effective_source,
+                client_id=data["client_id"],
+                marketplace=data["marketplace"],
+                report_type=report_type,
+                report_params=rt_params,
+                job_id=job_id,
+                frequency="on_demand",
+                folder_name=data.get("folder_name", ""),
+                subfolder_strategy=data.get("subfolder_strategy", "date"),
+                execution_date=execution_date,
+            )
+
+            try:
+                launch_execution(parent, payload, job_id, error_phase="trigger")
+                job_ids.append(job_id)
+            except Exception as exc:
+                logger.exception("On-demand workflow failed", extra={"job_id": job_id, "report_type": report_type})
+                errors.append({"report_type": report_type, "error": str(exc)[:200]})
 
     logger.info("On-demand trigger", extra={"jobs": len(job_ids), "errors": len(errors)})
     return flask.jsonify({
