@@ -4,3 +4,4 @@ config:
   kalilos:scheduler-cron: "*/15 * * * *"
   kalilos:scheduler-timezone: America/New_York
   kalilos:gdrive-root-folder: "Kalilos Reports"
+  kalilos:frontend-url: https://kalilos-connector-prod.web.app

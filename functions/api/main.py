@@ -734,10 +734,14 @@ def ads_report_config_detail(report_type: str):
 
 _sm_client: secretmanager.SecretManagerServiceClient | None = None
 
-_oauth_states: dict[str, dict[str, str]] = {}
-
-SP_API_AUTH_URL = "https://sellercentral.amazon.com/apps/authorize/consent"
+SP_API_SELLER_CENTRAL_URLS: dict[str, str] = {
+    "na": "https://sellercentral.amazon.com",
+    "eu": "https://sellercentral-europe.amazon.com",
+    "fe": "https://sellercentral.amazon.co.jp",
+}
 ADS_API_AUTH_URL = "https://www.amazon.com/ap/oa"
+
+_OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes
 
 
 def _get_sm() -> secretmanager.SecretManagerServiceClient:
@@ -745,6 +749,33 @@ def _get_sm() -> secretmanager.SecretManagerServiceClient:
     if _sm_client is None:
         _sm_client = secretmanager.SecretManagerServiceClient()
     return _sm_client
+
+
+def _save_oauth_state(state: str, data: dict[str, str]) -> None:
+    """Persist OAuth state to Firestore so any Cloud Function instance can read it."""
+    from shared.firestore_utils import get_db
+    get_db().collection("_oauth_states").document(state).set({
+        **data,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+
+def _pop_oauth_state(state: str) -> dict[str, str] | None:
+    """Atomically retrieve and delete an OAuth state from Firestore."""
+    from shared.firestore_utils import get_db
+    ref = get_db().collection("_oauth_states").document(state)
+    doc = ref.get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict()
+    created = data.pop("created_at", None)
+    if created:
+        age = (datetime.now(timezone.utc) - created.replace(tzinfo=timezone.utc)).total_seconds()
+        if age > _OAUTH_STATE_TTL_SECONDS:
+            ref.delete()
+            return None
+    ref.delete()
+    return data
 
 
 def _read_app_secret(api_source: str) -> dict[str, str]:
@@ -794,6 +825,12 @@ def _get_frontend_url() -> str:
 
 @app.route("/oauth/sp-api/authorize", methods=["GET"])
 def oauth_sp_api_authorize():
+    """Step 1: Redirect seller to Seller Central authorization consent page.
+
+    Per Amazon docs, the authorization URI only takes application_id, state,
+    and optionally version=beta.  No redirect_uri here — Amazon uses the one
+    registered in the Developer Application settings.
+    """
     client_id = flask.request.args.get("client_id")
     if not client_id:
         return flask.jsonify({"error": "Missing client_id", "code": "INVALID_REQUEST"}), 400
@@ -803,18 +840,72 @@ def oauth_sp_api_authorize():
         return flask.jsonify({"error": "Client not found", "code": "NOT_FOUND"}), 404
 
     app_creds = _read_app_secret("sp_api")
+    application_id = app_creds.get("app_id", "")
+
+    region = flask.request.args.get("region", "na")
+    seller_central = SP_API_SELLER_CENTRAL_URLS.get(region, SP_API_SELLER_CENTRAL_URLS["na"])
 
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = {"client_id": client_id, "api_source": "sp_api"}
+    _save_oauth_state(state, {"client_id": client_id, "api_source": "sp_api"})
 
-    params = {
-        "application_id": app_creds.get("app_id", app_creds.get("client_id", "")),
+    params: dict[str, str] = {
+        "application_id": application_id,
+        "state": state,
+    }
+    if app_creds.get("draft", True):
+        params["version"] = "beta"
+
+    auth_url = f"{seller_central}/apps/authorize/consent?{urlencode(params)}"
+    logger.info("SP API OAuth authorize redirect", extra={
+        "client_id": client_id,
+        "application_id": application_id,
+        "seller_central": seller_central,
+        "auth_url": auth_url,
+    })
+    return flask.redirect(auth_url)
+
+
+@app.route("/oauth/sp-api/login", methods=["GET"])
+def oauth_sp_api_login():
+    """Login URI — Amazon redirects the seller here during the authorization workflow.
+
+    Amazon sends: amazon_callback_uri, amazon_state, selling_partner_id, version (optional).
+    We generate our own state, save it, and redirect the seller back to the
+    amazon_callback_uri with our state + redirect_uri.
+    """
+    amazon_callback_uri = flask.request.args.get("amazon_callback_uri", "")
+    amazon_state = flask.request.args.get("amazon_state", "")
+    selling_partner_id = flask.request.args.get("selling_partner_id", "")
+    version = flask.request.args.get("version", "")
+
+    if not amazon_callback_uri or not amazon_state:
+        logger.warning("SP API login URI missing required params", extra={
+            "amazon_callback_uri": bool(amazon_callback_uri),
+            "amazon_state": bool(amazon_state),
+        })
+        return flask.jsonify({"error": "Missing amazon_callback_uri or amazon_state"}), 400
+
+    state = secrets.token_urlsafe(32)
+    _save_oauth_state(state, {
+        "api_source": "sp_api",
+        "selling_partner_id": selling_partner_id,
+        "client_id": "",
+    })
+
+    params: dict[str, str] = {
+        "amazon_state": amazon_state,
         "state": state,
         "redirect_uri": _get_oauth_redirect_uri(),
-        "version": "beta",
     }
-    auth_url = f"{SP_API_AUTH_URL}?{urlencode(params)}"
-    return flask.redirect(auth_url)
+    if version:
+        params["version"] = version
+
+    callback_url = f"{amazon_callback_uri}?{urlencode(params)}"
+    logger.info("SP API login URI → redirecting to Amazon callback", extra={
+        "selling_partner_id": selling_partner_id,
+        "redirect_uri": params["redirect_uri"],
+    })
+    return flask.redirect(callback_url)
 
 
 @app.route("/oauth/ads-api/authorize", methods=["GET"])
@@ -830,35 +921,58 @@ def oauth_ads_api_authorize():
     app_creds = _read_app_secret("ads_api")
 
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = {"client_id": client_id, "api_source": "ads_api"}
+    _save_oauth_state(state, {"client_id": client_id, "api_source": "ads_api"})
 
+    redirect_uri = _get_oauth_redirect_uri()
     params = {
         "client_id": app_creds["client_id"],
         "scope": "advertising::campaign_management",
         "response_type": "code",
-        "redirect_uri": _get_oauth_redirect_uri(),
+        "redirect_uri": redirect_uri,
         "state": state,
     }
     auth_url = f"{ADS_API_AUTH_URL}?{urlencode(params)}"
+    logger.info("Ads API OAuth authorize redirect", extra={
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+    })
     return flask.redirect(auth_url)
 
 
 @app.route("/oauth/callback", methods=["GET"])
 def oauth_callback():
+    logger.info("OAuth callback received", extra={
+        "args": dict(flask.request.args),
+    })
+
     error = flask.request.args.get("error")
+    error_description = flask.request.args.get("error_description", "")
     if error:
-        logger.warning("OAuth error from Amazon", extra={"error": error})
-        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message={error}")
+        logger.warning("OAuth error from Amazon", extra={"error": error, "description": error_description})
+        msg = error_description or error
+        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message={msg}")
 
     code = flask.request.args.get("spapi_oauth_code") or flask.request.args.get("code")
     state = flask.request.args.get("state", "")
+    selling_partner_id = flask.request.args.get("selling_partner_id", "")
 
-    if not code or state not in _oauth_states:
+    if not code:
+        logger.warning("OAuth callback missing authorization code", extra={"state": state})
+        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message=missing_code")
+
+    state_data = _pop_oauth_state(state)
+    if not state_data:
+        logger.warning("OAuth callback invalid or expired state", extra={"state": state[:16]})
         return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message=invalid_state")
 
-    state_data = _oauth_states.pop(state)
-    client_id = state_data["client_id"]
+    client_id = state_data.get("client_id", "")
     api_source = state_data["api_source"]
+
+    if not client_id and selling_partner_id:
+        client_id = selling_partner_id
+        logger.info("Using selling_partner_id as client_id for login-URI flow", extra={
+            "selling_partner_id": selling_partner_id,
+        })
 
     try:
         app_creds = _read_app_secret(api_source)
@@ -870,17 +984,31 @@ def oauth_callback():
             "client_id": app_creds["client_id"],
             "client_secret": app_creds["client_secret"],
         }, timeout=15)
-        token_resp.raise_for_status()
-        tokens = token_resp.json()
 
+        if not token_resp.ok:
+            logger.error("LWA token exchange failed", extra={
+                "status": token_resp.status_code,
+                "body": token_resp.text[:500],
+                "client_id": client_id,
+            })
+            token_resp.raise_for_status()
+
+        tokens = token_resp.json()
         refresh_token = tokens["refresh_token"]
 
         if api_source == "sp_api":
-            secret_name = _store_client_secret(client_id, api_source, {"refresh_token": refresh_token})
-            upsert_client(client_id, {"sp_api_secret_name": secret_name})
+            secret_data: dict[str, str] = {"refresh_token": refresh_token}
+            if selling_partner_id:
+                secret_data["selling_partner_id"] = selling_partner_id
+            secret_name = _store_client_secret(client_id, api_source, secret_data)
+            update_fields_sp: dict[str, Any] = {"sp_api_secret_name": secret_name}
+            if selling_partner_id:
+                update_fields_sp["selling_partner_id"] = selling_partner_id
+            upsert_client(client_id, update_fields_sp)
+
         elif api_source == "ads_api":
             access_token = tokens["access_token"]
-            update_fields: dict[str, str] = {}
+            update_fields_ads: dict[str, Any] = {}
             try:
                 profiles_resp = requests.get(
                     "https://advertising-api.amazon.com/v2/profiles",
@@ -893,17 +1021,44 @@ def oauth_callback():
                 profiles_resp.raise_for_status()
                 profiles = profiles_resp.json()
                 if profiles:
-                    update_fields["ads_profile_id"] = str(profiles[0]["profileId"])
+                    update_fields_ads["ads_profile_id"] = str(profiles[0]["profileId"])
+                    logger.info("Ads profile discovered", extra={
+                        "client_id": client_id,
+                        "profile_count": len(profiles),
+                        "profile_id": profiles[0]["profileId"],
+                    })
             except Exception as exc:
                 logger.warning("Profile discovery failed during OAuth", extra={"error": str(exc)})
-            upsert_client(client_id, update_fields)
+            upsert_client(client_id, update_fields_ads)
 
-        logger.info("OAuth completed", extra={"client_id": client_id, "api_source": api_source})
+        logger.info("OAuth completed successfully", extra={
+            "client_id": client_id,
+            "api_source": api_source,
+            "selling_partner_id": selling_partner_id,
+        })
         return flask.redirect(f"{_get_frontend_url()}/clients?oauth=success&api_source={api_source}&client_id={client_id}")
 
     except Exception as exc:
-        logger.exception("OAuth token exchange failed", extra={"client_id": client_id})
+        logger.exception("OAuth token exchange failed", extra={"client_id": client_id, "api_source": api_source})
         return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message={str(exc)[:100]}")
+
+
+@app.route("/oauth/debug", methods=["GET"])
+def oauth_debug():
+    """Return the OAuth configuration for verification (no secrets exposed)."""
+    redirect_uri = _get_oauth_redirect_uri()
+    frontend_url = _get_frontend_url()
+    env = get_environment()
+    api_url = redirect_uri.rsplit("/oauth/callback", 1)[0] if redirect_uri else ""
+    return flask.jsonify({
+        "environment": env,
+        "redirect_uri": redirect_uri,
+        "login_uri": f"{api_url}/oauth/sp-api/login" if api_url else "",
+        "frontend_url": frontend_url,
+        "sp_api_seller_central_urls": SP_API_SELLER_CENTRAL_URLS,
+        "ads_api_authorize_base": ADS_API_AUTH_URL,
+        "lwa_token_url": LWA_TOKEN_URL,
+    }), 200
 
 
 @app.route("/oauth/status/<client_id>", methods=["GET"])
