@@ -16,8 +16,12 @@ def create(
     """Deploy the MCP server as a Cloud Run service.
 
     The service proxies requests to the existing REST API Cloud Function.
-    Authentication is handled by a bearer token (MCP_API_KEY env var) loaded
-    from Secret Manager.
+    Authentication is handled by a bearer token (MCP_API_KEY env var).
+
+    Secret env vars are read from Pulumi config (encrypted in state) rather
+    than Cloud Run secret references to work around a pulumi-gcp provider bug
+    where value_source env vars also send an empty value field, causing a
+    "oneof field 'values' is already set" 400 error from the Cloud Run API.
     """
     opts = pulumi.ResourceOptions(depends_on=depends_on)
     config = pulumi.Config("kalilos")
@@ -36,9 +40,11 @@ def create(
         opts=opts,
     )
 
-    # -- Secret for the MCP API key ----------------------------------------
+    # -- Secrets (kept for storage, not referenced from Cloud Run env) -----
+    # NOTE: Cloud Run env vars read values from Pulumi config instead of
+    # secret references due to a pulumi-gcp provider bug with value_source.
 
-    mcp_api_key_secret = gcp.secretmanager.Secret(
+    gcp.secretmanager.Secret(
         f"{resource_name}-api-key",
         secret_id=f"{resource_name}-api-key",
         replication=gcp.secretmanager.SecretReplicationArgs(
@@ -48,9 +54,7 @@ def create(
         opts=opts,
     )
 
-    # -- Secret for the REST API key (used by MCP server to call API) ------
-
-    api_key_secret = gcp.secretmanager.Secret(
+    gcp.secretmanager.Secret(
         f"kalilos-{env}-api-key",
         secret_id=f"kalilos-{env}-api-key",
         replication=gcp.secretmanager.SecretReplicationArgs(
@@ -92,21 +96,11 @@ def create(
                     ),
                     gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
                         name="KALILOS_API_KEY",
-                        value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
-                            secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
-                                secret=api_key_secret.secret_id,
-                                version="latest",
-                            ),
-                        ),
+                        value=config.require_secret("api-key"),
                     ),
                     gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
                         name="MCP_API_KEY",
-                        value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
-                            secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
-                                secret=mcp_api_key_secret.secret_id,
-                                version="latest",
-                            ),
-                        ),
+                        value=config.require_secret("mcp-api-key"),
                     ),
                 ],
             )],

@@ -1,8 +1,8 @@
 """Kalilos MCP Server — agentic interface to the Amazon Reports Connector.
 
-Exposes 14 tools for managing report schedules, triggering on-demand reports,
-and monitoring job status. Works across Cursor, Claude Desktop, Claude.ai,
-Claude Code, and the Anthropic API.
+Exposes 15 tools for managing report schedules, triggering on-demand reports,
+monitoring job status, and discovering Ads API profiles. Works across Cursor,
+Claude Desktop, Claude.ai, Claude Code, and the Anthropic API.
 
 Run locally:
     python server.py                     # HTTP on :8080
@@ -68,12 +68,16 @@ async def health(request: Request) -> JSONResponse:
 SP_REPORT_TYPES: list[dict] = [
     {"id": "GET_FLAT_FILE_OPEN_LISTINGS_DATA", "label": "Open Listings", "api": "sp_api", "category": "Listings"},
     {"id": "GET_MERCHANT_LISTINGS_ALL_DATA", "label": "All Listings", "api": "sp_api", "category": "Listings"},
+    {"id": "GET_MERCHANT_LISTINGS_DATA", "label": "Active Listings", "api": "sp_api", "category": "Listings"},
     {"id": "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_ORDER_DATE_GENERAL", "label": "Orders (by Order Date)", "api": "sp_api", "category": "Orders"},
     {"id": "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL", "label": "Orders (by Last Update)", "api": "sp_api", "category": "Orders"},
     {"id": "GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL", "label": "Amazon Fulfilled Shipments", "api": "sp_api", "category": "Orders"},
     {"id": "GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA", "label": "FBA Inventory (Unsuppressed)", "api": "sp_api", "category": "FBA Inventory"},
     {"id": "GET_AFN_INVENTORY_DATA", "label": "AFN Inventory", "api": "sp_api", "category": "FBA Inventory"},
     {"id": "GET_FBA_ESTIMATED_FBA_FEES_TXT_DATA", "label": "FBA Estimated Fees", "api": "sp_api", "category": "FBA Inventory"},
+    {"id": "GET_FBA_MYI_ALL_INVENTORY_DATA", "label": "FBA Inventory (All)", "api": "sp_api", "category": "FBA Inventory"},
+    {"id": "GET_RESTOCK_INVENTORY_RECOMMENDATIONS_REPORT", "label": "Restock Inventory Recommendations", "api": "sp_api", "category": "FBA Inventory"},
+    {"id": "GET_STRANDED_INVENTORY_UI_DATA", "label": "Stranded Inventory", "api": "sp_api", "category": "FBA Inventory"},
     {"id": "GET_FLAT_FILE_RETURNS_DATA_BY_RETURN_DATE", "label": "FBM Returns", "api": "sp_api", "category": "Returns"},
     {"id": "GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA", "label": "FBA Returns", "api": "sp_api", "category": "Returns"},
     {"id": "GET_FBA_FULFILLMENT_REMOVAL_SHIPMENT_DETAIL_DATA", "label": "Removal Shipment Detail", "api": "sp_api", "category": "Returns"},
@@ -97,6 +101,7 @@ ADS_REPORT_TYPES: list[dict] = [
     {"id": "sdCampaigns", "label": "SD Campaigns", "api": "ads_api", "category": "Sponsored Display"},
     {"id": "sdTargeting", "label": "SD Targeting", "api": "ads_api", "category": "Sponsored Display"},
     {"id": "sdAdvertisedProduct", "label": "SD Advertised Product", "api": "ads_api", "category": "Sponsored Display"},
+    {"id": "spPlacement", "label": "SP Placement", "api": "ads_api", "category": "Sponsored Products"},
 ]
 
 MARKETPLACES = ["US", "CA", "MX", "UK", "DE", "FR", "IT", "ES", "AU"]
@@ -232,6 +237,21 @@ async def list_report_types(api_source: str | None = None) -> dict:
         result["ads_api"] = ADS_REPORT_TYPES
     result["marketplaces"] = MARKETPLACES
     return result
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_ads_profiles() -> list[dict] | dict:
+    """List all Amazon Ads profiles visible to the shared app credentials.
+
+    Returns every advertising profile (profileId, countryCode, accountInfo,
+    dailyBudget, timezone, etc.) associated with the authorized Ads API app.
+    Profiles already linked to a Kalilos client include _linked_client_id.
+    No parameters required — uses the single shared set of Ads API credentials.
+    """
+    try:
+        return await api.list_ads_profiles()
+    except ApiError as e:
+        return _err(e)
 
 
 @mcp.tool(annotations={"readOnlyHint": True})

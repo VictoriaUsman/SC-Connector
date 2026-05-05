@@ -9,3 +9,5 @@ config:
   kalilos:api-key:
     secure: v1:2AXdN7ZBVtwePJvg:c47KgN6yk/yGBIf2u9T/0y2nG+3Tcm+ZvlAnD2244haB+Qgsb9K33wbXZ+IY70ahAmSVR2fraeP3FXCc7cGm5hqz8/KTune94fSEOhIIh/c=
   kalilos:frontend-url: https://kalilos-connector-staging.web.app
+  kalilos:mcp-api-key:
+    secure: v1:WGFKxIsF1QYPhByH:bj1jeNC4a/fPmDofceYhOCYHkMhul/ZzCKv3Rkg00rSXJWeIq57+Q02Cj8jOKA1z8jvQIIJYm0HDPgAiAnAPF9GUsTju8u1zSWtYg7gv7XM=

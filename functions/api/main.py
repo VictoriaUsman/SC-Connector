@@ -708,6 +708,73 @@ def on_demand_route():
 # Ads Report Config — expose available columns/config per report type
 # ---------------------------------------------------------------------------
 
+@app.route("/ads-profiles", methods=["GET"])
+def ads_profiles_list():
+    """Return all Amazon Ads profiles visible to the shared app credentials.
+
+    Performs a fresh LWA token exchange and calls GET /v2/profiles.
+    Cross-references Firestore clients by ads_profile_id.
+    """
+    try:
+        app_creds = _read_app_secret("ads_api")
+    except Exception as exc:
+        logger.exception("Failed to read Ads API app credentials")
+        return flask.jsonify({
+            "error": f"Could not load Ads API app credentials: {str(exc)[:200]}",
+            "code": "CREDENTIALS_MISSING",
+        }), 500
+
+    try:
+        token_resp = requests.post(LWA_TOKEN_URL, data={
+            "grant_type": "refresh_token",
+            "refresh_token": app_creds["refresh_token"],
+            "client_id": app_creds["client_id"],
+            "client_secret": app_creds["client_secret"],
+        }, timeout=15)
+        token_resp.raise_for_status()
+        access_token = token_resp.json()["access_token"]
+    except Exception as exc:
+        logger.exception("LWA token exchange failed for ads-profiles")
+        return flask.jsonify({
+            "error": f"Token exchange failed: {str(exc)[:200]}",
+            "code": "TOKEN_EXCHANGE_FAILED",
+        }), 500
+
+    try:
+        profiles_resp = requests.get(
+            "https://advertising-api.amazon.com/v2/profiles",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Amazon-Advertising-API-ClientId": app_creds["client_id"],
+            },
+            timeout=20,
+        )
+        profiles_resp.raise_for_status()
+        profiles: list[dict] = profiles_resp.json()
+    except Exception as exc:
+        logger.exception("Amazon Ads profiles fetch failed")
+        return flask.jsonify({
+            "error": f"Profiles fetch failed: {str(exc)[:200]}",
+            "code": "PROFILES_FETCH_FAILED",
+        }), 500
+
+    clients = list_clients()
+    profile_id_to_client: dict[str, str] = {}
+    for c in clients:
+        pid = c.get("ads_profile_id")
+        if pid:
+            profile_id_to_client[str(pid)] = c["id"]
+
+    for p in profiles:
+        pid_str = str(p.get("profileId", ""))
+        linked_client = profile_id_to_client.get(pid_str)
+        if linked_client:
+            p["_linked_client_id"] = linked_client
+
+    logger.info("Ads profiles fetched", extra={"count": len(profiles)})
+    return flask.jsonify(profiles), 200
+
+
 @app.route("/ads-report-config", methods=["GET"])
 def ads_report_config_list():
     result = {}

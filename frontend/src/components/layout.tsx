@@ -6,6 +6,7 @@ import {
   Users,
   CalendarClock,
   Zap,
+  Settings,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -13,6 +14,7 @@ const NAV_ITEMS = [
   { to: "/clients", icon: Users, label: "Clients" },
   { to: "/schedules", icon: CalendarClock, label: "Schedules" },
   { to: "/on-demand", icon: Zap, label: "On Demand" },
+  { to: "/admin", icon: Settings, label: "Admin" },
 ] as const;
 
 export function Layout() {

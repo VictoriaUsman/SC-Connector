@@ -1,4 +1,4 @@
-import type { Client, Schedule, Job, AdsReportConfigMap } from "@/types";
+import type { Client, Schedule, Job, AdsReportConfigMap, AdsProfile } from "@/types";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 const API_KEY = import.meta.env.VITE_API_KEY || "";
@@ -102,6 +102,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  // Ads profiles
+  listAdsProfiles: () => request<AdsProfile[]>("/ads-profiles"),
 
   // Ads report config
   getAdsReportConfig: () => request<AdsReportConfigMap>("/ads-report-config"),

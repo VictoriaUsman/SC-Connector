@@ -153,5 +153,12 @@ class KalilosApiClient:
     async def list_ads_report_config(self) -> dict:
         return await self._request("GET", "/ads-report-config")
 
+    # --------------------------------------------------------------------- #
+    # Ads profiles
+    # --------------------------------------------------------------------- #
+
+    async def list_ads_profiles(self) -> list[dict]:
+        return await self._request("GET", "/ads-profiles")
+
     async def get_ads_report_config(self, report_type: str) -> dict:
         return await self._request("GET", f"/ads-report-config/{report_type}")

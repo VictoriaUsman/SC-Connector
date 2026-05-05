@@ -177,6 +177,22 @@ export const ADS_REPORT_TYPES = [
   "spPlacement",
 ] as const;
 
+export interface AdsProfile {
+  profileId: number;
+  countryCode: string;
+  currencyCode: string;
+  dailyBudget: number;
+  timezone: string;
+  accountInfo: {
+    marketplaceStringId: string;
+    id: string;
+    type: string;
+    name?: string;
+    sellerStringId?: string;
+  };
+  _linked_client_id?: string;
+}
+
 export interface AdsReportColumns {
   dimensions: string[];
   metrics: string[];

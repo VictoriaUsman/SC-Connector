@@ -7,6 +7,7 @@ import { Dashboard } from "@/pages/dashboard";
 import { Clients } from "@/pages/clients";
 import { Schedules } from "@/pages/schedules";
 import { OnDemand } from "@/pages/on-demand";
+import { Admin } from "@/pages/admin";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,6 +29,7 @@ export function App() {
               <Route path="clients" element={<Clients />} />
               <Route path="schedules" element={<Schedules />} />
               <Route path="on-demand" element={<OnDemand />} />
+              <Route path="admin" element={<Admin />} />
             </Route>
           </Routes>
         </BrowserRouter>
