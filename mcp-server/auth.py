@@ -1,25 +1,21 @@
-"""Bearer token authentication for the Kalilos MCP server.
+"""Authentication for the Kalilos MCP server.
 
-Uses FastMCP's StaticTokenVerifier for API key validation.
-The key is loaded from the MCP_API_KEY environment variable
-(sourced from GCP Secret Manager in production).
+MCP-level auth is intentionally disabled. The MCP server is a thin proxy
+that delegates all operations to the REST API, which enforces its own
+API key authentication (X-API-Key header). FastMCP's StaticTokenVerifier
+uses an OAuth2 dynamic-client-registration flow that Claude.ai connectors
+do not support, causing "not connected" errors.
 
-When MCP_API_KEY is unset, authentication is disabled (local dev).
+Security layers:
+  1. REST API requires X-API-Key on every request (Cloud Function)
+  2. KALILOS_API_KEY env var is only available inside the Cloud Run container
+  3. Cloud Run service is publicly accessible (allUsers invoker) so Claude.ai
+     and other MCP clients can reach it without GCP IAM tokens
 """
 
 from __future__ import annotations
 
-import os
 
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
-
-
-def create_auth_provider() -> StaticTokenVerifier | None:
-    """Return an auth provider if MCP_API_KEY is set, else None (no auth)."""
-    api_key = os.environ.get("MCP_API_KEY", "").strip()
-    if not api_key:
-        return None
-
-    return StaticTokenVerifier(
-        tokens={api_key: {"client_id": "kalilos-agent"}},
-    )
+def create_auth_provider() -> None:
+    """Return None — MCP-level auth is disabled; REST API handles authz."""
+    return None
