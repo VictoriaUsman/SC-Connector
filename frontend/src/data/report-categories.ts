@@ -72,9 +72,25 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
         description: "Amazon Fulfillment Network inventory snapshot",
       },
       {
+        id: "GET_FBA_MYI_ALL_INVENTORY_DATA",
+        label: "Manage FBA Inventory (All)",
+        description: "All FBA inventory including suppressed/archived items with condition, quantity, and volume",
+      },
+      {
         id: "GET_FBA_ESTIMATED_FBA_FEES_TXT_DATA",
         label: "FBA Estimated Fees",
         description: "Estimated FBA fees per product",
+      },
+      {
+        id: "GET_RESTOCK_INVENTORY_RECOMMENDATIONS_REPORT",
+        label: "Restock Inventory",
+        description: "Restock recommendations with suggested order quantities and reorder dates",
+        constraint: "Being phased out from Seller Central in favor of FBA Inventory Planning. Still available via SP API.",
+      },
+      {
+        id: "GET_STRANDED_INVENTORY_UI_DATA",
+        label: "Stranded Inventory",
+        description: "Inventory in stranded status with reason and recommended actions",
       },
     ],
   },

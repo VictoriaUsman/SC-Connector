@@ -279,6 +279,54 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
     ],
   },
 
+  GET_FBA_MYI_ALL_INVENTORY_DATA: {
+    description: "All FBA inventory including suppressed/archived items with condition, quantity, and volume",
+    format: "tsv",
+    columns: [
+      "sku", "fnsku", "asin", "product-name", "condition",
+      "your-price", "mfn-listing-exists", "mfn-fulfillable-quantity",
+      "afn-listing-exists", "afn-warehouse-quantity",
+      "afn-fulfillable-quantity", "afn-unsellable-quantity",
+      "afn-reserved-quantity", "afn-total-quantity",
+      "per-unit-volume",
+      "afn-inbound-working-quantity", "afn-inbound-shipped-quantity",
+      "afn-inbound-receiving-quantity",
+      "afn-researching-quantity", "afn-reserved-future-supply",
+      "afn-future-supply-buyable",
+    ],
+  },
+
+  GET_RESTOCK_INVENTORY_RECOMMENDATIONS_REPORT: {
+    description: "Restock recommendations with suggested order quantities and reorder dates",
+    format: "tsv",
+    columns: [
+      "Country", "Product Name", "FNSKU", "Merchant SKU", "ASIN",
+      "Condition", "Supplier", "Supplier part no.",
+      "Currency code", "Price",
+      "Sales last 30 days", "Units Sold Last 30 Days",
+      "Total Units", "Inbound", "Available",
+      "FC transfer", "FC Processing", "Customer Order",
+      "Unfulfillable", "Working", "Shipped", "Receiving",
+      "Fulfilled by",
+      "Total Days of Supply",
+      "Days of Supply at Amazon Fulfillment Network",
+      "Alert",
+      "Recommended replenishment qty", "Recommended ship date",
+    ],
+  },
+
+  GET_STRANDED_INVENTORY_UI_DATA: {
+    description: "Inventory in stranded status with reason and recommended actions",
+    format: "tsv",
+    columns: [
+      "primary-action", "date-stranded", "Date-to-take-auto-removal",
+      "status-primary", "status-secondary", "error-message", "stranded-reason",
+      "asin", "sku", "fnsku", "product-name", "condition",
+      "fulfilled-by", "fulfillable-qty", "your-price",
+      "unfulfillable-qty", "reserved-quantity", "inbound-shipped-qty",
+    ],
+  },
+
   GET_FBA_ESTIMATED_FBA_FEES_TXT_DATA: {
     description: "Estimated Amazon selling and fulfillment fees per FBA product",
     format: "tsv",
