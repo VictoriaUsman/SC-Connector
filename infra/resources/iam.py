@@ -44,6 +44,8 @@ def create_service_accounts(
         "roles/secretmanager.admin",       # Create/read/manage secrets (connect flow)
         "roles/workflows.invoker",         # Start workflow executions
         "roles/logging.logWriter",         # Cloud Logging
+        "roles/bigquery.dataEditor",       # Insert/update BQ tables (ingestion)
+        "roles/bigquery.jobUser",          # Run BQ load/query jobs
     ]:
         role_short = role.split("/")[-1]
         gcp.projects.IAMMember(
@@ -87,7 +89,7 @@ def bind_invokers(
     scheduler_sa = service_accounts["scheduler"]
 
     # Workflow SA invokes pipeline functions (Cloud Functions v2 = Cloud Run under the hood)
-    for fn_name in ("auth", "create-report", "poll-status", "download-upload"):
+    for fn_name in ("auth", "create-report", "poll-status", "download-upload", "ingest-bigquery"):
         gcp.cloudrunv2.ServiceIamMember(
             f"kalilos-{env}-{fn_name}-wf-invoker",
             name=cloud_functions[fn_name].service_config.service,
@@ -97,15 +99,16 @@ def bind_invokers(
             member=pulumi.Output.concat("serviceAccount:", workflow_sa.email),
         )
 
-    # Scheduler SA invokes the scheduler function
-    gcp.cloudrunv2.ServiceIamMember(
-        f"kalilos-{env}-scheduler-fn-invoker",
-        name=cloud_functions["scheduler"].service_config.service,
-        location=region,
-        project=project,
-        role="roles/run.invoker",
-        member=pulumi.Output.concat("serviceAccount:", scheduler_sa.email),
-    )
+    # Scheduler SA invokes the scheduler function and event-related functions
+    for fn_name in ("scheduler", "event-report-scheduler", "slack-bot"):
+        gcp.cloudrunv2.ServiceIamMember(
+            f"kalilos-{env}-{fn_name}-fn-invoker",
+            name=cloud_functions[fn_name].service_config.service,
+            location=region,
+            project=project,
+            role="roles/run.invoker",
+            member=pulumi.Output.concat("serviceAccount:", scheduler_sa.email),
+        )
 
     # API function is publicly accessible (auth handled in function code).
     # Cloud Functions v2 runs on Cloud Run — public access requires

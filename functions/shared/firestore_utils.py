@@ -218,6 +218,100 @@ def _maybe_update_schedule_run_status(job_id: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+def get_event(event_id: str) -> dict[str, Any] | None:
+    doc = get_db().collection("events").document(event_id).get()
+    if not doc.exists:
+        return None
+    return {"id": doc.id, **doc.to_dict()}
+
+
+def list_events() -> list[dict[str, Any]]:
+    return [
+        {"id": doc.id, **doc.to_dict()}
+        for doc in get_db().collection("events").order_by("start_date").stream()
+    ]
+
+
+def create_event(data: dict[str, Any]) -> str:
+    now = datetime.now(timezone.utc)
+    data.setdefault("status", "upcoming")
+    data.setdefault("manually_activated", False)
+    data.setdefault("activated_at", None)
+    data.setdefault("created_at", now)
+    doc_ref = get_db().collection("events").document()
+    doc_ref.set(data)
+    return doc_ref.id
+
+
+def update_event(event_id: str, data: dict[str, Any]) -> None:
+    data["updated_at"] = datetime.now(timezone.utc)
+    get_db().collection("events").document(event_id).update(data)
+
+
+def delete_event(event_id: str) -> None:
+    get_db().collection("events").document(event_id).delete()
+
+
+def get_live_event() -> dict[str, Any] | None:
+    """Return the first event with status == 'live', or None."""
+    docs = list(
+        get_db()
+        .collection("events")
+        .where("status", "==", "live")
+        .limit(1)
+        .stream()
+    )
+    if not docs:
+        return None
+    return {"id": docs[0].id, **docs[0].to_dict()}
+
+
+# ---------------------------------------------------------------------------
+# Bot Configs
+# ---------------------------------------------------------------------------
+
+def get_bot_config(client_id: str) -> dict[str, Any] | None:
+    doc = get_db().collection("bot_configs").document(client_id).get()
+    if not doc.exists:
+        return None
+    return {"id": doc.id, **doc.to_dict()}
+
+
+def list_bot_configs() -> list[dict[str, Any]]:
+    return [
+        {"id": doc.id, **doc.to_dict()}
+        for doc in get_db().collection("bot_configs").stream()
+    ]
+
+
+def upsert_bot_config(client_id: str, data: dict[str, Any]) -> None:
+    now = datetime.now(timezone.utc)
+    data["updated_at"] = now
+    doc_ref = get_db().collection("bot_configs").document(client_id)
+    if not doc_ref.get().exists:
+        data.setdefault("created_at", now)
+    doc_ref.set(data, merge=True)
+
+
+# ---------------------------------------------------------------------------
+# Bot Activity
+# ---------------------------------------------------------------------------
+
+def log_bot_activity(data: dict[str, Any]) -> str:
+    data.setdefault("timestamp", datetime.now(timezone.utc))
+    doc_ref = get_db().collection("bot_activity").document()
+    doc_ref.set(data)
+    return doc_ref.id
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
 def list_jobs(
     client_id: str | None = None,
     status: str | None = None,

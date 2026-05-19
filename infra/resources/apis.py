@@ -14,6 +14,7 @@ REQUIRED_APIS = [
     "iam.googleapis.com",
     "storage.googleapis.com",
     "artifactregistry.googleapis.com",
+    "bigquery.googleapis.com",
 ]
 
 

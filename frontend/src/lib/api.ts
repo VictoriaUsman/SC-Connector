@@ -1,4 +1,4 @@
-import type { Client, Schedule, Job, AdsReportConfigMap, AdsProfile } from "@/types";
+import type { Client, Schedule, Job, AdsReportConfigMap, AdsProfile, Event, BotConfig } from "@/types";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 const API_KEY = import.meta.env.VITE_API_KEY || "";
@@ -95,7 +95,7 @@ export const api = {
     request<{ client_id: string; sp_api_connected: boolean; ads_api_connected: boolean }>(
       `/oauth/status/${clientId}`,
     ),
-  getSpApiAuthUrl: (clientId: string) => `${BASE_URL}/oauth/sp-api/authorize?client_id=${clientId}`,
+  getSpApiAuthUrl: (clientId: string, region: string) => `${BASE_URL}/oauth/sp-api/authorize?client_id=${clientId}&region=${region}`,
   getAdsApiAuthUrl: (clientId: string) => `${BASE_URL}/oauth/ads-api/authorize?client_id=${clientId}`,
   connectManual: (clientId: string, data: { api_source: string; refresh_token?: string; profile_id?: string }) =>
     request<{ id: string; api_source: string; status: string }>(`/clients/${clientId}/connect`, {
@@ -108,6 +108,26 @@ export const api = {
 
   // Ads report config
   getAdsReportConfig: () => request<AdsReportConfigMap>("/ads-report-config"),
+
+  // Events
+  listEvents: () => request<Event[]>("/events"),
+  getEvent: (id: string) => request<Event>(`/events/${id}`),
+  createEvent: (data: { name: string; start_date: string; end_date: string }) =>
+    request<{ id: string; status: string }>("/events", { method: "POST", body: JSON.stringify(data) }),
+  updateEvent: (id: string, data: Partial<Event>) =>
+    request<{ id: string; status: string }>(`/events/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteEvent: (id: string) =>
+    request<{ id: string; status: string }>(`/events/${id}`, { method: "DELETE" }),
+  activateEvent: (id: string) =>
+    request<{ id: string; status: string }>(`/events/${id}/activate`, { method: "POST" }),
+  deactivateEvent: (id: string) =>
+    request<{ id: string; status: string }>(`/events/${id}/deactivate`, { method: "POST" }),
+
+  // Bot Configs
+  listBotConfigs: () => request<BotConfig[]>("/bot-configs"),
+  getBotConfig: (clientId: string) => request<BotConfig>(`/bot-configs/${clientId}`),
+  upsertBotConfig: (clientId: string, data: Partial<BotConfig>) =>
+    request<{ id: string; status: string }>(`/bot-configs/${clientId}`, { method: "PUT", body: JSON.stringify(data) }),
 
   // On-demand
   triggerOnDemand: (data: {

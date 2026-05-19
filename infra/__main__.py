@@ -12,7 +12,7 @@ Resource creation order:
 
 import pulumi
 
-from resources import apis, iam, firestore, secrets, storage, functions, workflow, scheduler, mcp_server
+from resources import apis, iam, firestore, secrets, storage, bigquery, functions, workflow, scheduler, mcp_server
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -42,6 +42,11 @@ secret_resources = secrets.create(env, project, enabled_apis)
 source_bucket = storage.create_source_bucket(env, project, region, enabled_apis)
 
 # ---------------------------------------------------------------------------
+# 3b. BigQuery dataset + tables
+# ---------------------------------------------------------------------------
+bq_tables = bigquery.create(env, project, region, enabled_apis)
+
+# ---------------------------------------------------------------------------
 # 4. Cloud Functions
 # ---------------------------------------------------------------------------
 fns = functions.create(env, project, region, source_bucket, sas["functions"], enabled_apis)
@@ -54,8 +59,9 @@ wf = workflow.create(env, project, region, sas["workflow"], fns, enabled_apis)
 # ---------------------------------------------------------------------------
 # 6. Cloud Scheduler (triggers the scheduler function on a cron)
 # ---------------------------------------------------------------------------
-scheduler_job = scheduler.create(
+scheduler_jobs = scheduler.create(
     env, project, region, fns["scheduler"], sas["scheduler"], kalilos_config, enabled_apis,
+    cloud_functions=fns,
 )
 
 # ---------------------------------------------------------------------------

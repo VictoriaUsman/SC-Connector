@@ -29,6 +29,7 @@ def create(
         create_url=cloud_functions["create-report"].url,
         poll_url=cloud_functions["poll-status"].url,
         download_url=cloud_functions["download-upload"].url,
+        ingest_url=cloud_functions["ingest-bigquery"].url,
     ).apply(
         lambda urls: (
             template
@@ -36,6 +37,7 @@ def create(
             .replace("__CREATE_REPORT_FUNCTION_URL__", urls["create_url"])
             .replace("__POLL_STATUS_FUNCTION_URL__", urls["poll_url"])
             .replace("__DOWNLOAD_UPLOAD_FUNCTION_URL__", urls["download_url"])
+            .replace("__INGEST_BIGQUERY_FUNCTION_URL__", urls["ingest_url"])
         )
     )
 

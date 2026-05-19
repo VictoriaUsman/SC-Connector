@@ -7,6 +7,7 @@ import {
   CalendarClock,
   Zap,
   Settings,
+  MessageSquare,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -14,6 +15,7 @@ const NAV_ITEMS = [
   { to: "/clients", icon: Users, label: "Clients" },
   { to: "/schedules", icon: CalendarClock, label: "Schedules" },
   { to: "/on-demand", icon: Zap, label: "On Demand" },
+  { to: "/slack-bots", icon: MessageSquare, label: "Slack Bots" },
   { to: "/admin", icon: Settings, label: "Admin" },
 ] as const;
 

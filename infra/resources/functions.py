@@ -16,6 +16,9 @@ FUNCTION_DEFS = [
     {"name": "download-upload", "source_dir": "download_upload", "memory": "512Mi", "timeout": 540, "max_instances": 10},
     {"name": "scheduler",       "source_dir": "scheduler",       "memory": "256Mi", "timeout": 120, "max_instances": 1},
     {"name": "api",             "source_dir": "api",             "memory": "256Mi", "timeout": 60,  "max_instances": 10},
+    {"name": "ingest-bigquery",          "source_dir": "ingest_bigquery",          "memory": "512Mi", "timeout": 300, "max_instances": 10},
+    {"name": "event-report-scheduler",  "source_dir": "event_report_scheduler",  "memory": "256Mi", "timeout": 120, "max_instances": 1},
+    {"name": "slack-bot",               "source_dir": "slack_bot",               "memory": "512Mi", "timeout": 300, "max_instances": 1},
 ]
 
 
@@ -79,6 +82,13 @@ def create(
             gdrive_folder_id = config.get("gdrive-root-folder-id")
             if gdrive_folder_id:
                 env_vars["GDRIVE_ROOT_FOLDER_ID"] = gdrive_folder_id
+        if fn_name == "ingest-bigquery":
+            env_vars["BQ_DATASET"] = f"kalilos_reports_{env}"
+        if fn_name == "event-report-scheduler":
+            env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"
+            env_vars["WORKFLOW_LOCATION"] = region
+        if fn_name == "slack-bot":
+            env_vars["BQ_DATASET"] = f"kalilos_reports_{env}"
 
         fn = gcp.cloudfunctionsv2.Function(
             resource_name,

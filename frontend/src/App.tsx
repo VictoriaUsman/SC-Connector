@@ -8,6 +8,7 @@ import { Clients } from "@/pages/clients";
 import { Schedules } from "@/pages/schedules";
 import { OnDemand } from "@/pages/on-demand";
 import { Admin } from "@/pages/admin";
+import { SlackBots } from "@/pages/slack-bots";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,6 +30,7 @@ export function App() {
               <Route path="clients" element={<Clients />} />
               <Route path="schedules" element={<Schedules />} />
               <Route path="on-demand" element={<OnDemand />} />
+              <Route path="slack-bots" element={<SlackBots />} />
               <Route path="admin" element={<Admin />} />
             </Route>
           </Routes>

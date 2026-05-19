@@ -36,7 +36,7 @@ import {
 } from "@/hooks/use-clients";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import { MARKETPLACES } from "@/types";
+import { MARKETPLACES, getClientRegions, REGION_LABELS } from "@/types";
 import type { Client } from "@/types";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -442,12 +442,19 @@ export function Clients() {
                         <DropdownMenuContent align="end">
                           {!client.sp_api_secret_name && (
                             <>
-                              <DropdownMenuItem
-                                onClick={() => { window.location.href = api.getSpApiAuthUrl(client.id); }}
-                              >
-                                <Link2 className="mr-2 h-4 w-4" />
-                                Connect SP API (OAuth)
-                              </DropdownMenuItem>
+                              {(() => {
+                                const regions = getClientRegions(client.marketplaces ?? []);
+                                const showRegionLabel = regions.length > 1;
+                                return regions.map((region) => (
+                                  <DropdownMenuItem
+                                    key={`sp-oauth-${region}`}
+                                    onClick={() => { window.location.href = api.getSpApiAuthUrl(client.id, region); }}
+                                  >
+                                    <Link2 className="mr-2 h-4 w-4" />
+                                    Connect SP API{showRegionLabel ? ` - ${REGION_LABELS[region] ?? region.toUpperCase()}` : ""} (OAuth)
+                                  </DropdownMenuItem>
+                                ));
+                              })()}
                               <DropdownMenuItem
                                 onClick={() => openManualConnect(client, "sp_api")}
                               >

@@ -22,17 +22,25 @@ from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, TIME
 from shared.config import LWA_TOKEN_URL, get_environment, get_project
 from shared.schedule_compute import VALID_TIMEFRAME_STRATEGIES, compute_next_run, marketplace_today
 from shared.firestore_utils import (
+    create_event,
     create_job,
     create_schedule,
     delete_client as fs_delete_client,
+    delete_event as fs_delete_event,
     delete_schedule as fs_delete_schedule,
+    get_bot_config,
     get_client,
+    get_event,
     get_job,
     get_schedule,
+    list_bot_configs,
     list_clients,
+    list_events,
     list_jobs,
     list_schedules,
+    update_event,
     update_schedule,
+    upsert_bot_config,
     upsert_client,
 )
 from shared.workflow_launcher import (
@@ -555,6 +563,7 @@ def retry_job_route(job_id: str):
         subfolder_strategy=job.get("subfolder_strategy", "date"),
         schedule_id=job.get("schedule_id"),
         execution_date=execution_date,
+        report_date=report_date_str,
     )
 
     try:
@@ -686,6 +695,7 @@ def on_demand_route():
                 folder_name=data.get("folder_name", ""),
                 subfolder_strategy=data.get("subfolder_strategy", "date"),
                 execution_date=execution_date,
+                report_date=start_date,
             )
 
             try:
@@ -1143,6 +1153,117 @@ def oauth_status(client_id: str):
         "sp_api_connected": bool(client.get("sp_api_secret_name")),
         "ads_api_connected": bool(client.get("ads_profile_id")),
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+@app.route("/events", methods=["GET"])
+def list_events_route():
+    return flask.jsonify(_serialize(list_events())), 200
+
+
+@app.route("/events/<event_id>", methods=["GET"])
+def get_event_route(event_id: str):
+    event = get_event(event_id)
+    if not event:
+        return flask.jsonify({"error": "Event not found", "code": "NOT_FOUND"}), 404
+    return flask.jsonify(_serialize(event)), 200
+
+
+@app.route("/events", methods=["POST"])
+def create_event_route():
+    data = flask.request.get_json(silent=True) or {}
+    if not data.get("name"):
+        return flask.jsonify({"error": "Missing 'name'", "code": "INVALID_REQUEST"}), 400
+    if not data.get("start_date"):
+        return flask.jsonify({"error": "Missing 'start_date'", "code": "INVALID_REQUEST"}), 400
+    if not data.get("end_date"):
+        return flask.jsonify({"error": "Missing 'end_date'", "code": "INVALID_REQUEST"}), 400
+
+    try:
+        sd = date.fromisoformat(data["start_date"])
+        ed = date.fromisoformat(data["end_date"])
+    except ValueError:
+        return flask.jsonify({"error": "start_date and end_date must be YYYY-MM-DD", "code": "INVALID_REQUEST"}), 400
+    if sd > ed:
+        return flask.jsonify({"error": "start_date must be on or before end_date", "code": "INVALID_REQUEST"}), 400
+
+    event_id = create_event(data)
+    return flask.jsonify({"id": event_id, "status": "created"}), 201
+
+
+@app.route("/events/<event_id>", methods=["PUT"])
+def update_event_route(event_id: str):
+    if not get_event(event_id):
+        return flask.jsonify({"error": "Event not found", "code": "NOT_FOUND"}), 404
+    data = flask.request.get_json(silent=True) or {}
+    data.pop("id", None)
+    update_event(event_id, data)
+    return flask.jsonify({"id": event_id, "status": "updated"}), 200
+
+
+@app.route("/events/<event_id>", methods=["DELETE"])
+def delete_event_route(event_id: str):
+    fs_delete_event(event_id)
+    return flask.jsonify({"id": event_id, "status": "deleted"}), 200
+
+
+@app.route("/events/<event_id>/activate", methods=["POST"])
+def activate_event_route(event_id: str):
+    """Manually activate an event ('Go Live')."""
+    event = get_event(event_id)
+    if not event:
+        return flask.jsonify({"error": "Event not found", "code": "NOT_FOUND"}), 404
+    if event.get("status") == "completed":
+        return flask.jsonify({"error": "Cannot activate a completed event", "code": "INVALID_STATE"}), 400
+    update_event(event_id, {
+        "status": "live",
+        "manually_activated": True,
+        "activated_at": datetime.now(timezone.utc),
+    })
+    return flask.jsonify({"id": event_id, "status": "live"}), 200
+
+
+@app.route("/events/<event_id>/deactivate", methods=["POST"])
+def deactivate_event_route(event_id: str):
+    """Manually end an event ('End Event')."""
+    event = get_event(event_id)
+    if not event:
+        return flask.jsonify({"error": "Event not found", "code": "NOT_FOUND"}), 404
+    if event.get("status") != "live":
+        return flask.jsonify({"error": "Event is not live", "code": "INVALID_STATE"}), 400
+    update_event(event_id, {"status": "completed"})
+    return flask.jsonify({"id": event_id, "status": "completed"}), 200
+
+
+# ---------------------------------------------------------------------------
+# Bot Configs
+# ---------------------------------------------------------------------------
+
+@app.route("/bot-configs", methods=["GET"])
+def list_bot_configs_route():
+    return flask.jsonify(_serialize(list_bot_configs())), 200
+
+
+@app.route("/bot-configs/<client_id>", methods=["GET"])
+def get_bot_config_route(client_id: str):
+    config = get_bot_config(client_id)
+    if not config:
+        return flask.jsonify({"error": "Bot config not found", "code": "NOT_FOUND"}), 404
+    return flask.jsonify(_serialize(config)), 200
+
+
+@app.route("/bot-configs/<client_id>", methods=["PUT"])
+def upsert_bot_config_route(client_id: str):
+    if not get_client(client_id):
+        return flask.jsonify({"error": "Client not found", "code": "NOT_FOUND"}), 404
+    data = flask.request.get_json(silent=True) or {}
+    data.pop("id", None)
+    data["client_id"] = client_id
+    upsert_bot_config(client_id, data)
+    return flask.jsonify({"id": client_id, "status": "updated"}), 200
 
 
 # ---------------------------------------------------------------------------

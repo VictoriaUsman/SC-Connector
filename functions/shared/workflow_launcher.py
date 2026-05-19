@@ -63,6 +63,7 @@ def build_payload(
     subfolder_strategy: str = "date",
     schedule_id: str | None = None,
     execution_date: str | None = None,
+    report_date: str | None = None,
 ) -> dict[str, Any]:
     """Construct the canonical workflow execution payload."""
     payload: dict[str, Any] = {
@@ -80,6 +81,8 @@ def build_payload(
         payload["schedule_id"] = schedule_id
     if execution_date is not None:
         payload["execution_date"] = execution_date
+    if report_date is not None:
+        payload["report_date"] = report_date
     return payload
 
 
@@ -281,6 +284,7 @@ def launch_for_marketplace(
                     subfolder_strategy=schedule.get("subfolder_strategy", "date"),
                     schedule_id=schedule["id"],
                     execution_date=execution_date_val.isoformat(),
+                    report_date=pull_start.isoformat(),
                 )
 
                 launch_execution(parent, payload, job_id, error_phase="scheduler")

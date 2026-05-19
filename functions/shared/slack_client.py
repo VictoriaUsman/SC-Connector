@@ -1,0 +1,179 @@
+"""Slack API client — post messages with currency-aware formatting.
+
+Token is loaded from Secret Manager on first use and cached for the
+process lifetime (same pattern as SP/Ads credentials).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from decimal import Decimal, ROUND_HALF_UP
+
+import requests
+from google.cloud import secretmanager
+
+from shared.config import get_environment, get_project
+
+logger = logging.getLogger(__name__)
+
+_slack_token: str | None = None
+_sm: secretmanager.SecretManagerServiceClient | None = None
+
+SLACK_API_BASE = "https://slack.com/api"
+
+# ---------------------------------------------------------------------------
+# Currency formatting
+# ---------------------------------------------------------------------------
+
+_CURRENCY_SYMBOLS: dict[str, str] = {
+    "USD": "$",
+    "CAD": "CA$",
+    "MXN": "MX$",
+    "GBP": "£",
+    "EUR": "€",
+    "AUD": "A$",
+    "SGD": "S$",
+    "SEK": "kr",
+    "PLN": "zł",
+    "TRY": "₺",
+}
+
+MARKETPLACE_CURRENCIES: dict[str, str] = {
+    "US": "USD",
+    "CA": "CAD",
+    "MX": "MXN",
+    "UK": "GBP",
+    "DE": "EUR",
+    "FR": "EUR",
+    "IT": "EUR",
+    "ES": "EUR",
+    "NL": "EUR",
+    "SE": "SEK",
+    "PL": "PLN",
+    "TR": "TRY",
+    "AU": "AUD",
+    "SG": "SGD",
+}
+
+
+def format_currency(amount: float | Decimal, currency_code: str) -> str:
+    """Format a monetary amount with locale-aware currency symbol.
+
+    Examples: $1,720.88  CA$319.07  £6.03  €2.16
+    """
+    symbol = _CURRENCY_SYMBOLS.get(currency_code, currency_code + " ")
+    d = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    negative = d < 0
+    d = abs(d)
+
+    int_part = int(d)
+    frac_part = str(d - int_part)[2:]
+    frac_part = frac_part.ljust(2, "0")[:2]
+
+    int_str = f"{int_part:,}"
+    formatted = f"{symbol}{int_str}.{frac_part}"
+    if negative:
+        formatted = f"-{formatted}"
+    return formatted
+
+
+def format_percentage(value: float | Decimal) -> str:
+    """Format a decimal ratio as a percentage string. Example: 27.56%"""
+    d = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{d}%"
+
+
+def format_delta(current: float, previous: float) -> str:
+    """Format a change indicator. Examples: [+14%]  [-39%]  [new]
+
+    For percentage-point differences (ACoS, TACoS), use format_delta_bps instead.
+    """
+    if previous == 0:
+        if current == 0:
+            return "[—]"
+        return "[new]"
+    pct_change = ((current - previous) / abs(previous)) * 100
+    sign = "+" if pct_change >= 0 else ""
+    return f"[{sign}{pct_change:.0f}%]"
+
+
+def format_delta_bps(current_pct: float, previous_pct: float) -> str:
+    """Format a percentage-point change. Example: [+37 bps]  [-12 bps]"""
+    diff_bps = (current_pct - previous_pct) * 100
+    sign = "+" if diff_bps >= 0 else ""
+    return f"[{sign}{diff_bps:.0f} bps]"
+
+
+# ---------------------------------------------------------------------------
+# Token management
+# ---------------------------------------------------------------------------
+
+def _get_sm() -> secretmanager.SecretManagerServiceClient:
+    global _sm
+    if _sm is None:
+        _sm = secretmanager.SecretManagerServiceClient()
+    return _sm
+
+
+def _get_slack_token() -> str:
+    """Lazily load the Slack bot token from Secret Manager."""
+    global _slack_token
+    if _slack_token is not None:
+        return _slack_token
+
+    project = get_project()
+    env = get_environment()
+    secret_name = f"projects/{project}/secrets/kalilos-{env}-slack-bot-token/versions/latest"
+
+    resp = _get_sm().access_secret_version(name=secret_name)
+    _slack_token = resp.payload.data.decode("utf-8").strip()
+    return _slack_token
+
+
+# ---------------------------------------------------------------------------
+# Slack API
+# ---------------------------------------------------------------------------
+
+def post_message(
+    channel_id: str,
+    blocks: list[dict],
+    text_fallback: str = "",
+    thread_ts: str | None = None,
+) -> dict:
+    """Post a Block Kit message to a Slack channel.
+
+    Returns the Slack API response dict (includes 'ts' for threading).
+    Raises on HTTP or Slack API errors.
+    """
+    token = _get_slack_token()
+    payload: dict = {
+        "channel": channel_id,
+        "blocks": blocks,
+        "text": text_fallback or "Kalilos Report Update",
+    }
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+
+    resp = requests.post(
+        f"{SLACK_API_BASE}/chat.postMessage",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        data=json.dumps(payload),
+        timeout=10,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    if not data.get("ok"):
+        error = data.get("error", "unknown_error")
+        logger.error("Slack API error: %s", error, extra={"channel": channel_id})
+        raise RuntimeError(f"Slack API error: {error}")
+
+    logger.info(
+        "Slack message posted",
+        extra={"channel": channel_id, "ts": data.get("ts")},
+    )
+    return data

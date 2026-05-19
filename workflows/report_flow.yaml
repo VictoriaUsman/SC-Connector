@@ -181,6 +181,31 @@ report_pipeline:
             max_delay: 60
             multiplier: 2
 
+    - ingest_bigquery:
+        try:
+          call: http.post
+          args:
+            url: __INGEST_BIGQUERY_FUNCTION_URL__
+            auth:
+              type: OIDC
+            body:
+              api_source: ${args.api_source}
+              client_id: ${args.client_id}
+              marketplace: ${args.marketplace}
+              report_type: ${args.report_type}
+              report_date: ${default(map.get(args, "report_date"), "")}
+              job_id: ${create_response.body.job_id}
+              gdrive_file_id: ${download_response.body.drive_file_id}
+          result: ingest_response
+        except:
+          as: ingest_error
+          steps:
+            - log_ingest_error:
+                call: sys.log
+                args:
+                  text: '${"BQ ingestion failed (non-fatal) - job=" + create_response.body.job_id + " error=" + text.decode(json.encode(ingest_error))}'
+                  severity: WARNING
+
     - log_complete:
         call: sys.log
         args:
