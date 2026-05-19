@@ -92,6 +92,23 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
         label: "Stranded Inventory",
         description: "Inventory in stranded status with reason and recommended actions",
       },
+      {
+        id: "GET_FBA_INVENTORY_PLANNING_DATA",
+        label: "FBA Inventory (Health)",
+        description: "Consolidated inventory health: sales velocity (7/30/60/90d), storage fees, aging, excess units, and restock recommendations",
+        constraint: "Not available in NL, PL, SE, or BE marketplaces.",
+      },
+    ],
+  },
+  {
+    label: "Subscribe & Save",
+    reports: [
+      {
+        id: "GET_FBA_SNS_PERFORMANCE_DATA",
+        label: "Subscribe & Save Performance",
+        description: "Weekly S&S performance: units shipped, sale price, discounts, and out-of-stock rate",
+        constraint: "Deprecated by Amazon (Dec 2025). Requests may return CANCELLED/FATAL. Weekly timeframe only (Saturday\u2013Monday window).",
+      },
     ],
   },
   {

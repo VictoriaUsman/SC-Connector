@@ -126,6 +126,20 @@ export const TIMEFRAME_STRATEGIES = [
   { value: "last_calendar_month", label: "Last Calendar Month" },
 ] as const;
 
+export const MARKETPLACE_TO_REGION: Record<string, string> = {
+  US: "na", CA: "na", MX: "na",
+  UK: "eu", DE: "eu", FR: "eu", IT: "eu", ES: "eu", NL: "eu", SE: "eu", PL: "eu", TR: "eu",
+  AU: "fe", SG: "fe",
+};
+
+export const REGION_LABELS: Record<string, string> = {
+  na: "NA", eu: "EU", fe: "FE",
+};
+
+export function getClientRegions(marketplaces: string[]): string[] {
+  return [...new Set(marketplaces.map((m) => MARKETPLACE_TO_REGION[m]).filter(Boolean))];
+}
+
 export const MARKETPLACES: { id: string; label: string; flag: string }[] = [
   { id: "US", label: "United States", flag: "\u{1F1FA}\u{1F1F8}" },
   { id: "CA", label: "Canada", flag: "\u{1F1E8}\u{1F1E6}" },
@@ -162,6 +176,8 @@ export const SP_REPORT_TYPES = [
   "GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT",
   "GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT",
   "GET_MERCHANT_LISTINGS_DATA",
+  "GET_FBA_INVENTORY_PLANNING_DATA",
+  "GET_FBA_SNS_PERFORMANCE_DATA",
 ] as const;
 
 export const ADS_REPORT_TYPES = [
@@ -210,3 +226,52 @@ export type AdsReportConfigMap = Record<string, AdsReportConfig>;
 export function isAdsReportType(reportType: string): boolean {
   return (ADS_REPORT_TYPES as readonly string[]).includes(reportType);
 }
+
+// ---------------------------------------------------------------------------
+// Events & Bot Configs (Slack Bots)
+// ---------------------------------------------------------------------------
+
+export type EventStatus = "upcoming" | "live" | "completed";
+
+export interface Event {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  status: EventStatus;
+  prior_event_id?: string;
+  manually_activated?: boolean;
+  activated_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BotConfig {
+  id: string;
+  client_id: string;
+  slack_channel_id: string;
+  slack_channel_name?: string;
+  base_currency: string;
+  client_timezone: string;
+  marketplaces: string[];
+  hourly_bot: { enabled: boolean };
+  test_channel_id?: string;
+  use_test_channel?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const CURRENCIES = [
+  "USD", "CAD", "MXN", "GBP", "EUR", "AUD", "SGD", "SEK", "PLN",
+] as const;
+
+export const CLIENT_TIMEZONES = [
+  { value: "America/Los_Angeles", label: "Pacific (PST)" },
+  { value: "America/Denver", label: "Mountain (MST)" },
+  { value: "America/Chicago", label: "Central (CST)" },
+  { value: "America/New_York", label: "Eastern (EST)" },
+  { value: "Europe/London", label: "London (GMT)" },
+  { value: "Europe/Paris", label: "Paris (CET)" },
+  { value: "Australia/Sydney", label: "Sydney (AEST)" },
+  { value: "Asia/Singapore", label: "Singapore (SGT)" },
+] as const;
