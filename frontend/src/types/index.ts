@@ -23,7 +23,8 @@ export type TimeframeStrategy =
   | "last_n_days"
   | "rolling_window"
   | "last_calendar_week"
-  | "last_calendar_month";
+  | "last_calendar_month"
+  | "prior_year_window";
 
 export interface Timeframe {
   strategy: TimeframeStrategy;
@@ -32,6 +33,10 @@ export interface Timeframe {
   start_offset?: number;
   end_offset?: number;
   week_start?: number;
+  days_before?: number;
+  days_after?: number;
+  years_back?: number;
+  anchor_offset_days?: number;
 }
 
 export interface Schedule {
@@ -124,6 +129,7 @@ export const TIMEFRAME_STRATEGIES = [
   { value: "rolling_window", label: "Rolling Window" },
   { value: "last_calendar_week", label: "Last Calendar Week" },
   { value: "last_calendar_month", label: "Last Calendar Month" },
+  { value: "prior_year_window", label: "Prior Year Window" },
 ] as const;
 
 export const MARKETPLACE_TO_REGION: Record<string, string> = {

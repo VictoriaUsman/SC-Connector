@@ -74,29 +74,21 @@ report_pipeline:
             multiplier: 2
 
     - create_report:
-        try:
-          call: http.post
-          args:
-            url: __CREATE_REPORT_FUNCTION_URL__
-            auth:
-              type: OIDC
-            body:
-              api_source: ${args.api_source}
-              client_id: ${args.client_id}
-              marketplace: ${args.marketplace}
-              report_type: ${args.report_type}
-              report_params: ${map.get(args, "report_params")}
-              job_id: ${map.get(args, "job_id")}
-              schedule_id: ${map.get(args, "schedule_id")}
-              frequency: ${default(map.get(args, "frequency"), "on_demand")}
-          result: create_response
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 3
-          backoff:
-            initial_delay: 5
-            max_delay: 60
-            multiplier: 2
+        call: throttle_retry_call
+        args:
+          url: __CREATE_REPORT_FUNCTION_URL__
+          body:
+            api_source: ${args.api_source}
+            client_id: ${args.client_id}
+            marketplace: ${args.marketplace}
+            report_type: ${args.report_type}
+            report_params: ${map.get(args, "report_params")}
+            job_id: ${map.get(args, "job_id")}
+            schedule_id: ${map.get(args, "schedule_id")}
+            frequency: ${default(map.get(args, "frequency"), "on_demand")}
+          max_throttle_retries: 8
+          initial_wait_seconds: 60
+        result: create_response
 
     - init_poll:
         assign:
@@ -124,12 +116,21 @@ report_pipeline:
               job_id: ${create_response.body.job_id}
           result: poll_response
         retry:
-          predicate: ${http.default_retry_predicate}
+          predicate: ${non_throttle_retry}
           max_retries: 2
           backoff:
             initial_delay: 2
             max_delay: 30
             multiplier: 2
+        except:
+          as: poll_error
+          steps:
+            - check_poll_throttle:
+                switch:
+                  - condition: ${poll_error.code == 429 and poll_count < max_polls}
+                    next: increment_poll
+                  - condition: true
+                    raise: ${poll_error}
 
     - log_poll:
         call: sys.log
@@ -153,33 +154,25 @@ report_pipeline:
         next: wait_before_poll
 
     - download_upload:
-        try:
-          call: http.post
-          args:
-            url: __DOWNLOAD_UPLOAD_FUNCTION_URL__
-            auth:
-              type: OIDC
-            body:
-              api_source: ${args.api_source}
-              client_id: ${args.client_id}
-              marketplace: ${args.marketplace}
-              report_type: ${args.report_type}
-              report_id: ${create_response.body.report_id}
-              job_id: ${create_response.body.job_id}
-              download_info: ${poll_response.body.download_info}
-              frequency: ${default(map.get(args, "frequency"), "on_demand")}
-              report_params: ${map.get(args, "report_params")}
-              folder_name: ${default(map.get(args, "folder_name"), "")}
-              subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
-              execution_date: ${default(map.get(args, "execution_date"), "")}
-          result: download_response
-        retry:
-          predicate: ${http.default_retry_predicate}
-          max_retries: 3
-          backoff:
-            initial_delay: 5
-            max_delay: 60
-            multiplier: 2
+        call: throttle_retry_call
+        args:
+          url: __DOWNLOAD_UPLOAD_FUNCTION_URL__
+          body:
+            api_source: ${args.api_source}
+            client_id: ${args.client_id}
+            marketplace: ${args.marketplace}
+            report_type: ${args.report_type}
+            report_id: ${create_response.body.report_id}
+            job_id: ${create_response.body.job_id}
+            download_info: ${poll_response.body.download_info}
+            frequency: ${default(map.get(args, "frequency"), "on_demand")}
+            report_params: ${map.get(args, "report_params")}
+            folder_name: ${default(map.get(args, "folder_name"), "")}
+            subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
+            execution_date: ${default(map.get(args, "execution_date"), "")}
+          max_throttle_retries: 5
+          initial_wait_seconds: 60
+        result: download_response
 
     - ingest_bigquery:
         try:
@@ -239,3 +232,66 @@ report_pipeline:
                 severity: ERROR
           - raise_timeout:
               raise: '${"Poll timeout after " + string(poll_count) + " attempts"}'
+
+non_throttle_retry:
+  params: [e]
+  steps:
+    - check_code:
+        switch:
+          - condition: ${e.code == 429}
+            return: false
+          - condition: ${e.code >= 500}
+            return: true
+    - default_no_retry:
+        return: false
+
+throttle_retry_call:
+  params: [url, body, max_throttle_retries, initial_wait_seconds]
+  steps:
+    - init_throttle:
+        assign:
+          - throttle_count: 0
+          - wait_secs: ${initial_wait_seconds}
+    - attempt_call:
+        try:
+          call: http.post
+          args:
+            url: ${url}
+            auth:
+              type: OIDC
+            body: ${body}
+          result: call_result
+        retry:
+          predicate: ${non_throttle_retry}
+          max_retries: 3
+          backoff:
+            initial_delay: 5
+            max_delay: 60
+            multiplier: 2
+        except:
+          as: call_err
+          steps:
+            - check_throttle:
+                switch:
+                  - condition: ${call_err.code == 429 and throttle_count < max_throttle_retries}
+                    next: throttle_backoff
+                  - condition: true
+                    raise: ${call_err}
+    - return_call_result:
+        return: ${call_result}
+    - throttle_backoff:
+        steps:
+          - log_throttle:
+              call: sys.log
+              args:
+                text: '${"Throttled (attempt " + string(throttle_count + 1) + "/" + string(max_throttle_retries) + "), waiting " + string(wait_secs) + "s"}'
+                severity: WARNING
+          - sleep_with_jitter:
+              call: sys.sleep
+              args:
+                seconds: ${wait_secs + int(sys.now() % 15)}
+          - advance_throttle:
+              assign:
+                - throttle_count: ${throttle_count + 1}
+                - wait_secs: ${if(wait_secs * 2 > 300, 300, wait_secs * 2)}
+              next: attempt_call

@@ -12,6 +12,7 @@ For each active schedule whose next_run_at has passed:
 from __future__ import annotations
 
 import logging
+import os
 import random
 from datetime import datetime, timezone
 from typing import Any
@@ -40,6 +41,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         return {"status": "ok", "launched": 0}, 200
 
     parent = get_workflow_parent()
+    stagger = float(os.environ.get("LAUNCH_STAGGER_SECONDS", "1.0"))
 
     random.shuffle(due)
 
@@ -79,7 +81,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             marketplaces = _get_marketplaces(sched)
             for marketplace in marketplaces:
                 try:
-                    ids = launch_for_marketplace(parent, now, sched, client_id, marketplace)
+                    ids = launch_for_marketplace(
+                        parent, now, sched, client_id, marketplace,
+                        stagger_seconds=stagger,
+                    )
                     launched += len(ids)
                 except Exception as exc:
                     logger.exception("Failed to launch workflow", extra={"schedule_id": sched["id"], "marketplace": marketplace})

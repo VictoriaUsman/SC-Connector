@@ -146,3 +146,9 @@ export function useRetryJob() {
     mutationFn: (jobId: string) => api.retryJob(jobId),
   });
 }
+
+export function useBatchRetryJobs() {
+  return useMutation({
+    mutationFn: (jobIds: string[]) => api.batchRetryJobs(jobIds),
+  });
+}

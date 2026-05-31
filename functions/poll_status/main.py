@@ -15,6 +15,7 @@ from google.cloud import firestore
 from shared import ads_api_client, sp_api_client
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import update_job, update_job_status
+from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         }, 200
 
     except Exception as exc:
+        if is_throttled(exc):
+            logger.warning("Throttled by Amazon at poll_status", extra={
+                "report_id": report_id, "api_source": api_source, "error": str(exc)[:200],
+            })
+            return {"error": str(exc)[:200], "code": "THROTTLED"}, 429
+
         logger.exception("poll_status failed", extra={"report_id": report_id, "api_source": api_source})
         return {"error": "Failed to poll report status", "code": "POLL_FAILED"}, 500
 

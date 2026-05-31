@@ -15,6 +15,7 @@ VALID_TIMEFRAME_STRATEGIES = {
     "rolling_window",
     "last_calendar_week",
     "last_calendar_month",
+    "prior_year_window",
 }
 
 
@@ -60,6 +61,7 @@ def compute_date_range(
       rolling_window    — explicit start_offset / end_offset from today
       last_calendar_week — most recent completed week, configurable week_start
       last_calendar_month — first to last day of previous calendar month
+      prior_year_window — window around today's date shifted back N years
     """
     strategy = timeframe.get("strategy", "yesterday")
     today = marketplace_today(marketplace, utc_now)
@@ -96,6 +98,19 @@ def compute_date_range(
         last_of_prev = first_of_this_month - timedelta(days=1)
         first_of_prev = last_of_prev.replace(day=1)
         return first_of_prev, last_of_prev
+
+    if strategy == "prior_year_window":
+        days_before = timeframe.get("days_before", 30)
+        days_after = timeframe.get("days_after", 30)
+        years_back = timeframe.get("years_back", 1)
+        anchor_offset = timeframe.get("anchor_offset_days", 0)
+        ref_date = today - timedelta(days=anchor_offset)
+        try:
+            anchor = ref_date.replace(year=ref_date.year - years_back)
+        except ValueError:
+            # Feb 29 in a non-leap year — fall back to Feb 28
+            anchor = ref_date.replace(year=ref_date.year - years_back, day=28)
+        return anchor - timedelta(days=days_before), anchor + timedelta(days=days_after)
 
     d = today - timedelta(days=1)
     return d, d

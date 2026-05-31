@@ -55,7 +55,7 @@ export function formatReportType(type: string): string {
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 export function formatTimeframeLabel(
-  tf: { strategy: string; days?: number; end_offset_days?: number; start_offset?: number; end_offset?: number; week_start?: number } | undefined,
+  tf: { strategy: string; days?: number; end_offset_days?: number; start_offset?: number; end_offset?: number; week_start?: number; days_before?: number; days_after?: number; years_back?: number; anchor_offset_days?: number } | undefined,
 ): string {
   if (!tf) return "Yesterday";
   switch (tf.strategy) {
@@ -76,6 +76,14 @@ export function formatTimeframeLabel(
     }
     case "last_calendar_month":
       return "Last calendar month";
+    case "prior_year_window": {
+      const before = tf.days_before ?? 30;
+      const after = tf.days_after ?? 30;
+      const yrs = tf.years_back ?? 1;
+      const offset = tf.anchor_offset_days ?? 0;
+      const offsetStr = offset > 0 ? ` -${offset}d` : "";
+      return `${yrs}yr ago \u00b1${before}/${after}d${offsetStr}`;
+    }
     default:
       return "Yesterday";
   }

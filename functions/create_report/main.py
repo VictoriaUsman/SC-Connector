@@ -18,6 +18,7 @@ from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, get_
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import create_job, update_job_status
 from shared.schedule_compute import marketplace_yesterday
+from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         return {"error": str(exc), "code": "VALIDATION_ERROR"}, 400
 
     except Exception as exc:
+        if is_throttled(exc):
+            logger.warning("Throttled by Amazon at create_report", extra={
+                "client_id": client_id, "api_source": api_source, "error": str(exc)[:200],
+            })
+            return {"error": str(exc)[:200], "code": "THROTTLED"}, 429
+
         logger.exception("create_report failed", extra={"client_id": client_id, "api_source": api_source})
         msg = _humanize_create_error(str(exc), report_type)
         if job_id:

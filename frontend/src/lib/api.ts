@@ -89,6 +89,14 @@ export const api = {
     request<{ status: string; original_job_id: string; new_job_id: string }>(`/jobs/${id}/retry`, {
       method: "POST",
     }),
+  batchRetryJobs: (jobIds: string[]) =>
+    request<{
+      results: Array<{ job_id: string; status: string; new_job_id?: string; error?: string }>;
+      summary: { total: number; retried: number; skipped: number; errors: number };
+    }>("/jobs/batch-retry", {
+      method: "POST",
+      body: JSON.stringify({ job_ids: jobIds }),
+    }),
 
   // OAuth
   getOAuthStatus: (clientId: string) =>

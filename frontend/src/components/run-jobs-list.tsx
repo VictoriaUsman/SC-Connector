@@ -24,7 +24,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { Job, JobStatus } from "@/types";
-import { useRealtimeJobs, useRunJobs, useRetryJob } from "@/hooks/use-jobs";
+import { useRealtimeJobs, useRunJobs, useRetryJob, useBatchRetryJobs } from "@/hooks/use-jobs";
 
 const IN_PROGRESS_STATUSES: JobStatus[] = [
   "pending",
@@ -80,10 +80,22 @@ function extractErrorSummary(raw: string | undefined): { message: string; kind: 
   return { message: msg, kind: "error" };
 }
 
+function getRetryableJobIds(jobs: Job[]): string[] {
+  return jobs
+    .filter((j) => {
+      if (j.status !== "failed") return false;
+      const raw = j.error_details?.message ?? "";
+      return !isNoDataError(raw);
+    })
+    .map((j) => j.id);
+}
+
 function SummaryBar({ jobs }: { jobs: Job[] }) {
   const completed = jobs.filter((j) => j.status === "completed").length;
   const failed = jobs.filter((j) => j.status === "failed").length;
   const inProgress = jobs.filter((j) => IN_PROGRESS_STATUSES.includes(j.status)).length;
+  const retryableIds = getRetryableJobIds(jobs);
+  const batchRetry = useBatchRetryJobs();
 
   return (
     <div className="flex items-center gap-3 text-xs text-muted-foreground px-1 py-1.5">
@@ -105,6 +117,24 @@ function SummaryBar({ jobs }: { jobs: Job[] }) {
           <Loader2 className="h-3 w-3 animate-spin" />
           {inProgress} in progress
         </span>
+      )}
+      {retryableIds.length > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto h-6 text-[11px] gap-1 px-2"
+          disabled={batchRetry.isPending}
+          onClick={() => batchRetry.mutate(retryableIds)}
+        >
+          {batchRetry.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3 w-3" />
+          )}
+          {batchRetry.isSuccess
+            ? `Retried ${batchRetry.data.summary.retried}`
+            : `Retry ${retryableIds.length} failed`}
+        </Button>
       )}
     </div>
   );

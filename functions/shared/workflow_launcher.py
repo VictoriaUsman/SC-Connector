@@ -203,6 +203,7 @@ def launch_for_marketplace(
     marketplace: str,
     *,
     extra_job_fields: dict[str, Any] | None = None,
+    stagger_seconds: float = 0,
 ) -> list[str]:
     """Launch primary + reconciliation jobs for one (client, marketplace) pair.
 
@@ -214,6 +215,9 @@ def launch_for_marketplace(
     Reconciliation only runs when the timeframe strategy is ``"yesterday"``
     (the default).  Multi-day strategies inherently cover wider windows,
     making single-day re-pulls redundant.
+
+    When ``stagger_seconds`` > 0, sleeps between launches to reduce burst
+    pressure on Amazon API rate limits.
 
     Returns list of created job IDs.
     """
@@ -289,5 +293,8 @@ def launch_for_marketplace(
 
                 launch_execution(parent, payload, job_id, error_phase="scheduler")
                 job_ids.append(job_id)
+
+                if stagger_seconds > 0:
+                    time.sleep(stagger_seconds)
 
     return job_ids

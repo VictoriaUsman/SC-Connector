@@ -14,7 +14,7 @@ FUNCTION_DEFS = [
     {"name": "create-report",   "source_dir": "create_report",   "memory": "256Mi", "timeout": 120, "max_instances": 20},
     {"name": "poll-status",     "source_dir": "poll_status",     "memory": "256Mi", "timeout": 60,  "max_instances": 20},
     {"name": "download-upload", "source_dir": "download_upload", "memory": "512Mi", "timeout": 540, "max_instances": 10},
-    {"name": "scheduler",       "source_dir": "scheduler",       "memory": "256Mi", "timeout": 120, "max_instances": 1},
+    {"name": "scheduler",       "source_dir": "scheduler",       "memory": "256Mi", "timeout": 540, "max_instances": 1},
     {"name": "api",             "source_dir": "api",             "memory": "256Mi", "timeout": 60,  "max_instances": 10},
     {"name": "ingest-bigquery",          "source_dir": "ingest_bigquery",          "memory": "512Mi", "timeout": 300, "max_instances": 10},
     {"name": "event-report-scheduler",  "source_dir": "event_report_scheduler",  "memory": "256Mi", "timeout": 120, "max_instances": 1},
@@ -70,6 +70,8 @@ def create(
         if fn_name in ("scheduler", "api"):
             env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"
             env_vars["WORKFLOW_LOCATION"] = region
+        if fn_name == "scheduler":
+            env_vars["LAUNCH_STAGGER_SECONDS"] = config.get("launch-stagger-seconds") or "1.0"
         if fn_name == "api":
             api_url = f"https://{region}-{project}.cloudfunctions.net/kalilos-{env}-api"
             env_vars["OAUTH_REDIRECT_URI"] = f"{api_url}/oauth/callback"

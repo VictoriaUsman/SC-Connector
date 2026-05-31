@@ -280,6 +280,10 @@ async def create_schedule(
     name: str = "",
     timeframe_strategy: str = "yesterday",
     timeframe_days: int | None = None,
+    timeframe_days_before: int | None = None,
+    timeframe_days_after: int | None = None,
+    timeframe_years_back: int | None = None,
+    timeframe_anchor_offset_days: int | None = None,
     folder_name: str = "",
     subfolder_strategy: str = "date",
     reconciliation_days: list[int] | None = None,
@@ -297,8 +301,13 @@ async def create_schedule(
         frequency: 'hourly', 'daily', 'weekly', or 'monthly'.
         name: Display name.
         timeframe_strategy: Date strategy — yesterday, today, last_n_days,
-            rolling_window, last_calendar_week, last_calendar_month.
+            rolling_window, last_calendar_week, last_calendar_month,
+            prior_year_window.
         timeframe_days: Trailing days for last_n_days strategy.
+        timeframe_days_before: Days before anchor for prior_year_window.
+        timeframe_days_after: Days after anchor for prior_year_window.
+        timeframe_years_back: Years to shift back for prior_year_window (default 1).
+        timeframe_anchor_offset_days: Shift anchor back N days for data delay (prior_year_window).
         folder_name: Custom Google Drive folder prefix.
         subfolder_strategy: 'date' for YYYY-MM-DD subfolders, 'none' for flat.
         reconciliation_days: Days to re-pull (e.g. [3,7]). Yesterday strategy only.
@@ -316,6 +325,15 @@ async def create_schedule(
     timeframe: dict = {"strategy": timeframe_strategy}
     if timeframe_strategy == "last_n_days" and timeframe_days is not None:
         timeframe["days"] = timeframe_days
+    if timeframe_strategy == "prior_year_window":
+        if timeframe_days_before is not None:
+            timeframe["days_before"] = timeframe_days_before
+        if timeframe_days_after is not None:
+            timeframe["days_after"] = timeframe_days_after
+        if timeframe_years_back is not None:
+            timeframe["years_back"] = timeframe_years_back
+        if timeframe_anchor_offset_days is not None:
+            timeframe["anchor_offset_days"] = timeframe_anchor_offset_days
     data["timeframe"] = timeframe
     if reconciliation_days is not None:
         data["reconciliation_days"] = reconciliation_days

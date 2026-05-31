@@ -38,6 +38,11 @@ const STRATEGY_META: Record<
       "Pull the entire previous calendar month. Ideal for monthly financial reports.",
     example: "If run in March \u2192 pulls Feb 1 \u2013 Feb 28",
   },
+  prior_year_window: {
+    description:
+      "Pull a window around today\u2019s date shifted back N years. Great for year-over-year comparisons.",
+    example: "30d before/after, 1yr back: Apr 21 \u2013 Jun 20 last year",
+  },
 };
 
 export function TimeframeConfig({
@@ -59,6 +64,11 @@ export function TimeframeConfig({
       base.end_offset = value.end_offset ?? -1;
     } else if (s === "last_calendar_week") {
       base.week_start = value.week_start ?? 0;
+    } else if (s === "prior_year_window") {
+      base.days_before = value.days_before ?? 30;
+      base.days_after = value.days_after ?? 30;
+      base.years_back = value.years_back ?? 1;
+      base.anchor_offset_days = value.anchor_offset_days ?? 0;
     }
     onChange(base);
   };
@@ -155,15 +165,14 @@ export function TimeframeConfig({
             <Label className="text-xs">Start offset (days from today)</Label>
             <Input
               type="number"
-              min={-365}
+              min={-730}
               max={0}
               value={value.start_offset ?? -7}
-              onChange={(e) =>
-                onChange({
-                  ...value,
-                  start_offset: Math.min(0, Number(e.target.value)),
-                })
-              }
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isNaN(n))
+                  onChange({ ...value, start_offset: Math.min(0, n) });
+              }}
               className="h-8"
             />
           </div>
@@ -171,15 +180,14 @@ export function TimeframeConfig({
             <Label className="text-xs">End offset (days from today)</Label>
             <Input
               type="number"
-              min={-365}
+              min={-730}
               max={0}
               value={value.end_offset ?? -1}
-              onChange={(e) =>
-                onChange({
-                  ...value,
-                  end_offset: Math.min(0, Number(e.target.value)),
-                })
-              }
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isNaN(n))
+                  onChange({ ...value, end_offset: Math.min(0, n) });
+              }}
               className="h-8"
             />
           </div>
@@ -208,6 +216,78 @@ export function TimeframeConfig({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {strategy === "prior_year_window" && (
+        <div className="grid grid-cols-4 gap-4 rounded-md border border-dashed p-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Days before</Label>
+            <Input
+              type="number"
+              min={1}
+              max={365}
+              value={value.days_before ?? 30}
+              onChange={(e) =>
+                onChange({
+                  ...value,
+                  days_before: Math.max(1, Number(e.target.value)),
+                })
+              }
+              className="h-8"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Days after</Label>
+            <Input
+              type="number"
+              min={0}
+              max={365}
+              value={value.days_after ?? 30}
+              onChange={(e) =>
+                onChange({
+                  ...value,
+                  days_after: Math.max(0, Number(e.target.value)),
+                })
+              }
+              className="h-8"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Years back</Label>
+            <Input
+              type="number"
+              min={1}
+              max={5}
+              value={value.years_back ?? 1}
+              onChange={(e) =>
+                onChange({
+                  ...value,
+                  years_back: Math.max(1, Math.min(5, Number(e.target.value))),
+                })
+              }
+              className="h-8"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Data delay (days)</Label>
+            <Input
+              type="number"
+              min={0}
+              max={30}
+              value={value.anchor_offset_days ?? 0}
+              onChange={(e) =>
+                onChange({
+                  ...value,
+                  anchor_offset_days: Math.max(0, Math.min(30, Number(e.target.value))),
+                })
+              }
+              className="h-8"
+            />
+          </div>
+          <p className="col-span-4 text-[11px] text-muted-foreground">
+            Window centered on today&apos;s date shifted back by the specified years. Data delay shifts the anchor back for delayed Amazon data.
+          </p>
         </div>
       )}
 

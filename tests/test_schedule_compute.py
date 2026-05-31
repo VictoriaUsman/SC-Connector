@@ -169,6 +169,102 @@ class TestComputeDateRange:
         assert start == date(2028, 2, 1)
         assert end == date(2028, 2, 29)
 
+    # -- prior_year_window ----------------------------------------------------
+
+    def test_prior_year_window_basic(self):
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 21)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 30, "days_after": 30},
+            now,
+        )
+        # Anchor = May 21, 2025; range = Apr 21 – Jun 20, 2025
+        assert start == date(2025, 4, 21)
+        assert end == date(2025, 6, 20)
+
+    def test_prior_year_window_two_years_back(self):
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 21)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 30, "days_after": 30, "years_back": 2},
+            now,
+        )
+        # Anchor = May 21, 2024; range = Apr 21 – Jun 20, 2024
+        assert start == date(2024, 4, 21)
+        assert end == date(2024, 6, 20)
+
+    def test_prior_year_window_leap_year_fallback(self):
+        """Feb 29 in a leap year → shifted to non-leap year falls back to Feb 28."""
+        from shared.schedule_compute import compute_date_range
+
+        # 2028 is a leap year, Feb 29 exists
+        now = self._utc(2028, 2, 29)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 5, "days_after": 5, "years_back": 1},
+            now,
+        )
+        # 2027 is not a leap year, anchor falls back to Feb 28
+        assert start == date(2027, 2, 23)
+        assert end == date(2027, 3, 5)
+
+    def test_prior_year_window_zero_days_after(self):
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 21)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 30, "days_after": 0},
+            now,
+        )
+        assert start == date(2025, 4, 21)
+        assert end == date(2025, 5, 21)  # anchor itself
+
+    def test_prior_year_window_defaults(self):
+        """Without explicit days_before/days_after, defaults to 30/30."""
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 21)
+        start, end = compute_date_range("US", {"strategy": "prior_year_window"}, now)
+        assert start == date(2025, 4, 21)
+        assert end == date(2025, 6, 20)
+
+    def test_prior_year_window_anchor_offset(self):
+        """anchor_offset_days shifts the anchor back before applying year shift."""
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 25)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 30, "days_after": 0, "anchor_offset_days": 2},
+            now,
+        )
+        # ref_date = May 25 - 2 = May 23, 2026; anchor = May 23, 2025
+        # range = Apr 23, 2025 – May 23, 2025
+        assert start == date(2025, 4, 23)
+        assert end == date(2025, 5, 23)
+
+    def test_prior_year_window_anchor_offset_zero_is_noop(self):
+        """anchor_offset_days=0 is the same as not providing it."""
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 25)
+        no_offset = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 30, "days_after": 30},
+            now,
+        )
+        zero_offset = compute_date_range(
+            "US",
+            {"strategy": "prior_year_window", "days_before": 30, "days_after": 30, "anchor_offset_days": 0},
+            now,
+        )
+        assert no_offset == zero_offset
+
     # -- unknown strategy fallback -------------------------------------------
 
     def test_unknown_strategy_falls_back_to_yesterday(self):

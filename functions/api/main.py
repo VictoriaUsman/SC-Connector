@@ -99,6 +99,26 @@ def _validate_timeframe(timeframe: dict) -> str | None:
         if not isinstance(ws, (int, float)) or int(ws) not in range(7):
             return "timeframe.week_start must be 0-6 (Mon-Sun)"
 
+    elif strategy == "prior_year_window":
+        days_before = timeframe.get("days_before")
+        if days_before is None or not isinstance(days_before, (int, float)) or int(days_before) < 1:
+            return "timeframe.days_before must be a positive integer for prior_year_window"
+        if int(days_before) > 365:
+            return "timeframe.days_before cannot exceed 365"
+        days_after = timeframe.get("days_after")
+        if days_after is None or not isinstance(days_after, (int, float)) or int(days_after) < 0:
+            return "timeframe.days_after must be a non-negative integer for prior_year_window"
+        if int(days_after) > 365:
+            return "timeframe.days_after cannot exceed 365"
+        years_back = timeframe.get("years_back", 1)
+        if not isinstance(years_back, (int, float)) or int(years_back) < 1 or int(years_back) > 5:
+            return "timeframe.years_back must be 1-5"
+        anchor_offset = timeframe.get("anchor_offset_days", 0)
+        if not isinstance(anchor_offset, (int, float)) or int(anchor_offset) < 0:
+            return "timeframe.anchor_offset_days must be a non-negative integer"
+        if int(anchor_offset) > 30:
+            return "timeframe.anchor_offset_days cannot exceed 30"
+
     return None
 
 
@@ -504,18 +524,17 @@ def get_job_route(job_id: str):
     return flask.jsonify(_serialize(job)), 200
 
 
-@app.route("/jobs/<job_id>/retry", methods=["POST"])
-def retry_job_route(job_id: str):
-    """Re-launch a failed job with the same parameters."""
+def _retry_single_job(job_id: str) -> dict[str, Any]:
+    """Core retry logic for a single failed job. Returns a result dict."""
     job = get_job(job_id)
     if not job:
-        return flask.jsonify({"error": "Job not found", "code": "NOT_FOUND"}), 404
+        return {"job_id": job_id, "status": "error", "error": "Job not found"}
     if job.get("status") != "failed":
-        return flask.jsonify({"error": "Only failed jobs can be retried", "code": "INVALID_STATE"}), 400
+        return {"job_id": job_id, "status": "skipped", "error": "Not a failed job"}
 
     client = get_client(job["client_id"])
     if not client or not client.get("is_active", True):
-        return flask.jsonify({"error": "Client not found or inactive", "code": "NOT_FOUND"}), 404
+        return {"job_id": job_id, "status": "skipped", "error": "Client not found or inactive"}
 
     effective_source = job["api_source"]
     marketplace = job["marketplace"]
@@ -568,15 +587,64 @@ def retry_job_route(job_id: str):
 
     try:
         launch_execution(parent, payload, new_job_id, error_phase="retry")
-        logger.info("Job retry launched", extra={"original_job": job_id, "new_job": new_job_id})
+        return {"job_id": job_id, "status": "retried", "new_job_id": new_job_id}
+    except Exception as exc:
+        return {"job_id": job_id, "status": "error", "error": str(exc)[:200]}
+
+
+@app.route("/jobs/<job_id>/retry", methods=["POST"])
+def retry_job_route(job_id: str):
+    """Re-launch a failed job with the same parameters."""
+    result = _retry_single_job(job_id)
+
+    if result["status"] == "retried":
+        logger.info("Job retry launched", extra={"original_job": job_id, "new_job": result["new_job_id"]})
         return flask.jsonify({
             "status": "retried",
             "original_job_id": job_id,
-            "new_job_id": new_job_id,
+            "new_job_id": result["new_job_id"],
         }), 201
-    except Exception as exc:
-        logger.exception("Retry failed", extra={"job_id": job_id})
-        return flask.jsonify({"error": str(exc)[:200], "code": "RETRY_FAILED"}), 500
+
+    code_map = {"error": 500, "skipped": 400}
+    http_code = code_map.get(result["status"], 500)
+    error_code = "RETRY_FAILED" if result["status"] == "error" else "INVALID_STATE"
+    if "not found" in result.get("error", "").lower():
+        http_code = 404
+        error_code = "NOT_FOUND"
+    return flask.jsonify({"error": result["error"], "code": error_code}), http_code
+
+
+@app.route("/jobs/batch-retry", methods=["POST"])
+def batch_retry_route():
+    """Retry multiple failed jobs in a single request."""
+    import time as _time
+
+    data = flask.request.get_json(silent=True) or {}
+    job_ids = data.get("job_ids", [])
+
+    if not isinstance(job_ids, list) or not job_ids:
+        return flask.jsonify({"error": "Provide a non-empty job_ids array", "code": "INVALID_REQUEST"}), 400
+    if len(job_ids) > 200:
+        return flask.jsonify({"error": "Maximum 200 jobs per batch", "code": "INVALID_REQUEST"}), 400
+
+    results: list[dict[str, Any]] = []
+    for i, jid in enumerate(job_ids):
+        result = _retry_single_job(jid)
+        results.append(result)
+        if i < len(job_ids) - 1:
+            _time.sleep(0.5)
+
+    retried = sum(1 for r in results if r["status"] == "retried")
+    skipped = sum(1 for r in results if r["status"] == "skipped")
+    errored = sum(1 for r in results if r["status"] == "error")
+
+    logger.info("Batch retry complete", extra={
+        "total": len(job_ids), "retried": retried, "skipped": skipped, "errors": errored,
+    })
+    return flask.jsonify({
+        "results": results,
+        "summary": {"total": len(job_ids), "retried": retried, "skipped": skipped, "errors": errored},
+    }), 200
 
 
 # ---------------------------------------------------------------------------

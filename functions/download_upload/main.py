@@ -20,6 +20,7 @@ from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.firestore_utils import get_client, update_job_status
 from shared.report_converter import maybe_convert_to_tsv
+from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             )
         return {"error": str(exc), "code": "DRIVE_ACCESS_DENIED"}, 403
     except Exception as exc:
+        if is_throttled(exc):
+            logger.warning("Throttled by Amazon at download_upload", extra={
+                "client_id": client_id, "api_source": api_source, "error": str(exc)[:200],
+            })
+            return {"error": str(exc)[:200], "code": "THROTTLED"}, 429
+
         logger.exception(
             "download_upload failed",
             extra={"client_id": client_id, "api_source": api_source, "report_type": report_type},
