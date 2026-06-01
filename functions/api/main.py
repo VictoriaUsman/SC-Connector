@@ -20,7 +20,7 @@ import flask
 import requests
 from google.cloud import secretmanager
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, TIME_UNITS, get_report_defaults
-from shared.config import LWA_TOKEN_URL, get_environment, get_project
+from shared.config import ADS_API_ENDPOINTS, LWA_TOKEN_URL, get_environment, get_project
 from shared.schedule_compute import VALID_TIMEFRAME_STRATEGIES, compute_next_run, marketplace_today
 from shared.firestore_utils import (
     create_event,
@@ -824,12 +824,60 @@ def on_demand_route():
 # Ads Report Config — expose available columns/config per report type
 # ---------------------------------------------------------------------------
 
+def _discover_ads_profiles(access_token: str, client_id: str) -> list[dict]:
+    """Fetch /v2/profiles across all Ads API regional hosts (NA/EU/FE).
+
+    Amazon partitions advertising profiles by region: NA profiles (US/CA/MX) live
+    on advertising-api.amazon.com, EU on advertising-api-eu, FE (AU/SG/JP) on
+    advertising-api-fe. A single /v2/profiles call only returns profiles for that
+    one host, so AU/SG profiles never appear when only NA is queried.
+
+    Queries every region with the same access token + ClientId header, tolerating
+    per-region failures (a region erroring is logged and skipped rather than
+    failing the whole request). Results are merged and deduped by profileId, and
+    each profile is annotated with its source `_region` (na/eu/fe).
+    """
+    merged: dict[str, dict] = {}
+    for region, host in ADS_API_ENDPOINTS.items():
+        try:
+            resp = requests.get(
+                f"{host}/v2/profiles",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Amazon-Advertising-API-ClientId": client_id,
+                },
+                timeout=20,
+            )
+            resp.raise_for_status()
+            region_profiles: list[dict] = resp.json()
+        except Exception as exc:
+            logger.warning(
+                "Ads profiles fetch failed for region; continuing",
+                extra={"region": region, "error": str(exc)[:200]},
+            )
+            continue
+
+        for p in region_profiles:
+            pid = str(p.get("profileId", ""))
+            if not pid:
+                continue
+            p["_region"] = region
+            merged.setdefault(pid, p)
+        logger.info(
+            "Ads profiles fetched for region",
+            extra={"region": region, "count": len(region_profiles)},
+        )
+
+    return list(merged.values())
+
+
 @app.route("/ads-profiles", methods=["GET"])
 def ads_profiles_list():
     """Return all Amazon Ads profiles visible to the shared app credentials.
 
-    Performs a fresh LWA token exchange and calls GET /v2/profiles.
-    Cross-references Firestore clients by ads_profile_id.
+    Performs a fresh LWA token exchange and calls GET /v2/profiles against every
+    regional host (NA/EU/FE) so profiles in all regions (incl. AU/SG on FE) are
+    returned. Cross-references Firestore clients by ads_profile_id.
     """
     try:
         app_creds = _read_app_secret("ads_api")
@@ -856,23 +904,7 @@ def ads_profiles_list():
             "code": "TOKEN_EXCHANGE_FAILED",
         }), 500
 
-    try:
-        profiles_resp = requests.get(
-            "https://advertising-api.amazon.com/v2/profiles",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Amazon-Advertising-API-ClientId": app_creds["client_id"],
-            },
-            timeout=20,
-        )
-        profiles_resp.raise_for_status()
-        profiles: list[dict] = profiles_resp.json()
-    except Exception as exc:
-        logger.exception("Amazon Ads profiles fetch failed")
-        return flask.jsonify({
-            "error": f"Profiles fetch failed: {str(exc)[:200]}",
-            "code": "PROFILES_FETCH_FAILED",
-        }), 500
+    profiles = _discover_ads_profiles(access_token, app_creds["client_id"])
 
     clients = list_clients()
     profile_id_to_client: dict[str, str] = {}
@@ -1197,22 +1229,15 @@ def oauth_callback():
             access_token = tokens["access_token"]
             update_fields_ads: dict[str, Any] = {}
             try:
-                profiles_resp = requests.get(
-                    "https://advertising-api.amazon.com/v2/profiles",
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Amazon-Advertising-API-ClientId": app_creds["client_id"],
-                    },
-                    timeout=15,
-                )
-                profiles_resp.raise_for_status()
-                profiles = profiles_resp.json()
+                profiles = _discover_ads_profiles(access_token, app_creds["client_id"])
                 if profiles:
                     update_fields_ads["ads_profile_id"] = str(profiles[0]["profileId"])
                     logger.info("Ads profile discovered", extra={
                         "client_id": client_id,
                         "profile_count": len(profiles),
                         "profile_id": profiles[0]["profileId"],
+                        "profile_region": profiles[0].get("_region"),
+                        "regions": sorted({p.get("_region") for p in profiles}),
                     })
             except Exception as exc:
                 logger.warning("Profile discovery failed during OAuth", extra={"error": str(exc)})

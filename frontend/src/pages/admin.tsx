@@ -75,6 +75,20 @@ const columns: ColumnDef<AdsProfile>[] = [
     },
   },
   {
+    accessorKey: "_region",
+    header: ({ column }) => <DataTableColumnHeader column={column} title="Region" />,
+    cell: ({ row }) => {
+      const region = row.original._region;
+      return region ? (
+        <Badge variant="outline" className="uppercase">
+          {region}
+        </Badge>
+      ) : (
+        "-"
+      );
+    },
+  },
+  {
     accessorKey: "currencyCode",
     header: ({ column }) => <DataTableColumnHeader column={column} title="Currency" />,
   },

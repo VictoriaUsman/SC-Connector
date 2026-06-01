@@ -623,3 +623,125 @@ class TestTimeframeValidation:
                 "frequency": "daily",
             })
         assert resp.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# Ads profiles — multi-region discovery
+# ---------------------------------------------------------------------------
+
+def _mock_token_post(*_args, **_kwargs):
+    """Mock the LWA refresh-token exchange used before profile discovery."""
+    resp = MagicMock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"access_token": "tok-123"}
+    return resp
+
+
+class TestAdsProfiles:
+    _APP_CREDS = {
+        "refresh_token": "rt",
+        "client_id": "amzn1.app",
+        "client_secret": "cs",
+    }
+
+    def _region_get(self, profiles_by_host, failing_hosts=()):
+        """Build a requests.get side_effect that returns per-host profiles."""
+        def _get(url, *_args, **_kwargs):
+            resp = MagicMock()
+            for host, profiles in profiles_by_host.items():
+                if host in url:
+                    if host in failing_hosts:
+                        resp.raise_for_status.side_effect = RuntimeError("region down")
+                        resp.json.return_value = []
+                    else:
+                        resp.raise_for_status.return_value = None
+                        resp.json.return_value = profiles
+                    return resp
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = []
+            return resp
+        return _get
+
+    def test_lists_profiles_across_all_regions(self, client):
+        profiles_by_host = {
+            "advertising-api.amazon.com": [{"profileId": 1, "countryCode": "US"}],
+            "advertising-api-eu.amazon.com": [{"profileId": 2, "countryCode": "UK"}],
+            "advertising-api-fe.amazon.com": [{"profileId": 3, "countryCode": "AU"}],
+        }
+        with (
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=self._region_get(profiles_by_host)),
+            patch("api.main.list_clients", return_value=[]),
+        ):
+            resp = client.get("/ads-profiles")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        by_id = {p["profileId"]: p for p in data}
+        assert set(by_id) == {1, 2, 3}
+        assert by_id[1]["_region"] == "na"
+        assert by_id[2]["_region"] == "eu"
+        # AU profile (item from the plan) now appears, annotated with FE region
+        assert by_id[3]["_region"] == "fe"
+        assert by_id[3]["countryCode"] == "AU"
+
+    def test_tolerates_per_region_failure(self, client):
+        profiles_by_host = {
+            "advertising-api.amazon.com": [{"profileId": 1, "countryCode": "US"}],
+            "advertising-api-eu.amazon.com": [],
+            "advertising-api-fe.amazon.com": [{"profileId": 3, "countryCode": "AU"}],
+        }
+        # EU host errors; NA + FE should still come back.
+        side_effect = self._region_get(
+            profiles_by_host, failing_hosts={"advertising-api-eu.amazon.com"}
+        )
+        with (
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=side_effect),
+            patch("api.main.list_clients", return_value=[]),
+        ):
+            resp = client.get("/ads-profiles")
+
+        assert resp.status_code == 200
+        regions = {p["profileId"]: p["_region"] for p in resp.get_json()}
+        assert regions == {1: "na", 3: "fe"}
+
+    def test_dedupes_profile_across_regions(self, client):
+        # Same profileId returned by two hosts — first (na) wins.
+        profiles_by_host = {
+            "advertising-api.amazon.com": [{"profileId": 7, "countryCode": "US"}],
+            "advertising-api-eu.amazon.com": [{"profileId": 7, "countryCode": "US"}],
+            "advertising-api-fe.amazon.com": [],
+        }
+        with (
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=self._region_get(profiles_by_host)),
+            patch("api.main.list_clients", return_value=[]),
+        ):
+            resp = client.get("/ads-profiles")
+
+        data = resp.get_json()
+        assert len([p for p in data if p["profileId"] == 7]) == 1
+        assert data[0]["_region"] == "na"
+
+    def test_cross_references_linked_client(self, client):
+        profiles_by_host = {
+            "advertising-api.amazon.com": [],
+            "advertising-api-eu.amazon.com": [],
+            "advertising-api-fe.amazon.com": [{"profileId": 3, "countryCode": "AU"}],
+        }
+        with (
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=self._region_get(profiles_by_host)),
+            patch("api.main.list_clients", return_value=[
+                {"id": "skylight-frame-au", "ads_profile_id": "3"},
+            ]),
+        ):
+            resp = client.get("/ads-profiles")
+
+        data = resp.get_json()
+        assert data[0]["_linked_client_id"] == "skylight-frame-au"

@@ -213,6 +213,7 @@ export interface AdsProfile {
     sellerStringId?: string;
   };
   _linked_client_id?: string;
+  _region?: "na" | "eu" | "fe";
 }
 
 export interface AdsReportColumns {
