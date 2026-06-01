@@ -289,7 +289,7 @@ throttle_retry_call:
           - sleep_with_jitter:
               call: sys.sleep
               args:
-                seconds: ${wait_secs + int(sys.now() % 15)}
+                seconds: ${wait_secs + int(sys.now()) % 15}
           - advance_throttle:
               assign:
                 - throttle_count: ${throttle_count + 1}
