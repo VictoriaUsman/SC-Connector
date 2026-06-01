@@ -136,6 +136,62 @@ class TestClients:
         assert resp.status_code == 400
         assert "name" in resp.get_json()["error"].lower()
 
+    def test_create_client_invalid_id_rejected(self, client):
+        with patch("api.main.upsert_client") as mock:
+            resp = client.post(
+                "/clients", json={"id": "the-home-&-office", "name": "The Home & Office"}
+            )
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_CLIENT_ID"
+        mock.assert_not_called()
+
+    def test_create_client_uppercase_id_rejected(self, client):
+        with patch("api.main.upsert_client") as mock:
+            resp = client.post("/clients", json={"id": "Acme Corp", "name": "Acme Corp"})
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_CLIENT_ID"
+        mock.assert_not_called()
+
+    def test_create_client_valid_slug_accepted(self, client):
+        with patch("api.main.upsert_client") as mock:
+            resp = client.post(
+                "/clients", json={"id": "the-home-office", "name": "The Home & Office"}
+            )
+        assert resp.status_code == 201
+        assert resp.get_json()["id"] == "the-home-office"
+        mock.assert_called_once()
+
+    def test_connect_rejects_both(self, client):
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/clients/c1/connect", json={"api_source": "both"})
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_REQUEST"
+
+    def test_connect_sp_api_invalid_client_id(self, client):
+        with patch(
+            "api.main.get_client", return_value={"id": "the-home-&-office", "name": "Home"}
+        ):
+            resp = client.post(
+                "/clients/the-home-&-office/connect",
+                json={"api_source": "sp_api", "refresh_token": "Atzr|token"},
+            )
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_CLIENT_ID"
+
+    def test_connect_sp_api_valid_client_id(self, client):
+        with (
+            patch("api.main.get_client", return_value={"id": "acme", "name": "Acme"}),
+            patch("api.main._store_client_secret", return_value="kalilos-staging-sp-api-acme"),
+            patch("api.main.upsert_client") as mock_upsert,
+        ):
+            resp = client.post(
+                "/clients/acme/connect",
+                json={"api_source": "sp_api", "refresh_token": "Atzr|token"},
+            )
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "connected"
+        mock_upsert.assert_called_once()
+
     def test_update_client(self, client):
         with (
             patch("api.main.get_client", return_value={"id": "c1", "name": "Old"}),

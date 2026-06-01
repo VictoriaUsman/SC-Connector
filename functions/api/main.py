@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, date, timezone
 from typing import Any
@@ -63,6 +64,16 @@ VALID_API_SOURCES = {"sp_api", "ads_api", "both"}
 VALID_FREQUENCIES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SCHEDULE_TYPES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SUBFOLDER_STRATEGIES = {"date", "none"}
+
+# A client_id becomes part of GCP Secret Manager resource names
+# ("kalilos-{env}-sp-api-{client_id}"), which only allow [a-zA-Z0-9_-].
+# We enforce a stricter kebab-case slug so ids stay URL-safe and stable.
+_CLIENT_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
+
+
+def _is_valid_client_id(client_id: str) -> bool:
+    """True if client_id is a kebab-case slug safe for Secret Manager names."""
+    return bool(client_id) and bool(_CLIENT_ID_PATTERN.fullmatch(client_id))
 
 
 def _validate_timeframe(timeframe: dict) -> str | None:
@@ -239,6 +250,14 @@ def create_client_route():
         return flask.jsonify({"error": "Missing 'id'", "code": "INVALID_REQUEST"}), 400
     if not data.get("name"):
         return flask.jsonify({"error": "Missing 'name'", "code": "INVALID_REQUEST"}), 400
+    if not _is_valid_client_id(client_id):
+        return flask.jsonify({
+            "error": (
+                f"Invalid client id '{client_id}'. Use lowercase letters, numbers, "
+                "and hyphens only (e.g. 'the-home-office')."
+            ),
+            "code": "INVALID_CLIENT_ID",
+        }), 400
 
     upsert_client(client_id, data)
     return flask.jsonify({"id": client_id, "status": "created"}), 201
@@ -278,6 +297,25 @@ def connect_client_manual(client_id: str):
 
     if api_source not in VALID_API_SOURCES:
         return flask.jsonify({"error": f"Invalid api_source, must be one of {VALID_API_SOURCES}", "code": "INVALID_REQUEST"}), 400
+
+    # "both" passes VALID_API_SOURCES but connect can only store one credential
+    # type at a time; previously it silently returned 200 storing nothing.
+    if api_source == "both":
+        return flask.jsonify({
+            "error": "Connect one credential at a time: api_source must be 'sp_api' or 'ads_api'.",
+            "code": "INVALID_REQUEST",
+        }), 400
+
+    # SP API stores a Secret Manager secret named with the client_id; an id with
+    # characters outside [a-z0-9-] would make create_secret throw a raw 500.
+    if api_source == "sp_api" and not _is_valid_client_id(client_id):
+        return flask.jsonify({
+            "error": (
+                f"Invalid client id '{client_id}'. Use lowercase letters, numbers, "
+                "and hyphens only."
+            ),
+            "code": "INVALID_CLIENT_ID",
+        }), 400
 
     try:
         if api_source == "sp_api":
