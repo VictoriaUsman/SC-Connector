@@ -12,6 +12,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
+import shared.firestore_utils  # noqa: F401 — register module before patch()
+
 os.environ.setdefault("GCP_PROJECT", "test-project")
 os.environ.setdefault("ENVIRONMENT", "staging")
 os.environ.setdefault("BQ_DATASET", "kalilos_reports_staging")
@@ -208,6 +210,114 @@ class TestComputeDayIndex:
         assert _compute_day_index("2026-07-13", midnight_utc, self._pst) == 1
 
 
+class TestMidnightRecap:
+    _pst = ZoneInfo("America/Los_Angeles")
+
+    def test_midnight_slot_detected(self):
+        from slack_bot.main import _is_midnight_recap_slot
+
+        now = datetime(2026, 7, 14, 7, 45, tzinfo=timezone.utc)  # 12:45 AM PDT
+        assert _is_midnight_recap_slot(now, self._pst) is True
+
+    def test_non_midnight_slot(self):
+        from slack_bot.main import _is_midnight_recap_slot
+
+        now = datetime(2026, 7, 14, 18, 45, tzinfo=timezone.utc)  # 11:45 AM PDT
+        assert _is_midnight_recap_slot(now, self._pst) is False
+
+    def test_report_date_for_event_day(self):
+        from slack_bot.main import _report_date_for_event_day
+
+        assert _report_date_for_event_day("2026-07-13", 1, self._pst) == "2026-07-13"
+        assert _report_date_for_event_day("2026-07-13", 2, self._pst) == "2026-07-14"
+
+
+class TestBuildRecapBlocks:
+    def test_day_one_recap_label_and_yoy_na(self):
+        from slack_bot.main import _build_recap_blocks, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=10000, units=100, spend=2000, ppc_sales=8000,
+            ),
+        ]
+        now = datetime(2026, 7, 14, 7, 45, tzinfo=timezone.utc)
+        blocks = _build_recap_blocks(
+            client_name="Acme",
+            event_name="Prime Day 2026",
+            recap_day=1,
+            now=now,
+            client_tz=ZoneInfo("America/Los_Angeles"),
+            metrics=metrics,
+            prior_single=None,
+            prior_cumulative=None,
+            current_cumulative=None,
+            base_currency="USD",
+        )
+
+        header = blocks[0]["text"]["text"]
+        assert "Day 1 Recap" in header
+        assert "Day 2 Recap" not in header
+        us_block = blocks[1]["text"]["text"]
+        assert "YoY: —" in us_block
+        assert "*Cumulative*" not in " ".join(
+            b.get("text", {}).get("text", "") for b in blocks
+        )
+
+    def test_day_two_recap_includes_cumulative_yoy(self):
+        from slack_bot.main import _build_recap_blocks, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=5000, units=50, spend=1000, ppc_sales=4000,
+            ),
+        ]
+        cumulative = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=15000, units=150, spend=3000, ppc_sales=12000,
+            ),
+        ]
+        prior_single = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=4000, units=40, spend=800, ppc_sales=3200,
+            ),
+        ]
+        prior_cumulative = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=9000, units=90, spend=1800, ppc_sales=7200,
+            ),
+        ]
+        now = datetime(2026, 7, 15, 7, 45, tzinfo=timezone.utc)
+        blocks = _build_recap_blocks(
+            client_name="Acme",
+            event_name="Prime Day 2026",
+            recap_day=2,
+            now=now,
+            client_tz=ZoneInfo("America/Los_Angeles"),
+            metrics=metrics,
+            prior_single=prior_single,
+            prior_cumulative=prior_cumulative,
+            current_cumulative=cumulative,
+            base_currency="USD",
+        )
+
+        all_text = " ".join(b.get("text", {}).get("text", "") for b in blocks)
+        assert "Day 2 Recap" in all_text
+        assert "Cumulative (Days 1–2)" in all_text
+        assert "YoY: $800.00" in all_text or "YoY: $800" in all_text
+
+    def test_yoy_suffix_with_prior_values(self):
+        from slack_bot.main import _format_yoy_suffix
+
+        assert "—" in _format_yoy_suffix(100, None, "USD")
+        assert "[+25%]" in _format_yoy_suffix(100, 80, "USD")
+
+
 # ---------------------------------------------------------------------------
 # Full handler integration
 # ---------------------------------------------------------------------------
@@ -231,6 +341,47 @@ class TestHandlerIntegration:
         assert status == 200
         assert body["messages_sent"] == 1
         mock_post.assert_called_once()
+
+    def test_midnight_slot_posts_recap_not_hourly(self):
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+        midnight_pst = datetime(2026, 7, 14, 7, 45, tzinfo=timezone.utc)  # 12:45 AM PDT, Day 2
+
+        with (
+            patch("slack_bot.main.datetime") as mock_dt_cls,
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1",
+                "name": "Prime Day",
+                "start_date": "2026-07-13",
+                "prior_event_id": "prior_e1",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics) as mock_query,
+            patch("slack_bot.main._fetch_prior_yoy_metrics", return_value=(None, None)),
+            patch("slack_bot.main._query_cumulative_metrics", return_value=None),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            mock_dt_cls.now.return_value = midnight_pst
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+        mock_query.assert_called_once()
+        call_kwargs = mock_query.call_args[1]
+        assert call_kwargs.get("report_date") == "2026-07-13"
+        assert call_kwargs.get("full_day") is True
+        fallback = mock_post.call_args[0][2]
+        assert "Day 1 Recap" in fallback
+        blocks = mock_post.call_args[0][1]
+        assert "Day 1 Recap" in blocks[0]["text"]["text"]
 
     def test_logs_failure(self):
         from slack_bot.main import handler
