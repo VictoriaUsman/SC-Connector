@@ -50,6 +50,9 @@ import {
   Key,
   CheckCircle2,
   Circle,
+  Eye,
+  EyeOff,
+  Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -228,6 +231,11 @@ export function Clients() {
   const [connectToken, setConnectToken] = useState("");
   const [connectProfileId, setConnectProfileId] = useState("");
   const [connectLoading, setConnectLoading] = useState(false);
+  const [tokenViewOpen, setTokenViewOpen] = useState(false);
+  const [tokenViewClient, setTokenViewClient] = useState<Client | null>(null);
+  const [tokenValue, setTokenValue] = useState("");
+  const [tokenRevealed, setTokenRevealed] = useState(false);
+  const [tokenLoading, setTokenLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
@@ -330,6 +338,41 @@ export function Clients() {
       toast.error(err instanceof Error ? err.message : "Connection failed");
     } finally {
       setConnectLoading(false);
+    }
+  };
+
+  const clearTokenViewState = () => {
+    setTokenViewClient(null);
+    setTokenValue("");
+    setTokenRevealed(false);
+    setTokenLoading(false);
+  };
+
+  const openTokenView = async (client: Client) => {
+    setTokenViewClient(client);
+    setTokenViewOpen(true);
+    setTokenValue("");
+    setTokenRevealed(false);
+    setTokenLoading(true);
+    try {
+      const data = await api.getSpApiToken(client.id);
+      setTokenValue(data.refresh_token);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load token");
+      setTokenViewOpen(false);
+      clearTokenViewState();
+    } finally {
+      setTokenLoading(false);
+    }
+  };
+
+  const handleCopyToken = async () => {
+    if (!tokenValue) return;
+    try {
+      await navigator.clipboard.writeText(tokenValue);
+      toast.success("Token copied to clipboard");
+    } catch {
+      toast.error("Failed to copy token");
     }
   };
 
@@ -479,6 +522,12 @@ export function Clients() {
                               </DropdownMenuItem>
                             </>
                           )}
+                          {client.sp_api_secret_name && (
+                            <DropdownMenuItem onClick={() => openTokenView(client)}>
+                              <Key className="mr-2 h-4 w-4" />
+                              View SP API token
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             onClick={() => {
                               setEditingClient(client);
@@ -570,6 +619,79 @@ export function Clients() {
               >
                 {connectLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Connect
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={tokenViewOpen}
+        onOpenChange={(open) => {
+          setTokenViewOpen(open);
+          if (!open) clearTokenViewState();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>SP API Token — {tokenViewClient?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="sp-api-token-view">Refresh Token</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="sp-api-token-view"
+                  readOnly
+                  value={
+                    tokenLoading
+                      ? "Loading..."
+                      : tokenRevealed
+                        ? tokenValue
+                        : tokenValue
+                          ? "•".repeat(Math.min(tokenValue.length, 32))
+                          : ""
+                  }
+                  className="font-mono text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setTokenRevealed((prev) => !prev)}
+                  disabled={tokenLoading || !tokenValue}
+                  aria-label={tokenRevealed ? "Hide token" : "Reveal token"}
+                >
+                  {tokenRevealed ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={handleCopyToken}
+                  disabled={tokenLoading || !tokenValue}
+                  aria-label="Copy token"
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Stored securely in Secret Manager. Reveal only when needed for support or debugging.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setTokenViewOpen(false);
+                  clearTokenViewState();
+                }}
+              >
+                Close
               </Button>
             </DialogFooter>
           </div>

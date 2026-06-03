@@ -110,6 +110,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  getSpApiToken: (clientId: string) =>
+    request<{ refresh_token: string }>(`/clients/${clientId}/sp-api-token`),
 
   // Ads profiles
   listAdsProfiles: () => request<AdsProfile[]>("/ads-profiles"),

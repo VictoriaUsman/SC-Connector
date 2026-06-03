@@ -213,6 +213,51 @@ class TestClients:
         mock.assert_called_once_with("c1")
 
 
+class TestSpApiToken:
+    def test_returns_token_when_connected(self, client):
+        with (
+            patch("api.main._API_KEY", "test-key"),
+            patch(
+                "api.main.get_client",
+                return_value={"id": "acme", "sp_api_secret_name": "kalilos-staging-sp-api-acme"},
+            ),
+            patch("api.main._read_client_secret", return_value={"refresh_token": "Atzr|token"}),
+        ):
+            resp = client.get("/clients/acme/sp-api-token", headers={"X-API-Key": "test-key"})
+        assert resp.status_code == 200
+        assert resp.get_json()["refresh_token"] == "Atzr|token"
+
+    def test_not_connected(self, client):
+        with (
+            patch("api.main._API_KEY", "test-key"),
+            patch("api.main.get_client", return_value={"id": "acme", "name": "Acme"}),
+        ):
+            resp = client.get("/clients/acme/sp-api-token", headers={"X-API-Key": "test-key"})
+        assert resp.status_code == 404
+        assert resp.get_json()["code"] == "INVALID_REQUEST"
+
+    def test_client_not_found(self, client):
+        with (
+            patch("api.main._API_KEY", "test-key"),
+            patch("api.main.get_client", return_value=None),
+        ):
+            resp = client.get("/clients/missing/sp-api-token", headers={"X-API-Key": "test-key"})
+        assert resp.status_code == 404
+        assert resp.get_json()["code"] == "NOT_FOUND"
+
+    def test_missing_api_key(self, client):
+        with patch("api.main._API_KEY", "test-key"):
+            resp = client.get("/clients/acme/sp-api-token")
+        assert resp.status_code == 401
+        assert resp.get_json()["code"] == "UNAUTHORIZED"
+
+    def test_invalid_api_key(self, client):
+        with patch("api.main._API_KEY", "test-key"):
+            resp = client.get("/clients/acme/sp-api-token", headers={"X-API-Key": "wrong-key"})
+        assert resp.status_code == 401
+        assert resp.get_json()["code"] == "UNAUTHORIZED"
+
+
 # ---------------------------------------------------------------------------
 # Schedules CRUD
 # ---------------------------------------------------------------------------
