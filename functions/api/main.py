@@ -338,6 +338,34 @@ def connect_client_manual(client_id: str):
         return flask.jsonify({"error": str(exc)[:200], "code": "INTERNAL_ERROR"}), 500
 
 
+@app.route("/clients/<client_id>/sp-api-token", methods=["GET"])
+def get_client_sp_api_token(client_id: str):
+    """Return the stored SP API refresh token for a connected client."""
+    client = get_client(client_id)
+    if not client:
+        return flask.jsonify({"error": "Client not found", "code": "NOT_FOUND"}), 404
+
+    secret_name = client.get("sp_api_secret_name")
+    if not secret_name:
+        return flask.jsonify({
+            "error": "SP API not connected for this client",
+            "code": "INVALID_REQUEST",
+        }), 404
+
+    try:
+        secret_data = _read_client_secret(secret_name)
+        refresh_token = secret_data.get("refresh_token", "").strip()
+        if not refresh_token:
+            return flask.jsonify({
+                "error": "SP API refresh token not found",
+                "code": "INVALID_REQUEST",
+            }), 404
+        return flask.jsonify({"refresh_token": refresh_token}), 200
+    except Exception:
+        logger.exception("Failed to read SP API token", extra={"client_id": client_id})
+        return flask.jsonify({"error": "Failed to retrieve token", "code": "INTERNAL_ERROR"}), 500
+
+
 # ---------------------------------------------------------------------------
 # Schedules
 # ---------------------------------------------------------------------------
@@ -1032,6 +1060,14 @@ def _store_client_secret(client_id: str, api_source: str, data: dict[str, str]) 
     })
 
     return secret_name
+
+
+def _read_client_secret(secret_name: str) -> dict[str, str]:
+    """Read a client-level secret from Secret Manager."""
+    project = get_project()
+    name = f"projects/{project}/secrets/{secret_name}/versions/latest"
+    resp = _get_sm().access_secret_version(name=name)
+    return json.loads(resp.payload.data.decode("utf-8"))
 
 
 def _get_oauth_redirect_uri() -> str:
