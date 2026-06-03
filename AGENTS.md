@@ -33,7 +33,7 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 
 **Workflow Error Handling**: The workflow YAML uses a global try/except pattern — `main` calls a `report_pipeline` subworkflow, and any unhandled error (auth failure, create_report error, etc.) is caught by the global handler which marks the Firestore job as `"failed"` using `args.job_id`. This prevents zombie "pending" jobs. Error serialization uses `json.encode(e)` (not `string(e)`, which crashes on dicts). The workflow service account has `roles/datastore.user` for Firestore REST API access.
 
-**Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Local file backend (`file://~/.pulumi-local`). Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
+**Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Shared GCS state backend (`gs://kalilos-connector-pulumi-state`, versioned) so local and CI deploys share one source of truth. Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
 
 ## Data Model
 
@@ -196,7 +196,7 @@ kalilos-connector/
 
 All operations go through the Makefile. Never run raw `gcloud`, `pulumi`, or `firebase` commands.
 
-Pulumi uses a local file backend (`file://~/.pulumi-local`), configured automatically by `scripts/_common.sh`.
+Pulumi uses a shared GCS backend (`gs://kalilos-connector-pulumi-state`), configured automatically by `scripts/_common.sh`. Local and CI deploys read/write the same state. (Override with `PULUMI_BACKEND_URL` if needed.)
 
 ```bash
 # Deploy to staging
@@ -209,6 +209,35 @@ make env-prod && make preview && make deploy-all && make health
 `make deploy-all` runs infrastructure (Pulumi) first, then MCP server (Cloud Run), then frontend (Firebase Hosting), in order.
 
 To deploy the MCP server independently: `make deploy-mcp`.
+
+### CI/CD (GitHub Actions)
+
+`.github/workflows/deploy-staging.yml` runs on every PR and on merge to `main`:
+
+- **PRs and pushes** run the `checks` job: Python tests (`pytest tests/`) plus a frontend typecheck/build (`npm run build`).
+- **Merges to `main`** additionally run `deploy-staging`, which authenticates to GCP via **Workload Identity Federation** (keyless — no SA JSON keys), then runs `make env-staging && make deploy-all`.
+
+Auth: CI impersonates a least-privilege deploy service account (`kalilos-cicd-deployer@kalilos-connector-staging`). The `check_gcp_account` guard in `_common.sh` is skipped when `CI` is set (it uses Application Default Credentials from the WIF step instead). Production is **never** auto-deployed — it stays manual.
+
+**One-time setup**: run `./scripts/bootstrap-cicd.sh` locally (with owner creds). It migrates Pulumi state to GCS, creates the deploy SA + roles, sets up the WIF pool/provider for the `NivOclear/kalilos-connector` repo, and prints the GitHub config values to set.
+
+**GitHub repository variables** (Settings → Secrets and variables → Actions → Variables):
+
+| Variable | Example |
+|----------|---------|
+| `GCP_WIF_PROVIDER` | `projects/<num>/locations/global/workloadIdentityPools/github-pool/providers/github` |
+| `GCP_DEPLOY_SA` | `kalilos-cicd-deployer@kalilos-connector-staging.iam.gserviceaccount.com` |
+| `GCP_PROJECT` | `kalilos-connector-staging` |
+| `GCP_REGION` | `us-central1` |
+
+**GitHub repository secrets** (scoped to the `staging` Environment):
+
+| Secret | Purpose |
+|--------|---------|
+| `PULUMI_CONFIG_PASSPHRASE` | Decrypts the Pulumi config secrets |
+| `GDRIVE_ROOT_FOLDER_ID` | Staging Drive root folder id |
+| `VITE_API_URL`, `VITE_API_KEY` | Frontend build-time API config |
+| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID` | Frontend Firebase config |
 
 ## Conventions
 

@@ -277,13 +277,13 @@ class TestComputeDateRange:
 
     # -- timezone sensitivity ------------------------------------------------
 
-    def test_jp_marketplace_timezone(self):
-        """JP is Asia/Tokyo (UTC+9). At UTC 20:00 Mar 19, JP local time is Mar 20 05:00."""
+    def test_sg_marketplace_timezone(self):
+        """SG is Asia/Singapore (UTC+8). At UTC 20:00 Mar 19, SG local time is Mar 20 04:00."""
         from shared.schedule_compute import compute_date_range
 
         now = datetime(2026, 3, 19, 20, 0, tzinfo=timezone.utc)
-        start, end = compute_date_range("JP", {"strategy": "yesterday"}, now)
-        assert start == date(2026, 3, 19)  # JP "today" is Mar 20, yesterday = Mar 19
+        start, end = compute_date_range("SG", {"strategy": "yesterday"}, now)
+        assert start == date(2026, 3, 19)  # SG "today" is Mar 20, yesterday = Mar 19
 
     def test_us_dst_boundary(self):
         """US DST starts second Sunday of March. Test near that boundary."""
@@ -336,10 +336,10 @@ class TestComputeReportDates:
         result = compute_report_dates("US", "ads_api", date(2026, 3, 1), date(2026, 3, 31))
         assert result == {"startDate": "2026-03-01", "endDate": "2026-03-31"}
 
-    def test_jp_marketplace_utc_offset(self):
+    def test_sg_marketplace_utc_offset(self):
         from shared.schedule_compute import compute_report_dates
 
-        result = compute_report_dates("JP", "sp_api", date(2026, 3, 19))
-        # JP is UTC+9, midnight = 15:00 UTC previous day
-        assert result["dataStartTime"] == "2026-03-18T15:00:00Z"
-        assert result["dataEndTime"] == "2026-03-19T15:00:00Z"
+        result = compute_report_dates("SG", "sp_api", date(2026, 3, 19))
+        # SG is UTC+8 (no DST), midnight = 16:00 UTC previous day
+        assert result["dataStartTime"] == "2026-03-18T16:00:00Z"
+        assert result["dataEndTime"] == "2026-03-19T16:00:00Z"

@@ -356,12 +356,12 @@ class TestJobs:
     def test_list_jobs_with_filters(self, client):
         with patch("api.main.list_jobs", return_value=[]) as mock:
             client.get("/jobs?client_id=c1&status=completed&limit=10")
-        mock.assert_called_once_with(client_id="c1", status="completed", limit=10)
+        mock.assert_called_once_with(client_id="c1", status="completed", schedule_id=None, execution_date=None, limit=10)
 
     def test_list_jobs_limit_capped(self, client):
         with patch("api.main.list_jobs", return_value=[]) as mock:
             client.get("/jobs?limit=999")
-        mock.assert_called_once_with(client_id=None, status=None, limit=200)
+        mock.assert_called_once_with(client_id=None, status=None, schedule_id=None, execution_date=None, limit=200)
 
     def test_get_job(self, client):
         with patch("api.main.get_job", return_value={"id": "j1", "status": "polling"}):
@@ -393,6 +393,8 @@ class TestOnDemand:
                 "api_source": "sp_api",
                 "marketplace": "US",
                 "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
+                "start_date": "2026-03-20",
+                "end_date": "2026-03-20",
             })
 
         assert resp.status_code == 201
@@ -435,6 +437,8 @@ class TestOnDemand:
                 "api_source": "sp_api",
                 "marketplace": "US",
                 "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
+                "start_date": "2026-03-20",
+                "end_date": "2026-03-20",
             })
 
         assert resp.status_code == 201

@@ -17,7 +17,7 @@ Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon
 - **Report Storage**: Google Drive (date-first default layout, or custom folder per schedule)
 - **Frontend**: React + Vite + shadcn/ui on Firebase Hosting, Firestore real-time listeners
 - **MCP Server**: FastMCP (Python) on Cloud Run — agentic interface for Claude (14 tools, Streamable HTTP + stdio)
-- **IaC**: Pulumi (Python, local file backend) in `infra/`
+- **IaC**: Pulumi (Python, shared GCS state backend) in `infra/`
 
 ## Three-Clock Timezone Architecture
 
@@ -50,7 +50,7 @@ Each schedule has `folder_name` (custom Drive folder) and `subfolder_strategy` (
 - Secret naming: `kalilos-{env}-{service}-{client}` (e.g., `kalilos-prod-sp-api-acme`)
 - ALL operations via Makefile — never raw gcloud, pulumi, or firebase commands
 - Deploy: `make env-staging && make deploy-all` or `make env-prod && make deploy-all`
-- Pulumi backend: local file (`file://~/.pulumi-local`), configured in `scripts/_common.sh`
+- Pulumi backend: shared GCS bucket (`gs://kalilos-connector-pulumi-state`), configured in `scripts/_common.sh`
 
 ## Key Shared Modules
 
