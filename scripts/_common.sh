@@ -8,14 +8,31 @@ set -euo pipefail
 REQUIRED_GCP_ACCOUNT="nivbraz90@gmail.com"
 GCLOUD_CONFIG_NAME="kalilos-connector"
 
-export CLOUDSDK_ACTIVE_CONFIG_NAME="$GCLOUD_CONFIG_NAME"
-export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-file://~/.pulumi-local}"
+# Detect CI (GitHub Actions sets CI=true). In CI, auth comes from Workload
+# Identity Federation (ADC), not the local gcloud named configuration.
+is_ci() { [[ -n "${CI:-}" || -n "${KALILOS_CI:-}" ]]; }
+
+# Only force the local gcloud configuration outside of CI; in CI the active
+# config is the WIF-provided ADC and must not be overridden.
+if ! is_ci; then
+  export CLOUDSDK_ACTIVE_CONFIG_NAME="$GCLOUD_CONFIG_NAME"
+fi
+
+# Shared Pulumi state lives in GCS so local and CI share one source of truth.
+export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-gs://kalilos-connector-pulumi-state}"
 export PULUMI_CONFIG_PASSPHRASE="${PULUMI_CONFIG_PASSPHRASE:-}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; }
 
 check_gcp_account() {
+  # In CI, authentication is provided via Workload Identity Federation (ADC);
+  # the local gcloud account guard does not apply.
+  if is_ci; then
+    log "CI detected — skipping local gcloud account guard (using ADC)."
+    return 0
+  fi
+
   if ! gcloud config configurations describe "$GCLOUD_CONFIG_NAME" &>/dev/null; then
     error "gcloud configuration '$GCLOUD_CONFIG_NAME' not found."
     error "Create it once with:"
