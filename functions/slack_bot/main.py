@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,7 @@ from google.cloud import bigquery
 
 from shared.firestore_utils import (
     get_client,
+    get_event,
     get_live_event,
     list_bot_configs,
     log_bot_activity,
@@ -31,6 +32,8 @@ from shared.schedule_compute import marketplace_today
 from shared.slack_client import (
     MARKETPLACE_CURRENCIES,
     format_currency,
+    format_delta,
+    format_delta_bps,
     format_percentage,
     post_message,
 )
@@ -104,19 +107,54 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             continue
 
         day_index = _compute_day_index(event_start, now, client_tz)
+        recap_day = day_index - 1 if day_index >= 2 else 0
+        is_midnight_recap = _is_midnight_recap_slot(now, client_tz) and recap_day >= 1
 
         try:
-            metrics = _query_metrics(client_id, marketplaces, now)
-            blocks = _build_message_blocks(
-                client_name=client_name,
-                event_name=event_name,
-                day_index=day_index,
-                now=now,
-                client_tz=client_tz,
-                metrics=metrics,
-                base_currency=config.get("base_currency", "USD"),
-            )
-            text_fallback = f"Hourly Update — {client_name} | {event_name}"
+            if is_midnight_recap:
+                recap_date = _report_date_for_event_day(event_start, recap_day, client_tz)
+                metrics = _query_metrics(
+                    client_id, marketplaces, now, report_date=recap_date, full_day=True,
+                )
+                prior_single, prior_cumulative = _fetch_prior_yoy_metrics(
+                    live_event.get("prior_event_id"),
+                    client_id,
+                    marketplaces,
+                    recap_day,
+                    client_tz,
+                )
+                current_cumulative = (
+                    _query_cumulative_metrics(
+                        client_id, marketplaces, event_start, recap_day, client_tz,
+                    )
+                    if recap_day >= 2
+                    else None
+                )
+                blocks = _build_recap_blocks(
+                    client_name=client_name,
+                    event_name=event_name,
+                    recap_day=recap_day,
+                    now=now,
+                    client_tz=client_tz,
+                    metrics=metrics,
+                    prior_single=prior_single,
+                    prior_cumulative=prior_cumulative,
+                    current_cumulative=current_cumulative,
+                    base_currency=config.get("base_currency", "USD"),
+                )
+                text_fallback = f"Day {recap_day} Recap — {client_name} | {event_name}"
+            else:
+                metrics = _query_metrics(client_id, marketplaces, now)
+                blocks = _build_message_blocks(
+                    client_name=client_name,
+                    event_name=event_name,
+                    day_index=day_index,
+                    now=now,
+                    client_tz=client_tz,
+                    metrics=metrics,
+                    base_currency=config.get("base_currency", "USD"),
+                )
+                text_fallback = f"Hourly Update — {client_name} | {event_name}"
             result = post_message(channel_id, blocks, text_fallback)
 
             log_bot_activity({
@@ -150,11 +188,15 @@ def _query_metrics(
     client_id: str,
     marketplaces: list[str],
     now: datetime,
+    *,
+    report_date: str | None = None,
+    full_day: bool = False,
 ) -> list[MarketplaceMetrics]:
-    """Query BQ for today's orders and ads data, returning per-marketplace metrics.
+    """Query BQ for orders and ads data, returning per-marketplace metrics.
 
-    Each marketplace is queried with its own local date to match ingestion,
-    which stores report_date as the marketplace-local calendar day.
+    When ``report_date`` is set, queries that calendar day (used for day-end
+    recaps). ``full_day=True`` uses the complete report_date partition without
+    filtering orders to purchases since midnight (hourly updates use partial day).
     """
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
@@ -162,9 +204,11 @@ def _query_metrics(
 
     results: list[MarketplaceMetrics] = []
     for mkt in marketplaces:
-        mkt_today = marketplace_today(mkt, now).isoformat()
-        orders = _query_orders(bq, project, dataset, client_id, mkt, mkt_today, now)
-        ads = _query_ads(bq, project, dataset, client_id, mkt, mkt_today)
+        mkt_date = report_date or marketplace_today(mkt, now).isoformat()
+        orders = _query_orders(
+            bq, project, dataset, client_id, mkt, mkt_date, now, full_day=full_day,
+        )
+        ads = _query_ads(bq, project, dataset, client_id, mkt, mkt_date)
         results.append(MarketplaceMetrics(
             marketplace=mkt,
             currency=MARKETPLACE_CURRENCIES.get(mkt, "USD"),
@@ -184,39 +228,62 @@ def _query_orders(
     marketplace: str,
     report_date: str,
     now: datetime,
+    *,
+    full_day: bool = False,
 ) -> dict[str, Any]:
-    """Sum orders placed today for a single marketplace.
+    """Sum orders for a single marketplace on ``report_date``.
 
-    ``report_date`` is the marketplace-local calendar day (YYYY-MM-DD),
-    matching how the ingestion pipeline stores data. ``mkt_midnight`` is
-    derived from the same marketplace timezone for the purchase_date filter.
+    Hourly updates filter to purchases since marketplace midnight today.
+    Day-end recaps use the full ``report_date`` partition (00:00–23:59).
     """
-    from shared.config import MARKETPLACE_TIMEZONES
+    if full_day:
+        query = f"""
+            SELECT
+                COALESCE(SUM(item_price), 0) AS total_sales,
+                COALESCE(SUM(quantity), 0) AS units
+            FROM `{project}.{dataset}.orders`
+            WHERE client_id = @client_id
+              AND report_date = @today
+              AND order_status != 'Cancelled'
+              AND marketplace = @marketplace
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
+                bigquery.ScalarQueryParameter("today", "DATE", report_date),
+                bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+            ]
+        )
+    else:
+        from shared.config import MARKETPLACE_TIMEZONES
 
-    mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
-    mkt_now = now.astimezone(mkt_tz)
-    mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))
+        mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
+        mkt_now = now.astimezone(mkt_tz)
+        mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))
 
-    query = f"""
-        SELECT
-            COALESCE(SUM(item_price), 0) AS total_sales,
-            COALESCE(SUM(quantity), 0) AS units
-        FROM `{project}.{dataset}.orders`
-        WHERE client_id = @client_id
-          AND report_date = @today
-          AND purchase_date >= @mkt_midnight
-          AND order_status != 'Cancelled'
-          AND marketplace = @marketplace
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-            bigquery.ScalarQueryParameter("today", "DATE", report_date),
-            bigquery.ScalarQueryParameter("mkt_midnight", "TIMESTAMP", mkt_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ")),
-            bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
-        ]
-    )
+        query = f"""
+            SELECT
+                COALESCE(SUM(item_price), 0) AS total_sales,
+                COALESCE(SUM(quantity), 0) AS units
+            FROM `{project}.{dataset}.orders`
+            WHERE client_id = @client_id
+              AND report_date = @today
+              AND purchase_date >= @mkt_midnight
+              AND order_status != 'Cancelled'
+              AND marketplace = @marketplace
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
+                bigquery.ScalarQueryParameter("today", "DATE", report_date),
+                bigquery.ScalarQueryParameter(
+                    "mkt_midnight", "TIMESTAMP",
+                    mkt_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ),
+                bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+            ]
+        )
     for row in bq.query(query, job_config=job_config):
         return {
             "total_sales": float(row["total_sales"]),
@@ -406,18 +473,245 @@ def _maybe_add_total_row(
 
 
 # ---------------------------------------------------------------------------
+# Midnight day recap
+# ---------------------------------------------------------------------------
+
+def _is_midnight_recap_slot(now: datetime, client_tz: ZoneInfo) -> bool:
+    """True on the first hourly run after midnight in the client's timezone."""
+    return now.astimezone(client_tz).hour == 0
+
+
+def _report_date_for_event_day(event_start: str, day_number: int, tz: ZoneInfo) -> str:
+    """ISO date for a 1-based event day using the client's local calendar."""
+    start = _parse_event_start(event_start)
+    return (start + timedelta(days=day_number - 1)).isoformat()
+
+
+def _query_cumulative_metrics(
+    client_id: str,
+    marketplaces: list[str],
+    event_start: str,
+    through_day: int,
+    client_tz: ZoneInfo,
+) -> list[MarketplaceMetrics]:
+    """Sum full-day metrics for event days 1 through ``through_day``."""
+    accumulated: dict[str, MarketplaceMetrics] = {}
+    for day in range(1, through_day + 1):
+        day_date = _report_date_for_event_day(event_start, day, client_tz)
+        for m in _query_metrics(
+            client_id, marketplaces, datetime.now(timezone.utc),
+            report_date=day_date, full_day=True,
+        ):
+            if m.marketplace not in accumulated:
+                accumulated[m.marketplace] = MarketplaceMetrics(
+                    marketplace=m.marketplace,
+                    currency=m.currency,
+                    total_sales=0.0,
+                    units=0,
+                    spend=0.0,
+                    ppc_sales=0.0,
+                )
+            acc = accumulated[m.marketplace]
+            acc.total_sales += m.total_sales
+            acc.units += m.units
+            acc.spend += m.spend
+            acc.ppc_sales += m.ppc_sales
+    return [accumulated[m] for m in marketplaces if m in accumulated]
+
+
+def _fetch_prior_yoy_metrics(
+    prior_event_id: str | None,
+    client_id: str,
+    marketplaces: list[str],
+    recap_day: int,
+    client_tz: ZoneInfo,
+) -> tuple[list[MarketplaceMetrics] | None, list[MarketplaceMetrics] | None]:
+    """Prior-year single-day and cumulative metrics, or (None, None) if unlinked."""
+    if not prior_event_id:
+        return None, None
+    prior_event = get_event(prior_event_id)
+    if not prior_event:
+        return None, None
+    prior_start = prior_event.get("start_date", "")
+    if not prior_start:
+        return None, None
+
+    now = datetime.now(timezone.utc)
+    prior_date = _report_date_for_event_day(prior_start, recap_day, client_tz)
+    prior_single = _query_metrics(
+        client_id, marketplaces, now, report_date=prior_date, full_day=True,
+    )
+    prior_cumulative = (
+        _query_cumulative_metrics(
+            client_id, marketplaces, prior_start, recap_day, client_tz,
+        )
+        if recap_day >= 2
+        else None
+    )
+    return prior_single, prior_cumulative
+
+
+def _metrics_by_marketplace(metrics: list[MarketplaceMetrics] | None) -> dict[str, MarketplaceMetrics]:
+    if not metrics:
+        return {}
+    return {m.marketplace: m for m in metrics}
+
+
+def _format_yoy_suffix(
+    current: float,
+    prior: float | None,
+    currency: str,
+    *,
+    is_pct: bool = False,
+) -> str:
+    if prior is None:
+        return " _(YoY: —)_"
+    if is_pct:
+        return f" _(YoY: {format_percentage(prior)} {format_delta_bps(current, prior)})_"
+    return f" _(YoY: {format_currency(prior, currency)} {format_delta(current, prior)})_"
+
+
+def _format_marketplace_recap_lines(
+    m: MarketplaceMetrics,
+    prior: MarketplaceMetrics | None,
+) -> list[str]:
+    p = prior
+    return [
+        f"Spend: {format_currency(m.spend, m.currency)}{_format_yoy_suffix(m.spend, p.spend if p else None, m.currency)}",
+        f"PPC Sales: {format_currency(m.ppc_sales, m.currency)}{_format_yoy_suffix(m.ppc_sales, p.ppc_sales if p else None, m.currency)}",
+        f"ACoS: {format_percentage(m.acos)}{_format_yoy_suffix(m.acos, p.acos if p else None, m.currency, is_pct=True)}",
+        f"Total Sales: {format_currency(m.total_sales, m.currency)}{_format_yoy_suffix(m.total_sales, p.total_sales if p else None, m.currency)}",
+        f"TACoS: {format_percentage(m.tacos)}{_format_yoy_suffix(m.tacos, p.tacos if p else None, m.currency, is_pct=True)}",
+    ]
+
+
+def _build_recap_blocks(
+    *,
+    client_name: str,
+    event_name: str,
+    recap_day: int,
+    now: datetime,
+    client_tz: ZoneInfo,
+    metrics: list[MarketplaceMetrics],
+    prior_single: list[MarketplaceMetrics] | None,
+    prior_cumulative: list[MarketplaceMetrics] | None,
+    current_cumulative: list[MarketplaceMetrics] | None,
+    base_currency: str,
+) -> list[dict]:
+    """Build Slack blocks for a completed-day recap with YoY comparisons."""
+    time_str = _format_local_time(now, client_tz)
+    subtitle = f"{time_str} | {event_name} — Day {recap_day} Recap"
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":bar_chart: *Day {recap_day} Recap — {client_name}*\n{subtitle}",
+            },
+        },
+    ]
+
+    prior_map = _metrics_by_marketplace(prior_single)
+    for m in metrics:
+        mkt_header = f"*{m.marketplace}*"
+        mkt_tz_str = _MARKETPLACE_TIMEZONES.get(m.marketplace)
+        if mkt_tz_str and mkt_tz_str != str(client_tz):
+            mkt_tz = ZoneInfo(mkt_tz_str)
+            mkt_header += f" ({_format_local_time(now, mkt_tz)})"
+
+        lines = [mkt_header, *_format_marketplace_recap_lines(m, prior_map.get(m.marketplace))]
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+        })
+
+    _maybe_add_recap_total_row(blocks, metrics, prior_single, base_currency)
+
+    if recap_day >= 2 and current_cumulative:
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Cumulative (Days 1–{recap_day})*",
+            },
+        })
+        prior_cum_map = _metrics_by_marketplace(prior_cumulative)
+        for m in current_cumulative:
+            lines = [f"*{m.marketplace}*", *_format_marketplace_recap_lines(
+                m, prior_cum_map.get(m.marketplace),
+            )]
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+            })
+        _maybe_add_recap_total_row(blocks, current_cumulative, prior_cumulative, base_currency)
+
+    return blocks
+
+
+def _maybe_add_recap_total_row(
+    blocks: list[dict],
+    metrics: list[MarketplaceMetrics],
+    prior_metrics: list[MarketplaceMetrics] | None,
+    base_currency: str,
+) -> None:
+    """Total row with YoY for single-currency recaps."""
+    if not metrics:
+        return
+    currencies = {m.currency for m in metrics}
+    if len(currencies) != 1:
+        return
+
+    currency = currencies.pop()
+    total_spend = sum(m.spend for m in metrics)
+    total_ppc = sum(m.ppc_sales for m in metrics)
+    total_sales = sum(m.total_sales for m in metrics)
+    acos = (total_spend / total_ppc * 100) if total_ppc else 0.0
+    tacos = (total_spend / total_sales * 100) if total_sales else 0.0
+
+    prior: MarketplaceMetrics | None = None
+    if prior_metrics and len({m.currency for m in prior_metrics}) == 1:
+        prior = MarketplaceMetrics(
+            marketplace="Total",
+            currency=currency,
+            total_sales=sum(m.total_sales for m in prior_metrics),
+            units=sum(m.units for m in prior_metrics),
+            spend=sum(m.spend for m in prior_metrics),
+            ppc_sales=sum(m.ppc_sales for m in prior_metrics),
+        )
+
+    lines = [
+        "*Total*",
+        f"Spend: {format_currency(total_spend, currency)}{_format_yoy_suffix(total_spend, prior.spend if prior else None, currency)}",
+        f"PPC Sales: {format_currency(total_ppc, currency)}{_format_yoy_suffix(total_ppc, prior.ppc_sales if prior else None, currency)}",
+        f"ACoS: {format_percentage(acos)}{_format_yoy_suffix(acos, prior.acos if prior else None, currency, is_pct=True)}",
+        f"Total Sales: {format_currency(total_sales, currency)}{_format_yoy_suffix(total_sales, prior.total_sales if prior else None, currency)}",
+        f"TACoS: {format_percentage(tacos)}{_format_yoy_suffix(tacos, prior.tacos if prior else None, currency, is_pct=True)}",
+    ]
+
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+    })
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _parse_event_start(event_start: str | date_type) -> date_type:
+    if hasattr(event_start, "year"):
+        return event_start  # type: ignore[return-value]
+    return date_type.fromisoformat(event_start)
+
+
 def _compute_day_index(event_start: str, now: datetime, tz: ZoneInfo) -> int:
     """Compute 1-based day index within the event using the client's local date."""
-    from datetime import date as date_type
-
     try:
-        start = (
-            event_start if hasattr(event_start, "year")
-            else date_type.fromisoformat(event_start)
-        )
+        start = _parse_event_start(event_start)
         local_today = now.astimezone(tz).date()
         return (local_today - start).days + 1
     except (ValueError, TypeError):
