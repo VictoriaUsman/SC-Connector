@@ -48,13 +48,35 @@ function isThrottledError(raw: string): boolean {
   return lower.includes("throttled") || lower.includes("quota") || lower.includes("429");
 }
 
-function extractErrorSummary(raw: string | undefined): { message: string; kind: "no_data" | "throttled" | "error" } {
+function isForbiddenError(raw: string, code?: string): boolean {
+  if (code === "FORBIDDEN") return true;
+  const lower = raw.toLowerCase();
+  return (
+    lower.includes("access forbidden") ||
+    lower.includes("access to the resource is forbidden") ||
+    lower.includes("access to requested resource is denied") ||
+    lower.includes("access denied") ||
+    lower.includes("selling partner insights")
+  );
+}
+
+function extractErrorSummary(
+  raw: string | undefined,
+  code?: string,
+): { message: string; kind: "no_data" | "throttled" | "forbidden" | "error" } {
   if (!raw) return { message: "Unknown error", kind: "error" };
 
   if (isNoDataError(raw)) {
     return {
       message: "No data available \u2014 Amazon could not generate this report. The account may lack access (e.g. Brand Registry) or there is no data for the requested date range.",
       kind: "no_data",
+    };
+  }
+
+  if (isForbiddenError(raw, code)) {
+    return {
+      message: raw,
+      kind: "forbidden",
     };
   }
 
@@ -85,6 +107,8 @@ function getRetryableJobIds(jobs: Job[]): string[] {
     .filter((j) => {
       if (j.status !== "failed") return false;
       const raw = j.error_details?.message ?? "";
+      // Forbidden (403) jobs stay retriable: in practice these are mostly
+      // transient auth-throttling under load and recover on a later run.
       return !isNoDataError(raw);
     })
     .map((j) => j.id);
@@ -183,7 +207,9 @@ function JobRow({ job }: { job: Job }) {
       ? `https://drive.google.com/file/d/${fileId}/view`
       : null;
 
-  const errorInfo = canExpand ? extractErrorSummary(job.error_details?.message) : null;
+  const errorInfo = canExpand
+    ? extractErrorSummary(job.error_details?.message, job.error_details?.code)
+    : null;
 
   return (
     <>
@@ -232,7 +258,7 @@ function JobRow({ job }: { job: Job }) {
       {expanded && errorInfo && (
         <TableRow
           className={
-            errorInfo.kind === "no_data"
+            errorInfo.kind === "no_data" || errorInfo.kind === "forbidden"
               ? "bg-muted/40 hover:bg-muted/40"
               : errorInfo.kind === "throttled"
                 ? "bg-amber-500/5 hover:bg-amber-500/5"
@@ -244,14 +270,14 @@ function JobRow({ job }: { job: Job }) {
               <div className="flex items-start gap-2.5">
                 <div
                   className={`rounded-full p-1 shrink-0 mt-0.5 ${
-                    errorInfo.kind === "no_data"
+                    errorInfo.kind === "no_data" || errorInfo.kind === "forbidden"
                       ? "bg-muted-foreground/10"
                       : errorInfo.kind === "throttled"
                         ? "bg-amber-500/10"
                         : "bg-destructive/10"
                   }`}
                 >
-                  {errorInfo.kind === "no_data" ? (
+                  {errorInfo.kind === "no_data" || errorInfo.kind === "forbidden" ? (
                     <Info className="h-3 w-3 text-muted-foreground" />
                   ) : errorInfo.kind === "throttled" ? (
                     <Zap className="h-3 w-3 text-amber-500" />
@@ -270,7 +296,7 @@ function JobRow({ job }: { job: Job }) {
                   )}
                   <p
                     className={`text-xs leading-relaxed ${
-                      errorInfo.kind === "no_data"
+                      errorInfo.kind === "no_data" || errorInfo.kind === "forbidden"
                         ? "text-muted-foreground"
                         : "text-foreground/80"
                     }`}

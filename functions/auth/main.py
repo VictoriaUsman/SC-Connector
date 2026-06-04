@@ -11,10 +11,9 @@ from __future__ import annotations
 import logging
 
 import flask
-import requests
 
-from shared.config import LWA_TOKEN_URL
 from shared.credentials import get_ads_credentials, get_sp_credentials
+from shared.lwa_token import get_access_token
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +29,19 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     try:
         if api_source == "sp_api":
             creds = get_sp_credentials(client_id)
-            access_token = _exchange_lwa_token(
-                creds["refresh_token"], creds["lwa_app_id"], creds["lwa_client_secret"],
+            access_token = get_access_token(
+                refresh_token=creds["refresh_token"],
+                client_id=creds["lwa_app_id"],
+                client_secret=creds["lwa_client_secret"],
             )
             return {"access_token": access_token, "api_source": "sp_api"}, 200
 
         elif api_source == "ads_api":
             creds = get_ads_credentials(client_id)
-            access_token = _exchange_lwa_token(
-                creds["refresh_token"], creds["client_id"], creds["client_secret"],
+            access_token = get_access_token(
+                refresh_token=creds["refresh_token"],
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
             )
             return {
                 "access_token": access_token,
@@ -55,19 +58,3 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     except Exception:
         logger.exception("Auth failed", extra={"client_id": client_id, "api_source": api_source})
         return {"error": "Token exchange failed", "code": "AUTH_FAILED"}, 500
-
-
-def _exchange_lwa_token(refresh_token: str, client_id: str, client_secret: str) -> str:
-    """Direct LWA token exchange — validates credentials are functional."""
-    resp = requests.post(
-        LWA_TOKEN_URL,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        },
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]

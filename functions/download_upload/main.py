@@ -20,6 +20,7 @@ from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.firestore_utils import get_client, update_job_status
 from shared.report_converter import maybe_convert_to_tsv
+from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             update_job_status(job_id, "downloading")
 
         if api_source == "sp_api":
-            content = _download_sp_report(client_id, marketplace, download_info)
+            content = _download_sp_report(client_id, marketplace, report_type, download_info)
         elif api_source == "ads_api":
             content = _download_ads_report(client_id, marketplace, download_info)
         else:
@@ -143,6 +144,24 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 error_details={"message": str(exc), "phase": "drive_access"},
             )
         return {"error": str(exc), "code": "DRIVE_ACCESS_DENIED"}, 403
+
+    except SPAPIForbiddenError as exc:
+        logger.error(
+            "SP-API access forbidden at download_upload",
+            extra={**exc.log_context(), "report_type": report_type},
+        )
+        if job_id:
+            update_job_status(
+                job_id,
+                "failed",
+                error_details={
+                    "message": str(exc),
+                    "phase": "download_upload",
+                    "code": "FORBIDDEN",
+                },
+            )
+        return {"error": str(exc), "code": "FORBIDDEN"}, 403
+
     except Exception as exc:
         if is_throttled(exc):
             logger.warning("Throttled by Amazon at download_upload", extra={
@@ -163,13 +182,24 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         return {"error": "Failed to download/upload report", "code": "DOWNLOAD_UPLOAD_FAILED"}, 500
 
 
-def _download_sp_report(client_id: str, marketplace: str, download_info: dict) -> bytes:
+def _download_sp_report(
+    client_id: str,
+    marketplace: str,
+    report_type: str,
+    download_info: dict,
+) -> bytes:
     document_id = download_info.get("report_document_id")
     if not document_id:
         raise ValueError("Missing report_document_id in download_info")
 
     creds = get_sp_credentials(client_id)
-    doc = sp_api_client.get_report_document(creds, marketplace, document_id)
+    doc = sp_api_client.get_report_document(
+        creds,
+        marketplace,
+        document_id,
+        client_id=client_id,
+        report_type=report_type,
+    )
     return sp_api_client.download_report(doc["url"], doc.get("compression"))
 
 

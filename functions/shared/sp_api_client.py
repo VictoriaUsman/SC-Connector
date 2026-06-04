@@ -15,6 +15,7 @@ from sp_api.api import Reports
 from sp_api.base import Marketplaces
 
 from shared.config import get_marketplace_id
+from shared.sp_api_errors import raise_if_sp_api_forbidden
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def create_report(
     marketplace: str,
     report_type: str,
     report_params: dict | None = None,
+    *,
+    client_id: str | None = None,
 ) -> str:
     """Request a new report. Returns the SP API reportId."""
     kwargs: dict = {
@@ -54,15 +57,44 @@ def create_report(
             if key in report_params:
                 kwargs[key] = report_params[key]
 
-    resp = _client(credentials, marketplace).create_report(**kwargs)
+    try:
+        resp = _client(credentials, marketplace).create_report(**kwargs)
+    except Exception as exc:
+        if client_id:
+            raise_if_sp_api_forbidden(
+                exc,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+                report_params=report_params,
+            )
+        raise
+
     report_id = resp.payload["reportId"]
     logger.info("SP API report created", extra={"report_id": report_id, "report_type": report_type})
     return report_id
 
 
-def get_report(credentials: dict, marketplace: str, report_id: str) -> dict:
+def get_report(
+    credentials: dict,
+    marketplace: str,
+    report_id: str,
+    *,
+    client_id: str | None = None,
+    report_type: str | None = None,
+) -> dict:
     """Poll report status. Returns normalized status + reportDocumentId when ready."""
-    resp = _client(credentials, marketplace).get_report(report_id)
+    try:
+        resp = _client(credentials, marketplace).get_report(report_id)
+    except Exception as exc:
+        if client_id and report_type:
+            raise_if_sp_api_forbidden(
+                exc,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+            )
+        raise
     raw_status = resp.payload["processingStatus"]
     return {
         "raw_status": raw_status,
@@ -71,9 +103,26 @@ def get_report(credentials: dict, marketplace: str, report_id: str) -> dict:
     }
 
 
-def get_report_document(credentials: dict, marketplace: str, document_id: str) -> dict:
+def get_report_document(
+    credentials: dict,
+    marketplace: str,
+    document_id: str,
+    *,
+    client_id: str | None = None,
+    report_type: str | None = None,
+) -> dict:
     """Get the pre-signed download URL for a completed report."""
-    resp = _client(credentials, marketplace).get_report_document(document_id)
+    try:
+        resp = _client(credentials, marketplace).get_report_document(document_id)
+    except Exception as exc:
+        if client_id and report_type:
+            raise_if_sp_api_forbidden(
+                exc,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+            )
+        raise
     return {
         "url": resp.payload["url"],
         "compression": resp.payload.get("compressionAlgorithm"),
