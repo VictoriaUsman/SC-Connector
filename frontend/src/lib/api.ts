@@ -1,4 +1,4 @@
-import type { Client, Schedule, Job, AdsReportConfigMap, AdsProfile, Event, BotConfig } from "@/types";
+import type { Client, Schedule, Job, AdsReportConfigMap, AdsProfile, SpApiAccount, Event, BotConfig } from "@/types";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 const API_KEY = import.meta.env.VITE_API_KEY || "";
@@ -115,6 +115,9 @@ export const api = {
 
   // Ads profiles
   listAdsProfiles: () => request<AdsProfile[]>("/ads-profiles"),
+
+  // SP-API-connected accounts (with their available Ads profiles)
+  listSpApiAccounts: () => request<SpApiAccount[]>("/sp-api-accounts"),
 
   // Ads report config
   getAdsReportConfig: () => request<AdsReportConfigMap>("/ads-report-config"),

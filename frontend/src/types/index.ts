@@ -216,6 +216,19 @@ export interface AdsProfile {
   _region?: "na" | "eu" | "fe";
 }
 
+export interface SpApiAccount {
+  id: string;
+  name: string;
+  marketplaces: string[];
+  sp_api_connected: boolean;
+  /** Currently saved/linked Ads Profile ID (if any). */
+  ads_profile_id?: string | null;
+  /** Ads Profile ID(s) discovered live via the Ads API listProfiles endpoint. */
+  ads_profiles: AdsProfile[];
+  /** Per-account profile-discovery error, if the lazy fetch failed. */
+  ads_profiles_error?: string | null;
+}
+
 export interface AdsReportColumns {
   dimensions: string[];
   metrics: string[];
