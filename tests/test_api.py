@@ -794,3 +794,62 @@ class TestAdsProfiles:
 
         data = resp.get_json()
         assert data[0]["_linked_client_id"] == "skylight-frame-au"
+
+
+# ---------------------------------------------------------------------------
+# SP API OAuth authorize — client resolution
+# ---------------------------------------------------------------------------
+
+class TestSpApiOAuthAuthorize:
+    _APP_CREDS = {"app_id": "amzn1.sp.app", "client_id": "amzn1.app", "draft": True}
+
+    def test_missing_client_id(self, client):
+        resp = client.get("/oauth/sp-api/authorize")
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_REQUEST"
+
+    def test_unresolvable_client_returns_not_found(self, client):
+        with patch("api.main.resolve_client", return_value=None):
+            resp = client.get("/oauth/sp-api/authorize?client_id=ghost")
+        assert resp.status_code == 404
+        assert resp.get_json()["code"] == "NOT_FOUND"
+
+    def test_matini_resolves_and_redirects_to_consent(self, client):
+        """Matini: previously 'Client not found'; now resolves and redirects."""
+        save_state = MagicMock()
+        with (
+            patch("api.main.resolve_client", return_value={"id": "matini", "name": "Matini"}),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._save_oauth_state", save_state),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=Matini")
+        assert resp.status_code == 302
+        assert "/apps/authorize/consent" in resp.headers["Location"]
+        # State persisted under the canonical resolved id, not the raw param.
+        saved = save_state.call_args[0][1]
+        assert saved["client_id"] == "matini"
+        assert saved["api_source"] == "sp_api"
+
+    def test_ummi_uses_resolved_canonical_id_not_neighbour(self, client):
+        """Ummi must authorize against the Ummi record, never Jack N' Jill."""
+        save_state = MagicMock()
+        with (
+            patch("api.main.resolve_client", return_value={"id": "ummi", "name": "Ummi"}),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._save_oauth_state", save_state),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=Ummi")
+        assert resp.status_code == 302
+        saved = save_state.call_args[0][1]
+        assert saved["client_id"] == "ummi"
+
+    def test_spot_check_existing_client_resolves(self, client):
+        save_state = MagicMock()
+        with (
+            patch("api.main.resolve_client", return_value={"id": "acme", "name": "Acme"}),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._save_oauth_state", save_state),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme&region=na")
+        assert resp.status_code == 302
+        assert save_state.call_args[0][1]["client_id"] == "acme"
