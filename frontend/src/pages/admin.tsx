@@ -31,9 +31,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTableColumnHeader } from "@/components/ui/data-table-column-header";
 import { DataTablePagination } from "@/components/ui/data-table-pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAdsProfiles } from "@/hooks/use-ads-profiles";
-import { MARKETPLACES, type AdsProfile } from "@/types";
-import { RefreshCw, AlertTriangle, Search } from "lucide-react";
+import { useSpApiAccounts } from "@/hooks/use-sp-api-accounts";
+import { api } from "@/lib/api";
+import { MARKETPLACES, type AdsProfile, type SpApiAccount } from "@/types";
+import { RefreshCw, AlertTriangle, Search, CheckCircle2 } from "lucide-react";
+import { toast } from "sonner";
 
 const COUNTRY_FLAG: Record<string, string> = Object.fromEntries(
   MARKETPLACES.map((m) => [m.id, m.flag]),
@@ -300,6 +310,170 @@ function AdsProfilesSection() {
   );
 }
 
+function SpApiAccountRow({
+  account,
+  onConnected,
+}: {
+  account: SpApiAccount;
+  onConnected: () => void;
+}) {
+  const [selected, setSelected] = useState<string>(account.ads_profile_id ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const profiles = account.ads_profiles ?? [];
+  const dirty = !!selected && selected !== (account.ads_profile_id ?? "");
+
+  const handleSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await api.connectManual(account.id, { api_source: "ads_api", profile_id: selected });
+      toast.success(`Ads API connected for ${account.name}`);
+      onConnected();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to connect Ads API");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <TableRow>
+      <TableCell className="font-medium">{account.name}</TableCell>
+      <TableCell className="font-mono text-xs">{account.id}</TableCell>
+      <TableCell>
+        <Badge variant="outline">SP API</Badge>
+      </TableCell>
+      <TableCell>
+        {account.ads_profile_id ? (
+          <span className="inline-flex items-center gap-1.5 text-xs">
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+            <span className="font-mono">{account.ads_profile_id}</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground text-xs">Not connected</span>
+        )}
+      </TableCell>
+      <TableCell>
+        {account.ads_profiles_error ? (
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground" title={account.ads_profiles_error}>
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+            Could not fetch profiles
+          </span>
+        ) : profiles.length === 0 ? (
+          <span className="text-muted-foreground text-xs">No profiles found</span>
+        ) : (
+          <Select value={selected} onValueChange={(v) => v && setSelected(v)}>
+            <SelectTrigger className="h-8 text-xs min-w-[220px]">
+              <SelectValue placeholder="Select Ads Profile ID" />
+            </SelectTrigger>
+            <SelectContent>
+              {profiles.map((p) => (
+                <SelectItem key={p.profileId} value={String(p.profileId)} className="text-xs">
+                  <span className="font-mono">{p.profileId}</span>
+                  {p.countryCode ? ` · ${p.countryCode}` : ""}
+                  {p.accountInfo?.name ? ` · ${p.accountInfo.name}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </TableCell>
+      <TableCell className="text-right">
+        <Button size="sm" onClick={handleSave} disabled={!selected || saving || !dirty}>
+          {saving ? "Saving..." : "Save"}
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function SpApiAccountsSection() {
+  const { data: accounts, isLoading, isError, error, refetch, isFetching } = useSpApiAccounts();
+  const queryClient = useQueryClient();
+
+  const handleRefresh = () => {
+    queryClient.removeQueries({ queryKey: ["sp-api-accounts"] });
+    refetch();
+  };
+
+  const handleConnected = () => {
+    queryClient.invalidateQueries({ queryKey: ["sp-api-accounts"] });
+    queryClient.invalidateQueries({ queryKey: ["clients"] });
+    queryClient.invalidateQueries({ queryKey: ["ads-profiles"] });
+  };
+
+  return (
+    <Card>
+      <CardHeader className="border-b">
+        <div className="flex items-center gap-2">
+          <CardTitle>SP-API Connected Accounts</CardTitle>
+          {accounts && (
+            <Badge variant="secondary" className="tabular-nums">
+              {accounts.length}
+            </Badge>
+          )}
+        </div>
+        <CardDescription>
+          Every account with an active SP-API connection, with its available Ads Profile ID(s).
+          Select a profile and save to connect the Ads API.
+        </CardDescription>
+        <CardAction>
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isFetching}>
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="p-0">
+        {isLoading ? (
+          <LoadingSkeleton />
+        ) : isError ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-12">
+            <AlertTriangle className="h-8 w-8 text-destructive" />
+            <p className="text-sm text-muted-foreground">
+              {(error as Error)?.message || "Failed to load accounts"}
+            </p>
+            <Button variant="outline" size="sm" onClick={handleRefresh}>
+              Retry
+            </Button>
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Account</TableHead>
+                <TableHead>Client ID</TableHead>
+                <TableHead>SP API</TableHead>
+                <TableHead>Connected Ads Profile</TableHead>
+                <TableHead>Available Ads Profile ID(s)</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(accounts?.length ?? 0) === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                    No SP-API-connected accounts found.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                accounts!.map((account) => (
+                  <SpApiAccountRow
+                    key={account.id}
+                    account={account}
+                    onConnected={handleConnected}
+                  />
+                ))
+              )}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function Admin() {
   return (
     <div className="space-y-6">
@@ -307,6 +481,7 @@ export function Admin() {
         <h1 className="text-2xl font-bold tracking-tight">Admin</h1>
         <p className="text-muted-foreground">System tools and diagnostics</p>
       </div>
+      <SpApiAccountsSection />
       <AdsProfilesSection />
     </div>
   );

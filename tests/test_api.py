@@ -797,6 +797,147 @@ class TestAdsProfiles:
 
 
 # ---------------------------------------------------------------------------
+# SP-API-connected accounts listing (Admin page) — with lazy Ads profile fetch
+# ---------------------------------------------------------------------------
+
+class TestSpApiAccounts:
+    _APP_CREDS = {
+        "refresh_token": "rt",
+        "client_id": "amzn1.app",
+        "client_secret": "cs",
+    }
+
+    def _region_get(self, profiles):
+        """requests.get side_effect: NA host returns profiles, others empty."""
+        def _get(url, *_args, **_kwargs):
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = profiles if "advertising-api.amazon.com" in url else []
+            return resp
+        return _get
+
+    def test_lists_sp_api_account_without_ads_profile(self, client):
+        """An SP-API-connected account with NO saved Ads profile still appears,
+        and its available Ads Profile ID(s) are fetched for display."""
+        clients = [
+            {"id": "moxe", "name": "Moxe", "sp_api_secret_name": "kalilos-staging-sp-api-moxe"},
+        ]
+        profiles = [{"profileId": 999, "countryCode": "US"}]
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._read_client_secret", return_value={"refresh_token": "moxe-rt"}),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=self._region_get(profiles)),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 1
+        moxe = data[0]
+        assert moxe["id"] == "moxe"
+        assert moxe["sp_api_connected"] is True
+        # No Ads profile saved yet — the gap the ticket fixes.
+        assert moxe["ads_profile_id"] is None
+        # But its available profile id(s) are fetched for display.
+        assert [p["profileId"] for p in moxe["ads_profiles"]] == [999]
+        assert moxe["ads_profiles_error"] is None
+
+    def test_excludes_accounts_without_sp_api(self, client):
+        """Accounts with no active SP-API connection are not listed."""
+        clients = [
+            {"id": "moxe", "name": "Moxe", "sp_api_secret_name": "kalilos-staging-sp-api-moxe"},
+            {"id": "no-sp", "name": "NoSp"},  # no sp_api_secret_name
+        ]
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._read_client_secret", return_value={"refresh_token": "rt"}),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=self._region_get([])),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        assert resp.status_code == 200
+        ids = {a["id"] for a in resp.get_json()}
+        assert ids == {"moxe"}
+
+    def test_includes_saved_ads_profile_id(self, client):
+        clients = [
+            {
+                "id": "acme",
+                "name": "Acme",
+                "sp_api_secret_name": "kalilos-staging-sp-api-acme",
+                "ads_profile_id": "555",
+            },
+        ]
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._read_client_secret", return_value={"refresh_token": "rt"}),
+            patch("api.main.requests.post", side_effect=_mock_token_post),
+            patch("api.main.requests.get", side_effect=self._region_get([{"profileId": 555, "countryCode": "US"}])),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        data = resp.get_json()
+        assert data[0]["ads_profile_id"] == "555"
+
+    def test_tolerates_per_account_profile_failure(self, client):
+        """If profile discovery fails for an account, it still appears with an
+        error annotation rather than failing the whole listing."""
+        clients = [
+            {"id": "moxe", "name": "Moxe", "sp_api_secret_name": "kalilos-staging-sp-api-moxe"},
+        ]
+
+        def _post_fail(*_args, **_kwargs):
+            raise RuntimeError("token exchange down")
+
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._read_client_secret", return_value={"refresh_token": "rt"}),
+            patch("api.main.requests.post", side_effect=_post_fail),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 1
+        assert data[0]["id"] == "moxe"
+        assert data[0]["ads_profiles"] == []
+        assert "token exchange down" in (data[0]["ads_profiles_error"] or "")
+
+    def test_active_filter_passed_through(self, client):
+        with (
+            patch("api.main.list_clients", return_value=[]) as mock_list,
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+        ):
+            resp = client.get("/sp-api-accounts?active=true")
+        assert resp.status_code == 200
+        mock_list.assert_called_once_with(active_only=True)
+
+    def test_missing_ads_app_credentials_still_lists_accounts(self, client):
+        """If the Ads app credentials can't be read, accounts still list (with an
+        error) so the page is never fully blocked."""
+        clients = [
+            {"id": "moxe", "name": "Moxe", "sp_api_secret_name": "kalilos-staging-sp-api-moxe"},
+        ]
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", side_effect=RuntimeError("no creds")),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data[0]["id"] == "moxe"
+        assert data[0]["ads_profiles"] == []
+        assert data[0]["ads_profiles_error"]
+
+
+# ---------------------------------------------------------------------------
 # SP API OAuth authorize — client resolution
 # ---------------------------------------------------------------------------
 
