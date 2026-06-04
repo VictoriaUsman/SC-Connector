@@ -82,4 +82,24 @@ def create(
             )
             jobs.append(hourly_bot)
 
+        daily_recap_fn = cloud_functions.get("daily-recap")
+        if daily_recap_fn:
+            daily_recap = gcp.cloudscheduler.Job(
+                f"kalilos-{env}-daily-recap",
+                name=f"kalilos-{env}-daily-recap",
+                schedule=kalilos_config.get("daily-recap-cron") or "0 10 * * *",
+                time_zone="UTC",
+                region=region,
+                project=project,
+                http_target=gcp.cloudscheduler.JobHttpTargetArgs(
+                    uri=daily_recap_fn.url,
+                    http_method="POST",
+                    oidc_token=gcp.cloudscheduler.JobHttpTargetOidcTokenArgs(
+                        service_account_email=scheduler_sa.email,
+                    ),
+                ),
+                opts=opts,
+            )
+            jobs.append(daily_recap)
+
     return jobs

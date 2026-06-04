@@ -317,6 +317,9 @@ function BotConfigDialog({
     initial?.marketplaces ?? client.marketplaces ?? [],
   );
   const [enabled, setEnabled] = useState(initial?.hourly_bot?.enabled ?? false);
+  const [dailyRecapEnabled, setDailyRecapEnabled] = useState(
+    initial?.daily_recap_enabled ?? false,
+  );
   const [testChannelId, setTestChannelId] = useState(initial?.test_channel_id ?? "");
   const [useTest, setUseTest] = useState(initial?.use_test_channel ?? false);
 
@@ -339,6 +342,16 @@ function BotConfigDialog({
               <p className="text-xs text-muted-foreground">Posts during active events</p>
             </div>
             <Switch checked={enabled} onCheckedChange={setEnabled} />
+          </div>
+
+          <div className="flex items-center justify-between rounded-md border p-3">
+            <div>
+              <p className="text-sm font-medium">Daily Recap Enabled</p>
+              <p className="text-xs text-muted-foreground">
+                Year-round morning recap of the previous day's account totals
+              </p>
+            </div>
+            <Switch checked={dailyRecapEnabled} onCheckedChange={setDailyRecapEnabled} />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -439,6 +452,7 @@ function BotConfigDialog({
                 client_timezone: tz,
                 marketplaces,
                 hourly_bot: { enabled },
+                daily_recap_enabled: dailyRecapEnabled,
                 test_channel_id: testChannelId,
                 use_test_channel: useTest,
               })

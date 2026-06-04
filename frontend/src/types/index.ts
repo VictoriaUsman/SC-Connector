@@ -275,6 +275,7 @@ export interface BotConfig {
   client_timezone: string;
   marketplaces: string[];
   hourly_bot: { enabled: boolean };
+  daily_recap_enabled?: boolean;
   test_channel_id?: string;
   use_test_channel?: boolean;
   created_at?: string;
