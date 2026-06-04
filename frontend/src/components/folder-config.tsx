@@ -68,6 +68,20 @@ export function FolderConfig({
     onFolderNameChange(sanitized);
   };
 
+  const handleFolderBlur = () => {
+    // Trim each segment so a stray leading/trailing space (e.g. "MTD Ads KPIs ")
+    // can't create a second, visually-identical Drive folder. The preview already
+    // trims for display, so this makes the stored value match what the user sees.
+    const trimmed = folderName
+      .split("/")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join("/");
+    if (trimmed !== folderName) {
+      onFolderNameChange(trimmed);
+    }
+  };
+
   const hasNestedFolders = folderName.includes("/");
 
   return (
@@ -78,6 +92,7 @@ export function FolderConfig({
           placeholder="e.g. WoW Weekly Reports"
           value={folderName}
           onChange={(e) => handleFolderChange(e.target.value)}
+          onBlur={handleFolderBlur}
         />
         {showHint ? (
           <p className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">

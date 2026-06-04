@@ -453,6 +453,32 @@ class TestBuildFolderPath:
         assert folder_id == "report-id"
         assert path == "testem/testy/US/GET_SALES_AND_TRAFFIC_REPORT"
 
+    def test_folder_name_whitespace_is_stripped(self, mock_service):
+        """A folder_name with surrounding whitespace must resolve to the same
+        path as the trimmed name, so "MTD Ads KPIs " and "MTD Ads KPIs" don't
+        create two visually-identical Drive folders."""
+        from shared.drive_client import build_folder_path
+
+        self._setup_find_or_create(mock_service, {
+            "MTD Ads KPIs": "custom-id",
+            "testy": "client-id",
+            "US": "market-id",
+            "GET_SALES_AND_TRAFFIC_REPORT": "report-id",
+        })
+
+        folder_id, path = build_folder_path(
+            root_folder_id="root-id",
+            client_name="testy",
+            marketplace="US",
+            api_source="sp_api",
+            report_type="GET_SALES_AND_TRAFFIC_REPORT",
+            report_date=date(2026, 3, 20),
+            folder_name="  MTD Ads KPIs  ",
+            subfolder_strategy="none",
+        )
+        assert folder_id == "report-id"
+        assert path == "MTD Ads KPIs/testy/US/GET_SALES_AND_TRAFFIC_REPORT"
+
 
 # ---------------------------------------------------------------------------
 # upload_or_replace
