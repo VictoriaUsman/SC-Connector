@@ -100,7 +100,7 @@ def bind_invokers(
         )
 
     # Scheduler SA invokes the scheduler function and event-related functions
-    for fn_name in ("scheduler", "event-report-scheduler", "slack-bot"):
+    for fn_name in ("scheduler", "event-report-scheduler", "slack-bot", "daily-recap"):
         gcp.cloudrunv2.ServiceIamMember(
             f"kalilos-{env}-{fn_name}-fn-invoker",
             name=cloud_functions[fn_name].service_config.service,

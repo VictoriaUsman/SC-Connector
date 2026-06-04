@@ -19,6 +19,7 @@ FUNCTION_DEFS = [
     {"name": "ingest-bigquery",          "source_dir": "ingest_bigquery",          "memory": "512Mi", "timeout": 300, "max_instances": 10},
     {"name": "event-report-scheduler",  "source_dir": "event_report_scheduler",  "memory": "256Mi", "timeout": 120, "max_instances": 1},
     {"name": "slack-bot",               "source_dir": "slack_bot",               "memory": "512Mi", "timeout": 300, "max_instances": 1},
+    {"name": "daily-recap",             "source_dir": "daily_recap",             "memory": "512Mi", "timeout": 300, "max_instances": 1},
 ]
 
 
@@ -90,6 +91,8 @@ def create(
             env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"
             env_vars["WORKFLOW_LOCATION"] = region
         if fn_name == "slack-bot":
+            env_vars["BQ_DATASET"] = f"kalilos_reports_{env}"
+        if fn_name == "daily-recap":
             env_vars["BQ_DATASET"] = f"kalilos_reports_{env}"
 
         fn = gcp.cloudfunctionsv2.Function(
