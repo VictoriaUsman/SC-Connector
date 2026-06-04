@@ -450,6 +450,11 @@ def create_schedule_route():
     data.setdefault("reconciliation_days", [3, 7])
     data.setdefault("report_params", {})
 
+    # Strip stray whitespace so "MTD Ads KPIs " and "MTD Ads KPIs" don't create
+    # two separate (visually-identical) Drive folders.
+    if isinstance(data.get("folder_name"), str):
+        data["folder_name"] = data["folder_name"].strip()
+
     now = datetime.now(timezone.utc)
     data.setdefault("next_run_at", compute_next_run(now, schedule_config))
 
@@ -480,6 +485,9 @@ def update_schedule_route(schedule_id: str):
 
     if "subfolder_strategy" in data and data["subfolder_strategy"] not in VALID_SUBFOLDER_STRATEGIES:
         return flask.jsonify({"error": f"subfolder_strategy must be one of: {sorted(VALID_SUBFOLDER_STRATEGIES)}", "code": "INVALID_REQUEST"}), 400
+
+    if isinstance(data.get("folder_name"), str):
+        data["folder_name"] = data["folder_name"].strip()
 
     if "timeframe" in data:
         tf_error = _validate_timeframe(data["timeframe"])

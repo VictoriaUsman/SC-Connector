@@ -289,12 +289,16 @@ def build_folder_path(
 
     Returns (folder_id, human_readable_path).
     """
+    # Normalize every segment by stripping surrounding whitespace. Drive treats
+    # "MTD Ads KPIs" and "MTD Ads KPIs " as different names, which silently
+    # creates two visually-identical folders (and two Firestore locks). Stray
+    # whitespace in a folder name is never intentional, so we collapse it here.
     parts: list[str] = []
     if folder_name:
-        parts.extend(seg for seg in folder_name.split("/") if seg.strip())
+        parts.extend(seg.strip() for seg in folder_name.split("/") if seg.strip())
     if subfolder_strategy != "none":
         parts.append(report_date.isoformat())
-    parts.extend([client_name, marketplace, report_type])
+    parts.extend(seg.strip() for seg in (client_name, marketplace, report_type) if seg.strip())
 
     current = root_folder_id
     path_so_far: list[str] = []
