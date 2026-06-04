@@ -31,6 +31,48 @@ def get_client(client_id: str) -> dict[str, Any] | None:
     return {"id": doc.id, **doc.to_dict()}
 
 
+def resolve_client(identifier: str) -> dict[str, Any] | None:
+    """Resolve a client from a selected identifier to its canonical record.
+
+    The Connect SP API (OAuth) flow passes a client identifier that must map to
+    exactly one client document. A plain ``get_client`` only matches the exact
+    Firestore document id, which is brittle: an identifier that differs from the
+    stored id by casing/whitespace resolves to nothing ("Client not found"),
+    and any looser matching risks connecting the wrong account.
+
+    Resolution order (first match wins):
+      1. Exact document-id match.
+      2. Case-insensitive document-id match.
+      3. Trimmed, case-insensitive display-name match.
+
+    The fallbacks (2 and 3) only resolve when **exactly one** client matches.
+    Ambiguous matches return ``None`` so the caller never silently authorizes
+    the wrong client.
+    """
+    if not identifier:
+        return None
+
+    exact = get_client(identifier)
+    if exact:
+        return exact
+
+    needle = identifier.strip().casefold()
+    if not needle:
+        return None
+
+    clients = list_clients()
+
+    id_matches = [c for c in clients if str(c.get("id", "")).strip().casefold() == needle]
+    if len(id_matches) == 1:
+        return id_matches[0]
+
+    name_matches = [c for c in clients if str(c.get("name", "")).strip().casefold() == needle]
+    if len(name_matches) == 1:
+        return name_matches[0]
+
+    return None
+
+
 def list_clients(active_only: bool = False) -> list[dict[str, Any]]:
     ref = get_db().collection("clients")
     if active_only:

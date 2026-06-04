@@ -39,6 +39,7 @@ from shared.firestore_utils import (
     list_events,
     list_jobs,
     list_schedules,
+    resolve_client,
     update_event,
     update_schedule,
     upsert_bot_config,
@@ -1094,13 +1095,17 @@ def oauth_sp_api_authorize():
     and optionally version=beta.  No redirect_uri here — Amazon uses the one
     registered in the Developer Application settings.
     """
-    client_id = flask.request.args.get("client_id")
-    if not client_id:
+    requested_client_id = flask.request.args.get("client_id")
+    if not requested_client_id:
         return flask.jsonify({"error": "Missing client_id", "code": "INVALID_REQUEST"}), 400
 
-    client = get_client(client_id)
+    client = resolve_client(requested_client_id)
     if not client:
         return flask.jsonify({"error": "Client not found", "code": "NOT_FOUND"}), 404
+
+    # Always proceed with the resolved client's canonical id so OAuth state and
+    # the credential stored in the callback map to the correct client record.
+    client_id = client["id"]
 
     app_creds = _read_app_secret("sp_api")
     application_id = app_creds.get("app_id", "")
@@ -1121,6 +1126,7 @@ def oauth_sp_api_authorize():
     auth_url = f"{seller_central}/apps/authorize/consent?{urlencode(params)}"
     logger.info("SP API OAuth authorize redirect", extra={
         "client_id": client_id,
+        "requested_client_id": requested_client_id,
         "application_id": application_id,
         "seller_central": seller_central,
         "auth_url": auth_url,
