@@ -76,7 +76,7 @@ export interface Job {
   gdrive_file_id?: string;
   gdrive_folder_id?: string;
   gdrive_path?: string;
-  error_details?: { message?: string; phase?: string };
+  error_details?: { message?: string; phase?: string; code?: string };
   retry_count: number;
   poll_count: number;
   frequency?: string;

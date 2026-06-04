@@ -15,6 +15,7 @@ from google.cloud import firestore
 from shared import ads_api_client, sp_api_client
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import update_job, update_job_status
+from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     marketplace = data.get("marketplace")
     report_id = data.get("report_id")
     job_id = data.get("job_id")
+    report_type = data.get("report_type", "unknown")
 
     if not all([api_source, client_id, marketplace, report_id]):
         return {
@@ -38,7 +40,13 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     try:
         if api_source == "sp_api":
             creds = get_sp_credentials(client_id)
-            result = sp_api_client.get_report(creds, marketplace, report_id)
+            result = sp_api_client.get_report(
+                creds,
+                marketplace,
+                report_id,
+                client_id=client_id,
+                report_type=report_type,
+            )
         elif api_source == "ads_api":
             creds = get_ads_credentials(client_id)
             result = ads_api_client.get_report(creds, marketplace, report_id)
@@ -74,6 +82,23 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             "raw_status": result["raw_status"],
             "download_info": _extract_download_info(api_source, result),
         }, 200
+
+    except SPAPIForbiddenError as exc:
+        logger.error(
+            "SP-API access forbidden at poll_status",
+            extra={**exc.log_context(), "report_id": report_id},
+        )
+        if job_id:
+            update_job_status(
+                job_id,
+                "failed",
+                error_details={
+                    "message": str(exc),
+                    "phase": "poll_status",
+                    "code": "FORBIDDEN",
+                },
+            )
+        return {"error": str(exc), "code": "FORBIDDEN"}, 403
 
     except Exception as exc:
         if is_throttled(exc):

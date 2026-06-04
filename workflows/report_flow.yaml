@@ -16,24 +16,32 @@ main:
                   text: '${"Workflow failed - job=" + args.job_id + " error=" + text.decode(json.encode(e))}'
                   severity: ERROR
             - mark_job_failed:
-                call: http.patch
-                args:
-                  url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + args.job_id + "?updateMask.fieldPaths=status&updateMask.fieldPaths=completed_at&updateMask.fieldPaths=error_details"}'
-                  auth:
-                    type: OAuth2
-                  body:
-                    fields:
-                      status:
-                        stringValue: "failed"
-                      completed_at:
-                        timestampValue: ${time.format(sys.now())}
-                      error_details:
-                        mapValue:
-                          fields:
-                            message:
-                              stringValue: ${text.decode(json.encode(e))}
-                            phase:
-                              stringValue: "workflow_error"
+                switch:
+                  - condition: ${map.get(e, "code") == 403}
+                    next: raise_final
+                  - condition: true
+                    steps:
+                      - patch_job_failed:
+                          call: http.patch
+                          args:
+                            url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + args.job_id + "?updateMask.fieldPaths=status&updateMask.fieldPaths=completed_at&updateMask.fieldPaths=error_details"}'
+                            auth:
+                              type: OAuth2
+                            body:
+                              fields:
+                                status:
+                                  stringValue: "failed"
+                                completed_at:
+                                  timestampValue: ${time.format(sys.now())}
+                                error_details:
+                                  mapValue:
+                                    fields:
+                                      message:
+                                        stringValue: ${text.decode(json.encode(e))}
+                                      phase:
+                                        stringValue: "workflow_error"
+                      - continue_to_raise:
+                          next: raise_final
             - raise_final:
                 raise: ${e}
     - return_result:
@@ -114,6 +122,7 @@ report_pipeline:
               marketplace: ${args.marketplace}
               report_id: ${create_response.body.report_id}
               job_id: ${create_response.body.job_id}
+              report_type: ${args.report_type}
           result: poll_response
         retry:
           predicate: ${non_throttle_retry}
@@ -240,6 +249,8 @@ non_throttle_retry:
         switch:
           - condition: ${e.code == 429}
             return: false
+          - condition: ${e.code == 403}
+            return: true
           - condition: ${e.code >= 500}
             return: true
     - default_no_retry:

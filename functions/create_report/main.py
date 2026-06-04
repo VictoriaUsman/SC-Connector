@@ -18,6 +18,7 @@ from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, get_
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import create_job, update_job_status
 from shared.schedule_compute import marketplace_yesterday
+from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 marketplace=marketplace,
                 report_type=report_type,
                 report_params=report_params or None,
+                client_id=client_id,
             )
         elif api_source == "ads_api":
             creds = get_ads_credentials(client_id)
@@ -113,6 +115,23 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if job_id:
             update_job_status(job_id, "failed", error_details={"message": str(exc), "phase": "create_report"})
         return {"error": str(exc), "code": "VALIDATION_ERROR"}, 400
+
+    except SPAPIForbiddenError as exc:
+        logger.error(
+            "SP-API access forbidden at create_report",
+            extra=exc.log_context(),
+        )
+        if job_id:
+            update_job_status(
+                job_id,
+                "failed",
+                error_details={
+                    "message": str(exc),
+                    "phase": "create_report",
+                    "code": "FORBIDDEN",
+                },
+            )
+        return {"error": str(exc), "code": "FORBIDDEN"}, 403
 
     except Exception as exc:
         if is_throttled(exc):
@@ -163,6 +182,14 @@ def _humanize_create_error(raw: str, report_type: str) -> str:
             f"Amazon cancelled this report. This usually means there is no "
             f"data for the requested date range, or the report type is not "
             f"available for this account/marketplace."
+        )
+
+    if "forbidden" in lower or "access to the resource is forbidden" in lower:
+        return (
+            "SP-API access forbidden: this seller account has not authorized the "
+            "required roles (for Sales & Traffic, grant Selling Partner Insights "
+            "in Seller Central) or the refresh token was revoked. Re-authorize "
+            "the Kalilos app for this client and confirm role access, then retry."
         )
 
     return raw
