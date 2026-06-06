@@ -17,7 +17,7 @@ main:
                   severity: ERROR
             - mark_job_failed:
                 switch:
-                  - condition: ${map.get(e, "code") == 403}
+                  - condition: ${map.get(e, "code") == 403 or map.get(e, "code") == 401}
                     next: raise_final
                   - condition: true
                     steps:
@@ -248,6 +248,8 @@ non_throttle_retry:
     - check_code:
         switch:
           - condition: ${e.code == 429}
+            return: false
+          - condition: ${e.code == 401}
             return: false
           - condition: ${e.code == 403}
             return: true

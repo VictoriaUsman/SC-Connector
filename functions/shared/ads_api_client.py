@@ -15,6 +15,8 @@ from ad_api.api import Reports
 from ad_api.base import Marketplaces
 from ad_api.base.exceptions import AdvertisingApiException
 
+from shared.ads_api_errors import raise_if_ads_profile_unauthorized
+
 logger = logging.getLogger(__name__)
 
 ADS_API_STATUS_MAP = {
@@ -46,11 +48,15 @@ def create_report(
     credentials: dict,
     marketplace: str,
     report_config: dict,
+    *,
+    client_id: str | None = None,
+    report_type: str | None = None,
 ) -> str:
     """Create an async v3 report. Returns the Ads API reportId.
 
     Handles HTTP 425 (duplicate request) by extracting the existing report ID
-    from Amazon's error response and returning it for polling.
+    from Amazon's error response and returning it for polling. Unauthorized 3P
+    profile errors are re-raised as AdsProfileUnauthorizedError (non-retryable).
     """
     try:
         resp = _client(credentials, marketplace).post_report(body=report_config)
@@ -72,12 +78,38 @@ def create_report(
                 "Ads API 425 but could not parse existing report ID",
                 extra={"detail": detail},
             )
+        if client_id:
+            raise_if_ads_profile_unauthorized(
+                exc,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+                profile_id=credentials.get("profile_id"),
+            )
         raise
 
 
-def get_report(credentials: dict, marketplace: str, report_id: str) -> dict:
+def get_report(
+    credentials: dict,
+    marketplace: str,
+    report_id: str,
+    *,
+    client_id: str | None = None,
+    report_type: str | None = None,
+) -> dict:
     """Poll report status. Returns normalized status + download_url when ready."""
-    resp = _client(credentials, marketplace).get_report(reportId=report_id)
+    try:
+        resp = _client(credentials, marketplace).get_report(reportId=report_id)
+    except Exception as exc:
+        if client_id:
+            raise_if_ads_profile_unauthorized(
+                exc,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+                profile_id=credentials.get("profile_id"),
+            )
+        raise
     raw_status = resp.payload["status"]
     return {
         "raw_status": raw_status,
@@ -86,9 +118,27 @@ def get_report(credentials: dict, marketplace: str, report_id: str) -> dict:
     }
 
 
-def download_report(credentials: dict, marketplace: str, download_url: str) -> bytes:
+def download_report(
+    credentials: dict,
+    marketplace: str,
+    download_url: str,
+    *,
+    client_id: str | None = None,
+    report_type: str | None = None,
+) -> bytes:
     """Download and decompress a completed Ads report (always GZIP JSON)."""
-    resp = _client(credentials, marketplace).download_report(url=download_url, format="raw")
+    try:
+        resp = _client(credentials, marketplace).download_report(url=download_url, format="raw")
+    except Exception as exc:
+        if client_id:
+            raise_if_ads_profile_unauthorized(
+                exc,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+                profile_id=credentials.get("profile_id"),
+            )
+        raise
     payload = resp.payload if hasattr(resp, "payload") else resp
     if isinstance(payload, bytes):
         if payload[:2] == b"\x1f\x8b":
