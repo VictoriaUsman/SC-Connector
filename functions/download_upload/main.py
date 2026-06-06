@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 import flask
 
 from shared import ads_api_client, sp_api_client
+from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.firestore_utils import get_client, update_job_status
@@ -54,7 +55,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if api_source == "sp_api":
             content = _download_sp_report(client_id, marketplace, report_type, download_info)
         elif api_source == "ads_api":
-            content = _download_ads_report(client_id, marketplace, download_info)
+            content = _download_ads_report(client_id, marketplace, report_type, download_info)
         else:
             return {"error": f"Unknown api_source: {api_source}", "code": "INVALID_SOURCE"}, 400
 
@@ -162,6 +163,23 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             )
         return {"error": str(exc), "code": "FORBIDDEN"}, 403
 
+    except AdsProfileUnauthorizedError as exc:
+        logger.error(
+            "Ads API unauthorized 3P profile at download_upload",
+            extra={**exc.log_context(), "report_type": report_type},
+        )
+        if job_id:
+            update_job_status(
+                job_id,
+                "failed",
+                error_details={
+                    "message": str(exc),
+                    "phase": "download_upload",
+                    "code": "UNAUTHORIZED",
+                },
+            )
+        return {"error": str(exc), "code": "UNAUTHORIZED"}, 401
+
     except Exception as exc:
         if is_throttled(exc):
             logger.warning("Throttled by Amazon at download_upload", extra={
@@ -203,13 +221,24 @@ def _download_sp_report(
     return sp_api_client.download_report(doc["url"], doc.get("compression"))
 
 
-def _download_ads_report(client_id: str, marketplace: str, download_info: dict) -> bytes:
+def _download_ads_report(
+    client_id: str,
+    marketplace: str,
+    report_type: str,
+    download_info: dict,
+) -> bytes:
     download_url = download_info.get("download_url")
     if not download_url:
         raise ValueError("Missing download_url in download_info")
 
     creds = get_ads_credentials(client_id)
-    return ads_api_client.download_report(creds, marketplace, download_url)
+    return ads_api_client.download_report(
+        creds,
+        marketplace,
+        download_url,
+        client_id=client_id,
+        report_type=report_type,
+    )
 
 
 def _extract_report_dates(api_source: str, report_params: dict) -> tuple[date, date]:
