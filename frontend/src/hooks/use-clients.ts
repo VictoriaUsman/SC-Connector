@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { Client } from "@/types";
+import type { AccountType, Client } from "@/types";
 
 export function useClients() {
   return useQuery({ queryKey: ["clients"], queryFn: () => api.listClients() });
@@ -9,7 +9,7 @@ export function useClients() {
 export function useCreateClient() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { id: string; name: string; marketplaces: string[] }) =>
+    mutationFn: (data: { id: string; name: string; marketplaces: string[]; account_type?: AccountType }) =>
       api.createClient(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["clients"] }),
   });

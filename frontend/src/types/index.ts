@@ -1,8 +1,17 @@
+export type AccountType = "seller" | "vendor";
+
+export const ACCOUNT_TYPES: { value: AccountType; label: string }[] = [
+  { value: "seller", label: "Seller (3P)" },
+  { value: "vendor", label: "Vendor (1P)" },
+];
+
 export interface Client {
   id: string;
   name: string;
   marketplaces: string[];
   is_active: boolean;
+  /** Amazon account model: Seller Central (3P) or Vendor Central (1P). Defaults to "seller". */
+  account_type?: AccountType;
   sp_api_secret_name?: string;
   ads_api_secret_name?: string;
   ads_profile_id?: string;
@@ -184,6 +193,9 @@ export const SP_REPORT_TYPES = [
   "GET_MERCHANT_LISTINGS_DATA",
   "GET_FBA_INVENTORY_PLANNING_DATA",
   "GET_FBA_SNS_PERFORMANCE_DATA",
+  "GET_VENDOR_SALES_REPORT",
+  "GET_VENDOR_TRAFFIC_REPORT",
+  "GET_VENDOR_INVENTORY_REPORT",
 ] as const;
 
 export const ADS_REPORT_TYPES = [

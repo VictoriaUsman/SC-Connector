@@ -1,4 +1,4 @@
-import type { Client, Schedule, Job, AdsReportConfigMap, AdsProfile, SpApiAccount, Event, BotConfig } from "@/types";
+import type { AccountType, Client, Schedule, Job, AdsReportConfigMap, AdsProfile, SpApiAccount, Event, BotConfig } from "@/types";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 const API_KEY = import.meta.env.VITE_API_KEY || "";
@@ -34,7 +34,7 @@ export const api = {
   listClients: (active?: boolean) =>
     request<Client[]>(`/clients${active ? "?active=true" : ""}`),
   getClient: (id: string) => request<Client>(`/clients/${id}`),
-  createClient: (data: { id: string; name: string; marketplaces: string[] }) =>
+  createClient: (data: { id: string; name: string; marketplaces: string[]; account_type?: AccountType }) =>
     request<{ id: string; status: string }>("/clients", {
       method: "POST",
       body: JSON.stringify(data),
