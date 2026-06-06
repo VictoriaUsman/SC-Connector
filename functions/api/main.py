@@ -65,6 +65,11 @@ VALID_API_SOURCES = {"sp_api", "ads_api", "both"}
 VALID_FREQUENCIES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SCHEDULE_TYPES = {"hourly", "daily", "weekly", "monthly"}
 VALID_SUBFOLDER_STRATEGIES = {"date", "none"}
+# Amazon account type. "seller" = Seller Central (3P), "vendor" = Vendor Central (1P).
+# Both authorize via SP-API/LWA and store credentials identically; the type only
+# changes the OAuth consent host and which report surface applies.
+VALID_ACCOUNT_TYPES = {"seller", "vendor"}
+DEFAULT_ACCOUNT_TYPE = "seller"
 
 # A client_id becomes part of GCP Secret Manager resource names
 # ("kalilos-{env}-sp-api-{client_id}"), which only allow [a-zA-Z0-9_-].
@@ -260,6 +265,14 @@ def create_client_route():
             "code": "INVALID_CLIENT_ID",
         }), 400
 
+    account_type = data.get("account_type", DEFAULT_ACCOUNT_TYPE)
+    if account_type not in VALID_ACCOUNT_TYPES:
+        return flask.jsonify({
+            "error": f"account_type must be one of: {sorted(VALID_ACCOUNT_TYPES)}",
+            "code": "INVALID_REQUEST",
+        }), 400
+    data["account_type"] = account_type
+
     upsert_client(client_id, data)
     return flask.jsonify({"id": client_id, "status": "created"}), 201
 
@@ -271,6 +284,11 @@ def update_client_route(client_id: str):
 
     data = flask.request.get_json(silent=True) or {}
     data.pop("id", None)
+    if "account_type" in data and data["account_type"] not in VALID_ACCOUNT_TYPES:
+        return flask.jsonify({
+            "error": f"account_type must be one of: {sorted(VALID_ACCOUNT_TYPES)}",
+            "code": "INVALID_REQUEST",
+        }), 400
     upsert_client(client_id, data)
     return flask.jsonify({"id": client_id, "status": "updated"}), 200
 
@@ -1078,6 +1096,13 @@ SP_API_SELLER_CENTRAL_URLS: dict[str, str] = {
     "eu": "https://sellercentral-europe.amazon.com",
     "fe": "https://sellercentral.amazon.co.jp",
 }
+# Vendor Central authorization hosts (1P). Vendor accounts grant the app from
+# Vendor Central rather than Seller Central; the consent path is identical.
+SP_API_VENDOR_CENTRAL_URLS: dict[str, str] = {
+    "na": "https://vendorcentral.amazon.com",
+    "eu": "https://vendorcentral.amazon.co.uk",
+    "fe": "https://vendorcentral.amazon.co.jp",
+}
 ADS_API_AUTH_URL = "https://www.amazon.com/ap/oa"
 
 _OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes
@@ -1194,10 +1219,20 @@ def oauth_sp_api_authorize():
     application_id = app_creds.get("app_id", "")
 
     region = flask.request.args.get("region", "na")
-    seller_central = SP_API_SELLER_CENTRAL_URLS.get(region, SP_API_SELLER_CENTRAL_URLS["na"])
+    # Vendor (1P) accounts authorize from Vendor Central; sellers from Seller Central.
+    account_type = (client.get("account_type") or DEFAULT_ACCOUNT_TYPE).lower()
+    if account_type == "vendor":
+        central_urls = SP_API_VENDOR_CENTRAL_URLS
+    else:
+        central_urls = SP_API_SELLER_CENTRAL_URLS
+    central = central_urls.get(region, central_urls["na"])
 
     state = secrets.token_urlsafe(32)
-    _save_oauth_state(state, {"client_id": client_id, "api_source": "sp_api"})
+    _save_oauth_state(state, {
+        "client_id": client_id,
+        "api_source": "sp_api",
+        "account_type": account_type,
+    })
 
     params: dict[str, str] = {
         "application_id": application_id,
@@ -1206,12 +1241,13 @@ def oauth_sp_api_authorize():
     if app_creds.get("draft", True):
         params["version"] = "beta"
 
-    auth_url = f"{seller_central}/apps/authorize/consent?{urlencode(params)}"
+    auth_url = f"{central}/apps/authorize/consent?{urlencode(params)}"
     logger.info("SP API OAuth authorize redirect", extra={
         "client_id": client_id,
         "requested_client_id": requested_client_id,
         "application_id": application_id,
-        "seller_central": seller_central,
+        "account_type": account_type,
+        "central": central,
         "auth_url": auth_url,
     })
     return flask.redirect(auth_url)
@@ -1414,6 +1450,7 @@ def oauth_status(client_id: str):
 
     return flask.jsonify({
         "client_id": client_id,
+        "account_type": client.get("account_type", DEFAULT_ACCOUNT_TYPE),
         "sp_api_connected": bool(client.get("sp_api_secret_name")),
         "ads_api_connected": bool(client.get("ads_profile_id")),
     }), 200

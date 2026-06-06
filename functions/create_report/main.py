@@ -20,6 +20,11 @@ from shared.firestore_utils import create_job, update_job_status
 from shared.schedule_compute import marketplace_yesterday
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
+from shared.vendor_reports import (
+    VENDOR_REPORT_DEFAULT_OPTIONS,
+    VENDOR_REPORT_PERIODS,
+    VENDOR_SP_REPORT_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +215,15 @@ def _ensure_sp_report_options(report_type: str, report_params: dict) -> dict:
         opts["reportPeriod"] = period
         logger.info("Auto-set reportPeriod=%s for %s", period, report_type)
 
+    if report_type in VENDOR_SP_REPORT_TYPES:
+        for k, v in VENDOR_REPORT_DEFAULT_OPTIONS.get(report_type, {}).items():
+            opts.setdefault(k, v)
+        if "reportPeriod" not in opts:
+            allowed = VENDOR_REPORT_PERIODS.get(report_type, ["DAY"])
+            period = _infer_period_from_allowed(allowed, report_params)
+            opts["reportPeriod"] = period
+            logger.info("Auto-set reportPeriod=%s for %s", period, report_type)
+
     if report_type == "GET_SALES_AND_TRAFFIC_REPORT":
         for k, v in _SALES_TRAFFIC_DEFAULTS.items():
             opts.setdefault(k, v)
@@ -225,7 +239,11 @@ def _ensure_sp_report_options(report_type: str, report_params: dict) -> dict:
 def _infer_report_period(report_type: str, report_params: dict) -> str:
     """Pick the best reportPeriod based on the date range and allowed periods."""
     allowed = _BRAND_ANALYTICS_REPORT_PERIOD.get(report_type, ["MONTH"])
+    return _infer_period_from_allowed(allowed, report_params)
 
+
+def _infer_period_from_allowed(allowed: list[str], report_params: dict) -> str:
+    """Pick the best reportPeriod from *allowed* based on the date range span."""
     start_str = report_params.get("dataStartTime", "")[:10]
     end_str = report_params.get("dataEndTime", "")[:10]
 

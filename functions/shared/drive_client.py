@@ -11,6 +11,8 @@ from google.cloud import firestore as _firestore_module
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
+from shared.vendor_reports import VENDOR_SP_REPORT_TYPES
+
 logger = logging.getLogger(__name__)
 
 _service = None
@@ -471,6 +473,8 @@ _SP_API_JSON_REPORTS = {
     "GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT",
     "GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT",
     "GET_LEDGER_SUMMARY_VIEW_DATA",
+    # Vendor (1P) reports also return JSON.
+    *VENDOR_SP_REPORT_TYPES,
 }
 
 
