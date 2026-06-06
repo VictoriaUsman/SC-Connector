@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Any
 
+from shared.vendor_reports import VENDOR_REPORT_ARRAY_KEYS
+
 logger = logging.getLogger(__name__)
 
 _SP_API_ARRAY_KEYS: dict[str, list[str]] = {
@@ -24,6 +26,8 @@ _SP_API_ARRAY_KEYS: dict[str, list[str]] = {
     "GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT": ["dataByAsin"],
     "GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT": ["dataByAsin"],
     "GET_LEDGER_SUMMARY_VIEW_DATA": ["ledgerSummaryViewData"],
+    # Vendor (1P) reports return nested JSON — flatten the same way.
+    **VENDOR_REPORT_ARRAY_KEYS,
 }
 
 _SP_PERCENTAGE_SUFFIXES: frozenset[str] = frozenset({

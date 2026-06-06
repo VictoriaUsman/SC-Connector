@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
 from shared.ads_report_config import ADS_REPORT_TYPES
+from shared.vendor_reports import VENDOR_SP_REPORT_TYPES
 
 # ---------------------------------------------------------------------------
 # Report classification
@@ -73,6 +74,10 @@ ALL_SP_REPORT_TYPES = [
 ]
 
 ALL_ADS_REPORT_TYPES = list(ADS_REPORT_TYPES.keys())
+
+# Vendor (1P) reports — require a Vendor Central account, so they live in their
+# own schedule (seeded only when a --vendor-client is supplied).
+ALL_VENDOR_REPORT_TYPES = sorted(VENDOR_SP_REPORT_TYPES)
 
 
 def classify_sp_reports() -> dict[str, list[str]]:
@@ -123,6 +128,7 @@ def _base_schedule(
 def build_test_schedules(
     client_ids: list[str],
     marketplace: str = "US",
+    vendor_client_ids: list[str] | None = None,
 ) -> list[dict]:
     sp = classify_sp_reports()
     schedules: list[dict] = []
@@ -158,6 +164,17 @@ def build_test_schedules(
             marketplace=marketplace,
             timeframe={"strategy": "yesterday"},
             folder_name="test-reports-ads",
+        ))
+
+    if vendor_client_ids and ALL_VENDOR_REPORT_TYPES:
+        schedules.append(_base_schedule(
+            name="Test: Vendor (1P) Reports",
+            client_ids=vendor_client_ids,
+            api_source="sp_api",
+            report_types=ALL_VENDOR_REPORT_TYPES,
+            marketplace=marketplace,
+            timeframe={"strategy": "yesterday"},
+            folder_name="test-reports-vendor",
         ))
 
     return schedules
@@ -220,6 +237,11 @@ def main() -> None:
         help="Client ID to use (must have SP + Ads credentials)",
     )
     parser.add_argument(
+        "--vendor-client",
+        default=None,
+        help="Optional Vendor (1P) client ID to seed a vendor-reports test schedule",
+    )
+    parser.add_argument(
         "--marketplace",
         default="US",
     )
@@ -234,6 +256,7 @@ def main() -> None:
     schedules = build_test_schedules(
         client_ids=[args.client],
         marketplace=args.marketplace,
+        vendor_client_ids=[args.vendor_client] if args.vendor_client else None,
     )
 
     total_reports = sum(len(s["report_types"]) for s in schedules)

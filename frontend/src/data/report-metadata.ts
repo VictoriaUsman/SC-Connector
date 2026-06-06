@@ -629,6 +629,121 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
       },
     ],
   },
+
+  GET_VENDOR_SALES_REPORT: {
+    description: "Vendor (1P) sales by ASIN — ordered (purchase-order demand) and shipped revenue/units",
+    format: "json",
+    columns: [
+      "startDate", "endDate", "asin",
+      "customerReturns",
+      "orderedRevenue.amount", "orderedUnits",
+      "shippedCogs.amount", "shippedRevenue.amount", "shippedUnits",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "DAY", label: "Day" },
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+          { value: "YEAR", label: "Year" },
+        ],
+        default: "DAY",
+      },
+      {
+        key: "distributorView",
+        label: "Distributor View",
+        choices: [
+          { value: "SOURCING", label: "Sourcing" },
+          { value: "MANUFACTURING", label: "Manufacturing" },
+        ],
+        default: ["SOURCING"],
+        multi: true,
+      },
+      {
+        key: "sellingProgram",
+        label: "Selling Program",
+        choices: [
+          { value: "RETAIL", label: "Retail" },
+          { value: "BUSINESS", label: "Business" },
+          { value: "FRESH", label: "Fresh" },
+        ],
+        default: "RETAIL",
+      },
+    ],
+  },
+
+  GET_VENDOR_TRAFFIC_REPORT: {
+    description: "Vendor (1P) ARA traffic & conversion — glance views and conversion per ASIN",
+    format: "json",
+    columns: [
+      "startDate", "endDate", "asin",
+      "glanceViews",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "DAY", label: "Day" },
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+          { value: "YEAR", label: "Year" },
+        ],
+        default: "DAY",
+      },
+    ],
+  },
+
+  GET_VENDOR_INVENTORY_REPORT: {
+    description: "Vendor (1P) inventory health — sellable/unsellable on-hand, aged inventory, net received",
+    format: "json",
+    columns: [
+      "startDate", "endDate", "asin",
+      "netReceivedInventoryCost.amount", "netReceivedInventoryUnits",
+      "openInventoryCost.amount", "openInventoryUnits",
+      "sellableOnHandInventoryCost.amount", "sellableOnHandInventoryUnits",
+      "unsellableOnHandInventoryCost.amount", "unsellableOnHandInventoryUnits",
+      "aged90PlusDaysSellableInventoryCost.amount", "aged90PlusDaysSellableInventoryUnits",
+    ],
+    options: [
+      {
+        key: "reportPeriod",
+        label: "Report Period",
+        choices: [
+          { value: "DAY", label: "Day" },
+          { value: "WEEK", label: "Week" },
+          { value: "MONTH", label: "Month" },
+          { value: "QUARTER", label: "Quarter" },
+          { value: "YEAR", label: "Year" },
+        ],
+        default: "DAY",
+      },
+      {
+        key: "distributorView",
+        label: "Distributor View",
+        choices: [
+          { value: "SOURCING", label: "Sourcing" },
+          { value: "MANUFACTURING", label: "Manufacturing" },
+        ],
+        default: ["SOURCING"],
+        multi: true,
+      },
+      {
+        key: "sellingProgram",
+        label: "Selling Program",
+        choices: [
+          { value: "RETAIL", label: "Retail" },
+          { value: "BUSINESS", label: "Business" },
+          { value: "FRESH", label: "Fresh" },
+        ],
+        default: "RETAIL",
+      },
+    ],
+  },
 };
 
 /**

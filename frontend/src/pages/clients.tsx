@@ -36,8 +36,8 @@ import {
 } from "@/hooks/use-clients";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import { MARKETPLACES, getClientRegions, REGION_LABELS } from "@/types";
-import type { Client } from "@/types";
+import { MARKETPLACES, getClientRegions, REGION_LABELS, ACCOUNT_TYPES } from "@/types";
+import type { Client, AccountType } from "@/types";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Loader2,
@@ -75,6 +75,7 @@ interface ClientFormData {
   id: string;
   name: string;
   marketplaces: string[];
+  account_type: AccountType;
   sp_refresh_token?: string;
   ads_profile_id?: string;
 }
@@ -96,6 +97,9 @@ function ClientForm({
   const [selected, setSelected] = useState<Set<string>>(
     new Set(initial?.marketplaces ?? []),
   );
+  const [accountType, setAccountType] = useState<AccountType>(
+    initial?.account_type ?? "seller",
+  );
   const [spToken, setSpToken] = useState("");
   const [adsProfileId, setAdsProfileId] = useState("");
 
@@ -114,6 +118,7 @@ function ClientForm({
           id,
           name,
           marketplaces: [...selected],
+          account_type: accountType,
           ...(spToken.trim() && { sp_refresh_token: spToken.trim() }),
           ...(adsProfileId.trim() && { ads_profile_id: adsProfileId.trim() }),
         });
@@ -145,6 +150,28 @@ function ClientForm({
         />
         <p className="text-xs text-muted-foreground">
           Shown in schedules, reports, and Drive folder names.
+        </p>
+      </div>
+      <div className="space-y-2">
+        <Label>Account Type</Label>
+        <div className="flex flex-wrap gap-2">
+          {ACCOUNT_TYPES.map((at) => (
+            <button
+              key={at.value}
+              type="button"
+              onClick={() => setAccountType(at.value)}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                accountType === at.value
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border text-muted-foreground hover:border-primary/50"
+              }`}
+            >
+              {at.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Seller Central (3P) or Vendor Central (1P). Vendor accounts authorize from Vendor Central and expose vendor reports.
         </p>
       </div>
       <div className="space-y-2">
@@ -439,7 +466,17 @@ export function Clients() {
               <TableBody>
                 {clients.map((client) => (
                   <TableRow key={client.id}>
-                    <TableCell className="font-medium">{client.name}</TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        {client.name}
+                        <Badge
+                          variant={client.account_type === "vendor" ? "default" : "outline"}
+                          className="text-[10px] uppercase tracking-wide"
+                        >
+                          {client.account_type === "vendor" ? "Vendor" : "Seller"}
+                        </Badge>
+                      </div>
+                    </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
                       {client.id}
                     </TableCell>

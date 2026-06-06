@@ -161,6 +161,41 @@ class TestClients:
         assert resp.get_json()["id"] == "the-home-office"
         mock.assert_called_once()
 
+    def test_create_client_defaults_to_seller(self, client):
+        with patch("api.main.upsert_client") as mock:
+            resp = client.post("/clients", json={"id": "acme", "name": "Acme"})
+        assert resp.status_code == 201
+        assert mock.call_args[0][1]["account_type"] == "seller"
+
+    def test_create_client_vendor_account_type(self, client):
+        with patch("api.main.upsert_client") as mock:
+            resp = client.post(
+                "/clients",
+                json={"id": "acme-1p", "name": "Acme Vendor", "account_type": "vendor"},
+            )
+        assert resp.status_code == 201
+        assert mock.call_args[0][1]["account_type"] == "vendor"
+
+    def test_create_client_invalid_account_type_rejected(self, client):
+        with patch("api.main.upsert_client") as mock:
+            resp = client.post(
+                "/clients",
+                json={"id": "acme", "name": "Acme", "account_type": "reseller"},
+            )
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_REQUEST"
+        mock.assert_not_called()
+
+    def test_update_client_invalid_account_type_rejected(self, client):
+        with (
+            patch("api.main.get_client", return_value={"id": "acme", "name": "Acme"}),
+            patch("api.main.upsert_client") as mock,
+        ):
+            resp = client.put("/clients/acme", json={"account_type": "bogus"})
+        assert resp.status_code == 400
+        assert resp.get_json()["code"] == "INVALID_REQUEST"
+        mock.assert_not_called()
+
     def test_connect_rejects_both(self, client):
         with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
             resp = client.post("/clients/c1/connect", json={"api_source": "both"})
@@ -994,3 +1029,33 @@ class TestSpApiOAuthAuthorize:
             resp = client.get("/oauth/sp-api/authorize?client_id=acme&region=na")
         assert resp.status_code == 302
         assert save_state.call_args[0][1]["client_id"] == "acme"
+
+    def test_seller_redirects_to_seller_central(self, client):
+        save_state = MagicMock()
+        with (
+            patch("api.main.resolve_client", return_value={"id": "acme", "name": "Acme"}),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._save_oauth_state", save_state),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme&region=na")
+        assert resp.status_code == 302
+        assert "sellercentral.amazon.com" in resp.headers["Location"]
+        assert save_state.call_args[0][1]["account_type"] == "seller"
+
+    def test_vendor_redirects_to_vendor_central(self, client):
+        """A Vendor (1P) client authorizes from Vendor Central, not Seller Central."""
+        save_state = MagicMock()
+        with (
+            patch(
+                "api.main.resolve_client",
+                return_value={"id": "acme-1p", "name": "Acme Vendor", "account_type": "vendor"},
+            ),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._save_oauth_state", save_state),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme-1p&region=na")
+        assert resp.status_code == 302
+        loc = resp.headers["Location"]
+        assert "vendorcentral.amazon.com" in loc
+        assert "/apps/authorize/consent" in loc
+        assert save_state.call_args[0][1]["account_type"] == "vendor"

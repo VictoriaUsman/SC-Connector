@@ -194,6 +194,29 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
       },
     ],
   },
+  {
+    label: "Vendor (1P)",
+    reports: [
+      {
+        id: "GET_VENDOR_SALES_REPORT",
+        label: "Vendor Sales",
+        description: "Vendor sales by ASIN: ordered (purchase-order demand) and shipped revenue/units",
+        constraint: "Vendor Central (1P) accounts only. Use distributorView SOURCING and/or MANUFACTURING for both views.",
+      },
+      {
+        id: "GET_VENDOR_TRAFFIC_REPORT",
+        label: "Vendor Traffic (ARA)",
+        description: "Vendor ARA traffic & conversion: glance views and conversion metrics per ASIN",
+        constraint: "Vendor Central (1P) accounts only.",
+      },
+      {
+        id: "GET_VENDOR_INVENTORY_REPORT",
+        label: "Vendor Inventory Health",
+        description: "Vendor inventory health: sellable/unsellable on-hand, aged inventory, and net received units",
+        constraint: "Vendor Central (1P) accounts only. Use distributorView SOURCING and/or MANUFACTURING for both views.",
+      },
+    ],
+  },
 ];
 
 export const ADS_REPORT_CATEGORIES: ReportCategory[] = [
