@@ -67,6 +67,7 @@ def create(
         env_vars: dict[str, str] = {
             "GCP_PROJECT": project,
             "ENVIRONMENT": env,
+            "LOG_LEVEL": config.get("log-level") or "INFO",
         }
         if fn_name in ("scheduler", "api"):
             env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"

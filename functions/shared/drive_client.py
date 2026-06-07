@@ -345,8 +345,13 @@ def _assert_no_duplicates(name: str, folder_id: str, path_so_far: list[str]) -> 
 
         if folder_id != winner:
             logger.warning("[dedup-guard] Switched from %s to winner %s for '%s'", folder_id, winner, name)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Best-effort guard: never fail the upload over dedup, but don't swallow
+        # silently either - a recurring warning here is a real Drive/API problem.
+        logger.warning(
+            "[dedup-guard] Duplicate check failed (non-fatal)",
+            extra={"folder_id": folder_id, "folder_name": name, "error": str(exc)[:200]},
+        )
 
 
 # ---------------------------------------------------------------------------

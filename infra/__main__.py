@@ -12,7 +12,7 @@ Resource creation order:
 
 import pulumi
 
-from resources import apis, iam, firestore, secrets, storage, bigquery, functions, workflow, scheduler, mcp_server
+from resources import apis, iam, firestore, secrets, storage, bigquery, functions, workflow, scheduler, mcp_server, monitoring
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -73,6 +73,11 @@ iam.bind_invokers(env, project, region, fns, sas)
 # 8. MCP Server (Cloud Run)
 # ---------------------------------------------------------------------------
 mcp_service = mcp_server.create(env, project, region, fns["api"], enabled_apis)
+
+# ---------------------------------------------------------------------------
+# 9. Cloud Monitoring (log-based error metric + alerts + /health uptime check)
+# ---------------------------------------------------------------------------
+monitoring_resources = monitoring.create(env, project, fns["api"], kalilos_config, enabled_apis)
 
 # ---------------------------------------------------------------------------
 # Exports

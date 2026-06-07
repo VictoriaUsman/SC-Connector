@@ -16,10 +16,12 @@ from shared import ads_api_client, sp_api_client
 from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import update_job, update_job_status
+from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
+init_logging("poll-status")
 
 
 def handler(request: flask.Request) -> tuple[dict, int]:
@@ -37,6 +39,16 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             "error": "Missing required fields: api_source, client_id, marketplace, report_id",
             "code": "INVALID_REQUEST",
         }, 400
+
+    clear_log_context()
+    bind_log_context(
+        job_id=job_id,
+        client_id=client_id,
+        api_source=api_source,
+        marketplace=marketplace,
+        report_type=report_type,
+        phase="poll_status",
+    )
 
     try:
         if api_source == "sp_api":

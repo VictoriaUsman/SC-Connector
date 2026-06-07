@@ -24,10 +24,12 @@ from shared.firestore_utils import (
     list_due_schedules,
     update_schedule_run_times,
 )
+from shared.logging_setup import init_logging
 from shared.schedule_compute import compute_next_run
 from shared.workflow_launcher import client_has_credentials, get_workflow_parent, launch_for_marketplace
 
 logger = logging.getLogger(__name__)
+init_logging("scheduler")
 
 MAX_EXECUTIONS_PER_CLIENT = 10
 
@@ -98,11 +100,17 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         except Exception:
             logger.exception("Failed to update schedule run times", extra={"schedule_id": sched["id"]})
 
-    logger.info(
-        "Scheduler run complete",
-        extra={"launched": launched, "skipped": skipped, "errors": len(errors)},
-    )
-    return {"status": "ok", "launched": launched, "skipped": skipped, "errors": len(errors)}, 200
+    run_summary = {"launched": launched, "skipped": skipped, "errors": len(errors)}
+    if errors:
+        # Returns HTTP 200 (the run itself succeeded) but per-schedule failures
+        # must not be silent: emit a single ERROR so alerting + the agent see it.
+        logger.error(
+            "Scheduler run completed with errors",
+            extra={**run_summary, "error_code": "PARTIAL_FAILURE", "failures": errors[:20]},
+        )
+    else:
+        logger.info("Scheduler run complete", extra=run_summary)
+    return {"status": "ok", **run_summary}, 200
 
 
 def _get_client_ids(schedule: dict[str, Any]) -> list[str]:

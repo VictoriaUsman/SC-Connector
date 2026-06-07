@@ -20,8 +20,10 @@ from google.cloud import bigquery
 
 from shared.bq_schemas import ColumnMapping, TableSchema, cast_value, get_table_schema
 from shared.drive_client import get_service as get_drive_service
+from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 
 logger = logging.getLogger(__name__)
+init_logging("ingest-bigquery")
 
 _bq_client: bigquery.Client | None = None
 
@@ -47,6 +49,16 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
     if not all([report_type, api_source, client_id, marketplace, gdrive_file_id]):
         return {"error": "Missing required fields", "code": "INVALID_REQUEST"}, 400
+
+    clear_log_context()
+    bind_log_context(
+        job_id=job_id,
+        client_id=client_id,
+        api_source=api_source,
+        marketplace=marketplace,
+        report_type=report_type,
+        phase="ingest_bigquery",
+    )
 
     schema = get_table_schema(report_type, api_source)
     if schema is None:

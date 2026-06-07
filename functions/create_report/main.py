@@ -18,6 +18,7 @@ from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, get_all_columns
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import create_job, update_job_status
+from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.schedule_compute import marketplace_yesterday
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
@@ -28,6 +29,7 @@ from shared.vendor_reports import (
 )
 
 logger = logging.getLogger(__name__)
+init_logging("create-report")
 
 _BRAND_ANALYTICS_REPORT_PERIOD: dict[str, list[str]] = {
     "GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT": ["DAY", "WEEK", "MONTH", "QUARTER"],
@@ -63,6 +65,16 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     schedule_id = data.get("schedule_id")
     frequency = data.get("frequency", "on_demand")
 
+    clear_log_context()
+    bind_log_context(
+        job_id=job_id,
+        client_id=client_id,
+        api_source=api_source,
+        report_type=report_type,
+        marketplace=marketplace,
+        phase="create_report",
+    )
+
     try:
         if not job_id:
             job_id = create_job({
@@ -73,6 +85,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "schedule_id": schedule_id,
                 "frequency": frequency,
             })
+            bind_log_context(job_id=job_id)
         update_job_status(job_id, "requesting")
 
         if api_source == "sp_api":

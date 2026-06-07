@@ -404,6 +404,53 @@ Production requires an interactive confirmation prompt.
 
 This project does **not** use Coralogix or any external log aggregator. All logs live in **GCP Cloud Logging** and **Firestore**.
 
+### Log contract (structured logging)
+
+Every Cloud Function and the report workflow emit **structured JSON** logs (set up
+by `functions/shared/logging_setup.py`; the workflow uses `sys.log(json=...)`).
+Each line lands in Cloud Logging as `jsonPayload` with a **stable set of fields**,
+so you filter by field (e.g. `jsonPayload.job_id="..."`) instead of grepping text.
+A correlated request/execution shares one `request_id` (API) or `job_id`
+(pipeline), so a single filter returns the whole story.
+
+| Field (`jsonPayload.*`) | Meaning |
+|---|---|
+| `severity` | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` (top-level LogEntry severity) |
+| `message` | Human-readable log message |
+| `component` | Emitter: function name (`create-report`, `api`, ...) or `report-flow` |
+| `phase` | Pipeline stage: `create_report`, `poll_status`, `download_upload`, `ingest_bigquery`, `workflow_error`, `report_failed`, `poll_timeout` |
+| `job_id` | Firestore job id — the primary correlation key across functions + workflow |
+| `request_id` | Per-API-request id (also returned in the `X-Request-Id` response header) |
+| `client_id` | Client slug |
+| `api_source` | `sp_api` or `ads_api` |
+| `report_type` | Amazon report type |
+| `marketplace` | Marketplace code (`US`, `UK`, ...) |
+| `error_code` / `error_type` | Classification on failure logs |
+
+When adding logs, keep these names stable and pass context via
+`logger.info("msg", extra={"job_id": job_id, ...})` (it is flattened into
+`jsonPayload` automatically). Per-request/job correlation ids are bound once at
+the entrypoint via `bind_log_context(...)`. Log level is controlled by the
+`LOG_LEVEL` env var (Pulumi config `kalilos:log-level`, default `INFO`).
+
+### Alerting, health & config
+
+Cloud Monitoring is provisioned by `infra/resources/monitoring.py` (kept lean):
+- **Error-log alert** — fires when ERROR+ logs across functions + workflow exceed
+  a threshold in 5 min (log-based metric `kalilos-{env}-error-logs`).
+- **Uptime + alert** — an uptime check hits the API `/health` every 5 min and
+  alerts when it fails.
+- Notifications go to the email in Pulumi config `kalilos:alert-email` (unset =
+  policies exist but stay silent).
+
+Health endpoints on the API function:
+- `GET /health` — cheap static liveness (used by the uptime check).
+- `GET /health?deep=1` — readiness; verifies Firestore reachability, returns 503
+  if degraded. `make health` probes both after deploy.
+
+Optional Pulumi config keys (set with `pulumi config set kalilos:<key> <val>`):
+`log-level` (default `INFO`), `alert-email`, `alert-error-threshold` (default `5`).
+
 ### Querying Cloud Function logs
 
 ```bash
@@ -412,8 +459,18 @@ gcloud logging read \
   'resource.type="cloud_run_revision" AND resource.labels.service_name="kalilos-staging-create-report" AND severity>=ERROR AND timestamp>="2026-04-08T10:00:00Z"' \
   --project=kalilos-connector-staging --limit=20 --format=json
 
+# Everything about one job across all functions + the workflow (the fast path)
+gcloud logging read \
+  'jsonPayload.job_id="JOB_ID_HERE"' \
+  --project=kalilos-connector-staging --limit=50 --format=json --order=asc
+
+# One API request end to end
+gcloud logging read 'jsonPayload.request_id="REQUEST_ID_HERE"' \
+  --project=kalilos-connector-staging --limit=50 --format=json
+
 # All function names follow: kalilos-{env}-{function}
-# Functions: auth, create-report, poll-status, download-upload, scheduler, api
+# Functions: auth, create-report, poll-status, download-upload, scheduler, api,
+#            ingest-bigquery, event-report-scheduler, slack-bot, daily-recap
 ```
 
 ### Querying Cloud Workflow logs
@@ -424,22 +481,23 @@ gcloud logging read \
   'resource.type="workflows.googleapis.com/Workflow" AND severity>=ERROR AND timestamp>="2026-04-08T10:00:00Z"' \
   --project=kalilos-connector-staging --limit=20 --format=json
 
-# Workflow INFO logs (poll status, completion, report IDs)
+# A specific workflow phase for one job (structured)
 gcloud logging read \
-  'resource.type="workflows.googleapis.com/Workflow" AND severity=INFO AND timestamp>="2026-04-08T10:00:00Z"' \
-  --project=kalilos-connector-staging --limit=20 --format=json
+  'resource.type="workflows.googleapis.com/Workflow" AND jsonPayload.job_id="JOB_ID_HERE"' \
+  --project=kalilos-connector-staging --limit=50 --format=json --order=asc
 ```
 
 ### Searching for specific errors
 
 ```bash
-# Find specific error types (FATAL, invalid columns, throttled, etc.)
+# A failed report's raw Amazon status (structured field)
 gcloud logging read \
-  'resource.type="workflows.googleapis.com/Workflow" AND textPayload:"FATAL"' \
+  'resource.type="workflows.googleapis.com/Workflow" AND jsonPayload.phase="report_failed" AND jsonPayload.raw_status="FATAL"' \
   --project=kalilos-connector-staging --limit=10 --format=json
 
+# Free-text fallback still works for messages/errors
 gcloud logging read \
-  'resource.type="workflows.googleapis.com/Workflow" AND textPayload:"invalid values"' \
+  'resource.type="workflows.googleapis.com/Workflow" AND jsonPayload.error:"invalid values"' \
   --project=kalilos-connector-staging --limit=10 --format=json
 ```
 
@@ -461,11 +519,12 @@ if doc.exists:
 
 | What you see | Where to look | Log filter |
 |---|---|---|
-| Job stuck in "Pending" | Workflow errors | `textPayload:"Workflow failed"` |
-| "Report generation failed: FATAL" | Workflow + poll_status | `textPayload:"FATAL"` — usually means Amazon has no data or account lacks access |
-| "invalid values" (Ads API columns) | Workflow errors | `textPayload:"invalid values"` — check `ads_report_config.py` |
-| "Throttled" / "QuotaExceeded" | Workflow errors | `textPayload:"Throttled" OR textPayload:"QuotaExceeded"` — retry later |
-| Job shows "failed" but no error | Global error handler | Check workflow logs for the `job_id` — the error is in the Firestore `error_details` field |
+| Job stuck in "Pending" | Workflow errors | `jsonPayload.phase="workflow_error"` |
+| "Report generation failed: FATAL" | Workflow | `jsonPayload.phase="report_failed" AND jsonPayload.raw_status="FATAL"` — Amazon has no data or account lacks access |
+| "invalid values" (Ads API columns) | Workflow + create-report | `jsonPayload.error:"invalid values"` — check `ads_report_config.py` |
+| Throttling | create-report / workflow | `jsonPayload.error_code="THROTTLED" OR jsonPayload.phase="throttle"` — retry later |
+| BQ ingestion failed | Workflow | `jsonPayload.phase="ingest_bigquery" AND severity>=ERROR` — report still delivered to Drive; job stays `status="completed"` but gets `ingest_status="failed"` + `ingest_error` in Firestore |
+| Job shows "failed" but no error | Global error handler | `jsonPayload.job_id="<id>"` across functions + workflow; full error also in the Firestore `error_details` field |
 
 ### Dashboard error display
 

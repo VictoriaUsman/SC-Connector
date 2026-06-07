@@ -21,6 +21,13 @@ import requests
 from google.cloud import secretmanager
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, TIME_UNITS, get_report_defaults
 from shared.config import ADS_API_ENDPOINTS, LWA_TOKEN_URL, get_environment, get_project
+from shared.logging_setup import (
+    bind_log_context,
+    clear_log_context,
+    init_logging,
+    new_request_id,
+    trace_from_cloud_header,
+)
 from shared.schedule_compute import VALID_TIMEFRAME_STRATEGIES, compute_next_run, marketplace_today
 from shared.firestore_utils import (
     create_event,
@@ -58,6 +65,7 @@ from shared.workflow_launcher import (
 )
 
 logger = logging.getLogger(__name__)
+init_logging("api")
 
 app = flask.Flask(__name__)
 
@@ -174,6 +182,45 @@ def _add_cors(response: flask.Response) -> flask.Response:
 
 
 @app.before_request
+def _bind_correlation():
+    """Start every request with a clean, correlated logging context.
+
+    A reused (warm) instance must not leak the previous request's ids, so we
+    reset first. We honour an inbound ``X-Request-Id`` (or mint one) and pull the
+    GCP trace id from ``X-Cloud-Trace-Context`` so all of a request's log lines
+    group together and can be found with a single filter.
+    """
+    clear_log_context()
+    request_id = flask.request.headers.get("X-Request-Id") or new_request_id()
+    trace, span_id = trace_from_cloud_header(
+        flask.request.headers.get("X-Cloud-Trace-Context"), get_project()
+    )
+    flask.g.request_id = request_id
+    bind_log_context(
+        request_id=request_id,
+        trace=trace,
+        span_id=span_id,
+        method=flask.request.method,
+        path=flask.request.path,
+    )
+
+
+@app.after_request
+def _echo_request_id(response: flask.Response) -> flask.Response:
+    """Return the request id so callers (and the agent) can correlate a response
+    to its server-side logs."""
+    request_id = getattr(flask.g, "request_id", None)
+    if request_id:
+        response.headers["X-Request-Id"] = request_id
+    return response
+
+
+@app.teardown_request
+def _clear_correlation(_exc: BaseException | None = None) -> None:
+    clear_log_context()
+
+
+@app.before_request
 def _handle_preflight():
     if flask.request.method == "OPTIONS":
         return "", 204
@@ -227,7 +274,29 @@ def _internal_error(e: Exception):
 @app.route("/", methods=["GET"])
 @app.route("/health", methods=["GET"])
 def health():
-    return flask.jsonify({"status": "ok"}), 200
+    """Liveness by default; readiness (dependency checks) with ``?deep=1``.
+
+    The default path stays a cheap static ``ok`` (used by the uptime check). The
+    deep variant verifies Firestore reachability and returns 503 if degraded, so
+    a broken dependency surfaces instead of a green-but-broken service.
+    """
+    if flask.request.args.get("deep") != "1":
+        return flask.jsonify({"status": "ok"}), 200
+
+    checks: dict[str, str] = {}
+    healthy = True
+    try:
+        from shared.firestore_utils import get_db
+        list(get_db().collection("clients").limit(1).stream())
+        checks["firestore"] = "ok"
+    except Exception as exc:
+        healthy = False
+        checks["firestore"] = f"error: {str(exc)[:120]}"
+
+    return flask.jsonify({
+        "status": "ok" if healthy else "degraded",
+        "checks": checks,
+    }), (200 if healthy else 503)
 
 
 # ---------------------------------------------------------------------------

@@ -20,11 +20,13 @@ from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.firestore_utils import get_client, update_job_status
+from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.report_converter import maybe_convert_to_tsv
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
 
 logger = logging.getLogger(__name__)
+init_logging("download-upload")
 
 
 def handler(request: flask.Request) -> tuple[dict, int]:
@@ -47,6 +49,16 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             "error": "Missing required fields: api_source, client_id, marketplace, report_type",
             "code": "INVALID_REQUEST",
         }, 400
+
+    clear_log_context()
+    bind_log_context(
+        job_id=job_id,
+        client_id=client_id,
+        api_source=api_source,
+        marketplace=marketplace,
+        report_type=report_type,
+        phase="download_upload",
+    )
 
     try:
         if job_id:

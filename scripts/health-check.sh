@@ -65,13 +65,28 @@ WORKFLOW_NAME="kalilos-${STACK}-report-flow"
 check "Cloud Workflow '$WORKFLOW_NAME' is deployed" \
   gcloud workflows describe "$WORKFLOW_NAME" --project="$GCP_PROJECT" --location="$GCP_REGION"
 
-# 6. Cloud Functions
-EXPECTED_FUNCTIONS=("auth" "scheduler" "create-report" "poll-status" "download-upload" "api")
+# 6. Cloud Functions (all deployed functions — keep in sync with infra FUNCTION_DEFS)
+EXPECTED_FUNCTIONS=(
+  "auth" "scheduler" "create-report" "poll-status" "download-upload" "api"
+  "ingest-bigquery" "event-report-scheduler" "slack-bot" "daily-recap"
+)
 for fn in "${EXPECTED_FUNCTIONS[@]}"; do
   FULL_NAME="kalilos-${STACK}-${fn}"
   check "Cloud Function '$FULL_NAME' is active" \
     gcloud functions describe "$FULL_NAME" --project="$GCP_PROJECT" --region="$GCP_REGION" --gen2
 done
+
+# 6b. API actually responds over HTTP (deploy can "pass" while the app is broken)
+API_URL="$(pulumi stack output api_url 2>/dev/null || true)"
+if [[ -n "$API_URL" ]]; then
+  check "API /health responds 200" \
+    bash -c "curl -fsS --max-time 15 -o /dev/null '${API_URL%/}/health'"
+  check "API /health?deep=1 readiness (Firestore reachable)" \
+    bash -c "curl -fsS --max-time 20 -o /dev/null '${API_URL%/}/health?deep=1'"
+else
+  CHECKS+=("  ✗  API /health responds 200 (could not resolve api_url)")
+  ((FAIL++))
+fi
 
 # 7. Google Drive folder
 ENV_FILE="$PROJECT_ROOT/.env.$STACK"

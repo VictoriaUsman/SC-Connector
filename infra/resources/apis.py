@@ -15,6 +15,7 @@ REQUIRED_APIS = [
     "storage.googleapis.com",
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
+    "monitoring.googleapis.com",
 ]
 
 

@@ -13,7 +13,12 @@ main:
             - log_global_error:
                 call: sys.log
                 args:
-                  text: '${"Workflow failed - job=" + args.job_id + " error=" + text.decode(json.encode(e))}'
+                  json:
+                    component: "report-flow"
+                    phase: "workflow_error"
+                    message: "Workflow failed"
+                    job_id: ${args.job_id}
+                    error: ${text.decode(json.encode(e))}
                   severity: ERROR
             - mark_job_failed:
                 switch:
@@ -59,7 +64,15 @@ report_pipeline:
     - log_start:
         call: sys.log
         args:
-          text: '${"Report flow started - client=" + args.client_id + " api=" + args.api_source + " type=" + args.report_type + " market=" + args.marketplace}'
+          json:
+            component: "report-flow"
+            phase: "start"
+            message: "Report flow started"
+            job_id: ${map.get(args, "job_id")}
+            client_id: ${args.client_id}
+            api_source: ${args.api_source}
+            report_type: ${args.report_type}
+            marketplace: ${args.marketplace}
           severity: INFO
 
     - authenticate:
@@ -144,7 +157,17 @@ report_pipeline:
     - log_poll:
         call: sys.log
         args:
-          text: '${"Poll " + string(poll_count) + " status=" + poll_response.body.report_status + " raw=" + poll_response.body.raw_status}'
+          json:
+            component: "report-flow"
+            phase: "poll_status"
+            message: "Poll status"
+            job_id: ${create_response.body.job_id}
+            client_id: ${args.client_id}
+            report_type: ${args.report_type}
+            marketplace: ${args.marketplace}
+            poll_count: ${poll_count}
+            report_status: ${poll_response.body.report_status}
+            raw_status: ${poll_response.body.raw_status}
           severity: INFO
 
     - check_status:
@@ -205,13 +228,45 @@ report_pipeline:
             - log_ingest_error:
                 call: sys.log
                 args:
-                  text: '${"BQ ingestion failed (non-fatal) - job=" + create_response.body.job_id + " error=" + text.decode(json.encode(ingest_error))}'
-                  severity: WARNING
+                  json:
+                    component: "report-flow"
+                    phase: "ingest_bigquery"
+                    error_type: "ingest_error"
+                    message: "BQ ingestion failed (report delivered to Drive, not loaded to BigQuery)"
+                    job_id: ${create_response.body.job_id}
+                    client_id: ${args.client_id}
+                    report_type: ${args.report_type}
+                    marketplace: ${args.marketplace}
+                    error: ${text.decode(json.encode(ingest_error))}
+                  severity: ERROR
+            - mark_ingest_failed:
+                # The job is already "completed" (delivered to Drive); record the
+                # ingestion failure on a dedicated sub-status field so it is
+                # queryable without breaking the completed/failed state machine.
+                call: http.patch
+                args:
+                  url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + create_response.body.job_id + "?updateMask.fieldPaths=ingest_status&updateMask.fieldPaths=ingest_error"}'
+                  auth:
+                    type: OAuth2
+                  body:
+                    fields:
+                      ingest_status:
+                        stringValue: "failed"
+                      ingest_error:
+                        stringValue: ${text.decode(json.encode(ingest_error))}
 
     - log_complete:
         call: sys.log
         args:
-          text: '${"Report flow complete - job=" + create_response.body.job_id + " drive=" + download_response.body.drive_file_id}'
+          json:
+            component: "report-flow"
+            phase: "complete"
+            message: "Report flow complete"
+            job_id: ${create_response.body.job_id}
+            client_id: ${args.client_id}
+            report_type: ${args.report_type}
+            marketplace: ${args.marketplace}
+            drive_file_id: ${download_response.body.drive_file_id}
           severity: INFO
 
     - return_result:
@@ -227,7 +282,15 @@ report_pipeline:
           - log_report_failed:
               call: sys.log
               args:
-                text: '${"Report failed - job=" + create_response.body.job_id + " status=" + poll_response.body.raw_status}'
+                json:
+                  component: "report-flow"
+                  phase: "report_failed"
+                  message: "Report failed"
+                  job_id: ${create_response.body.job_id}
+                  client_id: ${args.client_id}
+                  report_type: ${args.report_type}
+                  marketplace: ${args.marketplace}
+                  raw_status: ${poll_response.body.raw_status}
                 severity: ERROR
           - raise_failure:
               raise: '${if(poll_response.body.raw_status == "FATAL" or poll_response.body.raw_status == "CANCELLED", "No data available — Amazon could not generate this report. The account may lack access (e.g. Brand Registry) or there is no data for the requested date range.", "Report generation failed: " + poll_response.body.raw_status)}'
@@ -237,7 +300,15 @@ report_pipeline:
           - log_poll_timeout:
               call: sys.log
               args:
-                text: '${"Poll timeout - job=" + create_response.body.job_id + " after " + string(poll_count) + " polls"}'
+                json:
+                  component: "report-flow"
+                  phase: "poll_timeout"
+                  message: "Poll timeout"
+                  job_id: ${create_response.body.job_id}
+                  client_id: ${args.client_id}
+                  report_type: ${args.report_type}
+                  marketplace: ${args.marketplace}
+                  poll_count: ${poll_count}
                 severity: ERROR
           - raise_timeout:
               raise: '${"Poll timeout after " + string(poll_count) + " attempts"}'
@@ -297,7 +368,14 @@ throttle_retry_call:
           - log_throttle:
               call: sys.log
               args:
-                text: '${"Throttled (attempt " + string(throttle_count + 1) + "/" + string(max_throttle_retries) + "), waiting " + string(wait_secs) + "s"}'
+                json:
+                  component: "report-flow"
+                  phase: "throttle"
+                  message: "Throttled, backing off"
+                  url: ${url}
+                  attempt: ${throttle_count + 1}
+                  max_retries: ${max_throttle_retries}
+                  wait_seconds: ${wait_secs}
                 severity: WARNING
           - sleep_with_jitter:
               call: sys.sleep

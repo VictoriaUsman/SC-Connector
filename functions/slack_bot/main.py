@@ -28,6 +28,7 @@ from shared.firestore_utils import (
     list_bot_configs,
     log_bot_activity,
 )
+from shared.logging_setup import init_logging
 from shared.schedule_compute import marketplace_today
 from shared.slack_client import (
     MARKETPLACE_CURRENCIES,
@@ -39,6 +40,7 @@ from shared.slack_client import (
 )
 
 logger = logging.getLogger(__name__)
+init_logging("slack-bot")
 
 _bq_client: bigquery.Client | None = None
 
@@ -176,7 +178,13 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "error": str(exc)[:500],
             })
 
-    logger.info("Hourly bot run complete", extra={"sent": sent, "errors": len(errors)})
+    if errors:
+        logger.error(
+            "Hourly bot run completed with errors",
+            extra={"sent": sent, "errors": len(errors), "error_code": "PARTIAL_FAILURE", "failures": errors[:20]},
+        )
+    else:
+        logger.info("Hourly bot run complete", extra={"sent": sent, "errors": 0})
     return {"status": "ok", "messages_sent": sent, "errors": len(errors)}, 200
 
 

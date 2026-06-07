@@ -30,8 +30,10 @@ from shared.workflow_launcher import (
     launch_execution,
 )
 from shared.firestore_utils import create_job
+from shared.logging_setup import init_logging
 
 logger = logging.getLogger(__name__)
+init_logging("event-report-scheduler")
 
 ORDERS_REPORT = "GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL"
 ADS_REPORTS = ["spCampaigns", "sbCampaigns", "sdCampaigns"]

@@ -27,15 +27,19 @@ case "$MODE" in
       exit 1
     fi
 
+    # Gen2 Cloud Functions run on Cloud Run, so logs live under
+    # resource.type="cloud_run_revision" keyed by service_name (NOT the old
+    # cloud_function/function_name). Logs are structured JSON: the human message
+    # is jsonPayload.message.
     FUNCTION_NAME="kalilos-${STACK}-${NAME}"
     log "Tailing logs for Cloud Function '$FUNCTION_NAME' (last $LIMIT entries)..."
     echo ""
 
     gcloud logging read \
-      "resource.type=\"cloud_function\" AND resource.labels.function_name=\"$FUNCTION_NAME\"" \
+      "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$FUNCTION_NAME\"" \
       --project="$GCP_PROJECT" \
       --limit="$LIMIT" \
-      --format="table(timestamp, severity, textPayload)" \
+      --format="table(timestamp, severity, jsonPayload.job_id, jsonPayload.message, textPayload)" \
       --order=desc
     ;;
 
@@ -47,7 +51,7 @@ case "$MODE" in
       "resource.type=\"workflows.googleapis.com/Workflow\"" \
       --project="$GCP_PROJECT" \
       --limit="$LIMIT" \
-      --format="table(timestamp, severity, textPayload)" \
+      --format="table(timestamp, severity, jsonPayload.job_id, jsonPayload.message, textPayload)" \
       --order=desc
     ;;
 

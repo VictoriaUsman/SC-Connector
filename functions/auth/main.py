@@ -13,9 +13,11 @@ import logging
 import flask
 
 from shared.credentials import get_ads_credentials, get_sp_credentials
+from shared.logging_setup import init_logging
 from shared.lwa_token import get_access_token
 
 logger = logging.getLogger(__name__)
+init_logging("auth")
 
 
 def handler(request: flask.Request) -> tuple[dict, int]:
