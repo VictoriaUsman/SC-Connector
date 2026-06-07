@@ -252,3 +252,112 @@ class TestHandlerDelivery:
         assert body["errors"] == 1
         log_data = mock_log.call_args[0][0]
         assert log_data["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# BigQuery query construction (regression: recap showed all-zero values)
+# ---------------------------------------------------------------------------
+
+class _FakeBQ:
+    """Captures issued queries and returns canned rows matched by SQL substring."""
+
+    def __init__(self, rows_by_substring: list[tuple[str, list[dict]]]):
+        self.calls: list[tuple[str, object]] = []
+        self._rows_by_substring = rows_by_substring
+
+    def query(self, sql, job_config=None):
+        self.calls.append((sql, job_config))
+        for sub, rows in self._rows_by_substring:
+            if sub in sql:
+                return rows
+        return []
+
+
+def _params(job_config) -> dict:
+    out = {}
+    for p in job_config.query_parameters:
+        out[p.name] = getattr(p, "value", None) if hasattr(p, "value") else getattr(p, "values", None)
+    return out
+
+
+class TestDayBounds:
+    def test_pacific_daylight_bounds(self):
+        from daily_recap.main import _day_bounds_utc
+
+        # 06/04 is PDT (UTC-7): local midnight -> 07:00 UTC, next midnight -> 07:00 UTC.
+        start, end = _day_bounds_utc("2026-06-04", ZoneInfo("America/Los_Angeles"))
+        assert start == "2026-06-04T07:00:00Z"
+        assert end == "2026-06-05T07:00:00Z"
+
+    def test_utc_bounds(self):
+        from daily_recap.main import _day_bounds_utc
+
+        start, end = _day_bounds_utc("2026-06-04", ZoneInfo("UTC"))
+        assert start == "2026-06-04T00:00:00Z"
+        assert end == "2026-06-05T00:00:00Z"
+
+
+class TestQueryConstruction:
+    def test_orders_query_uses_purchase_date_window_not_report_partition(self):
+        from daily_recap.main import _query_orders_total
+
+        fake = _FakeBQ([("`proj.ds.orders`", [{"total_sales": 1604.29}])])
+        result = _query_orders_total(
+            fake, "proj", "ds", "c1", ["US"],
+            "2026-06-04T07:00:00Z", "2026-06-05T07:00:00Z",
+        )
+
+        assert result["total_sales"] == 1604.29
+        sql, job_config = fake.calls[0]
+        assert "purchase_date >= @day_start" in sql
+        assert "purchase_date < @day_end" in sql
+        # The ingestion report_date partition is the range start for multi-day
+        # schedules, so the recap must NOT filter on it.
+        assert "report_date" not in sql
+        # BigQuery parses the TIMESTAMP string into an aware datetime.
+        params = _params(job_config)
+        assert params["day_start"] == datetime(2026, 6, 4, 7, 0, tzinfo=timezone.utc)
+        assert params["day_end"] == datetime(2026, 6, 5, 7, 0, tzinfo=timezone.utc)
+
+    def test_ads_query_filters_on_data_date_and_dedups(self):
+        from daily_recap.main import _query_ads_total
+
+        fake = _FakeBQ([("UNION ALL", [{"spend": 100.18, "ppc_sales": 347.68}])])
+        result = _query_ads_total(fake, "proj", "ds", "c1", ["US"], "2026-06-04")
+
+        assert result["spend"] == 100.18
+        assert result["ppc_sales"] == 347.68
+        sql, job_config = fake.calls[0]
+        # Keyed on the campaign performance date, not the ingestion partition.
+        assert "date = @report_date" in sql
+        assert "report_date = " not in sql
+        # Most-recent value per bucket (post-restatement) — guards double counting
+        # when the same data date is re-pulled under several overlapping ranges.
+        assert "ROW_NUMBER()" in sql
+        assert "ORDER BY ingested_at DESC" in sql
+        for table in ("sp_campaigns", "sb_campaigns", "sd_campaigns"):
+            assert table in sql
+
+    def test_account_totals_wires_orders_and_ads_by_data_date(self):
+        from daily_recap.main import _query_account_totals
+
+        fake = _FakeBQ([
+            ("`proj.ds.orders`", [{"total_sales": 1604.29}]),
+            ("UNION ALL", [{"spend": 100.18, "ppc_sales": 347.68}]),
+        ])
+        with (
+            patch("daily_recap.main._get_bq", return_value=fake),
+            patch.dict(os.environ, {"GCP_PROJECT": "proj", "BQ_DATASET": "ds"}),
+        ):
+            totals = _query_account_totals(
+                "c1", ["US"], "2026-06-04", ZoneInfo("America/Los_Angeles"),
+            )
+
+        assert abs(totals.total_sales - 1604.29) < 0.01
+        assert abs(totals.spend - 100.18) < 0.01
+        assert abs(totals.ppc_sales - 347.68) < 0.01
+
+        orders_sql = next(c[0] for c in fake.calls if "`proj.ds.orders`" in c[0])
+        ads_sql = next(c[0] for c in fake.calls if "UNION ALL" in c[0])
+        assert "purchase_date" in orders_sql
+        assert "ROW_NUMBER()" in ads_sql
