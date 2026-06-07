@@ -978,28 +978,19 @@ def ads_profiles_list():
     return flask.jsonify(profiles), 200
 
 
-def _discover_ads_profiles_for_client(client: dict, app_creds: dict[str, str]) -> list[dict]:
-    """Discover the Ads profiles authorized for a single SP-API-connected client.
+def _discover_ads_profiles_via_app(app_creds: dict[str, str]) -> list[dict]:
+    """Mint an Ads access token from the shared Ads API app credentials and list
+    every advertising profile the app can see (across NA/EU/FE).
 
-    The Ads Profile ID comes from the Amazon Ads API (GET /v2/profiles), not the
-    SP-API. An account that has SP-API connected but no Ads profile linked yet is
-    invisible to the shared-credentials /ads-profiles listing (its profiles are
-    only visible to its own token). To surface it we reuse the client's own SP-API
-    LWA refresh token — the same LWA security profile backs both APIs — to mint an
-    Ads access token and call listProfiles for that account specifically.
+    The Ads Profile ID comes from the Amazon Ads API (GET /v2/profiles), which can
+    only be queried with the Ads API *application's* own LWA credentials. A single
+    Advertising API application is authorized across all the managed advertiser
+    accounts, so `/v2/profiles` returns the full set of profiles in one call — the
+    same mechanism `/ads-profiles` and the OAuth callback already use.
     """
-    secret_name = client.get("sp_api_secret_name")
-    if not secret_name:
-        return []
-
-    secret_data = _read_client_secret(secret_name)
-    refresh_token = (secret_data.get("refresh_token") or "").strip()
-    if not refresh_token:
-        return []
-
     token_resp = requests.post(LWA_TOKEN_URL, data={
         "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
+        "refresh_token": app_creds["refresh_token"],
         "client_id": app_creds["client_id"],
         "client_secret": app_creds["client_secret"],
     }, timeout=15)
@@ -1016,48 +1007,47 @@ def sp_api_accounts_list():
     Fixes the chicken-and-egg gap where the Admin page only surfaced accounts that
     already had an Ads profile linked: an SP-API-only account could never appear to
     have its Ads Profile ID read. This widens the listing to all SP-API-connected
-    Firestore clients and lazy-fetches each account's available Ads Profile ID(s)
-    via the Ads API listProfiles endpoint (using that account's own credentials).
+    Firestore clients and shows the available Ads Profile ID(s) so an operator can
+    pick the right one and connect the Ads API.
 
-    Per-account profile discovery failures are tolerated and reported per row via
-    `ads_profiles_error` so one account erroring never hides the rest of the list.
+    The available profiles are discovered once via the shared Ads API *app*
+    credentials (the only LWA security profile registered as an Advertising API
+    application). A client's SP-API refresh token belongs to a different LWA app
+    and cannot mint an Ads API access token, so attempting a per-account exchange
+    with it failed for every account ("Could not fetch profiles"). If the shared
+    discovery fails the accounts still list, annotated with `ads_profiles_error`,
+    so the page is never fully blocked.
     """
     active = flask.request.args.get("active") == "true"
     clients = list_clients(active_only=active)
     sp_clients = [c for c in clients if c.get("sp_api_secret_name")]
 
-    app_creds: dict[str, str] | None = None
-    app_creds_error: str | None = None
-    try:
-        app_creds = _read_app_secret("ads_api")
-    except Exception as exc:
-        app_creds_error = str(exc)[:200]
-        logger.warning("Could not load Ads API app credentials for sp-api-accounts",
-                       extra={"error": app_creds_error})
+    available_profiles: list[dict] = []
+    profiles_error: str | None = None
+    # Only hit Amazon when there's at least one account to annotate.
+    if sp_clients:
+        try:
+            app_creds = _read_app_secret("ads_api")
+            available_profiles = _discover_ads_profiles_via_app(app_creds)
+        except Exception as exc:
+            profiles_error = str(exc)[:200]
+            logger.warning("Could not fetch Ads profiles for sp-api-accounts",
+                           extra={"error": profiles_error})
 
     accounts: list[dict[str, Any]] = []
     for c in sp_clients:
-        entry: dict[str, Any] = {
+        accounts.append({
             "id": c["id"],
             "name": c.get("name", c["id"]),
             "marketplaces": c.get("marketplaces", []),
             "sp_api_connected": True,
             "ads_profile_id": c.get("ads_profile_id"),
-            "ads_profiles": [],
-            "ads_profiles_error": None,
-        }
-        if app_creds is None:
-            entry["ads_profiles_error"] = app_creds_error or "Ads API app credentials unavailable"
-        else:
-            try:
-                entry["ads_profiles"] = _discover_ads_profiles_for_client(c, app_creds)
-            except Exception as exc:
-                entry["ads_profiles_error"] = str(exc)[:200]
-                logger.warning("Ads profile discovery failed for account",
-                               extra={"client_id": c["id"], "error": str(exc)[:200]})
-        accounts.append(entry)
+            "ads_profiles": available_profiles,
+            "ads_profiles_error": profiles_error,
+        })
 
-    logger.info("SP-API accounts listed", extra={"count": len(accounts)})
+    logger.info("SP-API accounts listed",
+                extra={"count": len(accounts), "profile_count": len(available_profiles)})
     return flask.jsonify(_serialize(accounts)), 200
 
 

@@ -971,6 +971,73 @@ class TestSpApiAccounts:
         assert data[0]["ads_profiles"] == []
         assert data[0]["ads_profiles_error"]
 
+    def test_fetches_profiles_via_shared_ads_app_token_not_client_sp_secret(self, client):
+        """Regression for "Could not fetch profiles": profiles must be discovered
+        with the shared Ads API *app* refresh token. A client's SP-API refresh
+        token belongs to a different LWA app and cannot mint an Ads access token,
+        so the listing must not depend on the per-client SP secret at all."""
+        clients = [
+            {"id": "moxe", "name": "Moxe", "sp_api_secret_name": "kalilos-staging-sp-api-moxe"},
+        ]
+        profiles = [{"profileId": 999, "countryCode": "US"}]
+        posted: dict = {}
+
+        def _capture_post(_url, data=None, **_kwargs):
+            posted.update(data or {})
+            return _mock_token_post()
+
+        def _client_secret_boom(*_args, **_kwargs):
+            raise AssertionError("must not read the client's SP-API secret")
+
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._read_client_secret", side_effect=_client_secret_boom),
+            patch("api.main.requests.post", side_effect=_capture_post),
+            patch("api.main.requests.get", side_effect=self._region_get(profiles)),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # Profiles load successfully (no "Could not fetch profiles").
+        assert data[0]["ads_profiles_error"] is None
+        assert [p["profileId"] for p in data[0]["ads_profiles"]] == [999]
+        # The token exchange used the shared Ads app refresh token, not a per-client one.
+        assert posted.get("refresh_token") == self._APP_CREDS["refresh_token"]
+        assert posted.get("client_id") == self._APP_CREDS["client_id"]
+
+    def test_shared_profiles_fetched_once_for_all_accounts(self, client):
+        """The Ads profile list is fetched a single time and shared across every
+        SP-API account, rather than one (failing) token exchange per account."""
+        clients = [
+            {"id": "moxe", "name": "Moxe", "sp_api_secret_name": "kalilos-staging-sp-api-moxe"},
+            {"id": "acme", "name": "Acme", "sp_api_secret_name": "kalilos-staging-sp-api-acme"},
+        ]
+        profiles = [{"profileId": 111, "countryCode": "US"}, {"profileId": 222, "countryCode": "CA"}]
+        post_calls = {"n": 0}
+
+        def _counting_post(*_args, **_kwargs):
+            post_calls["n"] += 1
+            return _mock_token_post()
+
+        with (
+            patch("api.main.list_clients", return_value=clients),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main.requests.post", side_effect=_counting_post),
+            patch("api.main.requests.get", side_effect=self._region_get(profiles)),
+        ):
+            resp = client.get("/sp-api-accounts")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data) == 2
+        # Exactly one LWA token exchange regardless of the number of accounts.
+        assert post_calls["n"] == 1
+        for acct in data:
+            assert [p["profileId"] for p in acct["ads_profiles"]] == [111, 222]
+            assert acct["ads_profiles_error"] is None
+
 
 # ---------------------------------------------------------------------------
 # SP API OAuth authorize — client resolution
