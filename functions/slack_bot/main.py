@@ -234,30 +234,49 @@ def _query_orders(
     """Sum orders for a single marketplace on ``report_date``.
 
     Hourly updates filter to purchases since marketplace midnight today.
-    Day-end recaps use the full ``report_date`` partition (00:00–23:59).
+    Day-end recaps sum the completed day's full window (00:00–23:59 in the
+    marketplace's local timezone).
+
+    Both paths key off each order's ``purchase_date`` rather than the ingestion
+    ``report_date`` partition. The ``report_date`` is the *start* of the report's
+    pulled range, so a multi-day pull (e.g. by-last-update orders) stamps rows
+    spanning many purchase days with a single range-start date. Filtering the
+    recap on ``report_date`` therefore summed several days of orders into one
+    day, roughly doubling Total Sales. Orders are deduped at ingestion (MERGE on
+    order id + sku), so summing ``item_price`` over the purchase-date window is
+    correct and does not double count.
     """
+    from shared.config import MARKETPLACE_TIMEZONES
+
+    mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
+
     if full_day:
+        day = date_type.fromisoformat(report_date)
+        day_start_local = datetime(day.year, day.month, day.day, tzinfo=mkt_tz)
+        day_end_local = day_start_local + timedelta(days=1)
+        day_start_utc = day_start_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        day_end_utc = day_end_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         query = f"""
             SELECT
                 COALESCE(SUM(item_price), 0) AS total_sales,
                 COALESCE(SUM(quantity), 0) AS units
             FROM `{project}.{dataset}.orders`
             WHERE client_id = @client_id
-              AND report_date = @today
+              AND purchase_date >= @day_start
+              AND purchase_date < @day_end
               AND order_status != 'Cancelled'
               AND marketplace = @marketplace
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-                bigquery.ScalarQueryParameter("today", "DATE", report_date),
+                bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", day_start_utc),
+                bigquery.ScalarQueryParameter("day_end", "TIMESTAMP", day_end_utc),
                 bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
             ]
         )
     else:
-        from shared.config import MARKETPLACE_TIMEZONES
-
-        mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
         mkt_now = now.astimezone(mkt_tz)
         mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
         mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))

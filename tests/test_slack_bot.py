@@ -318,6 +318,67 @@ class TestBuildRecapBlocks:
         assert "[+25%]" in _format_yoy_suffix(100, 80, "USD")
 
 
+class TestQueryOrders:
+    """Recap Total Sales bug: the full-day query must bound by the purchase-date
+    window, not sum a whole ``report_date`` partition (which spans many purchase
+    days and roughly doubled Total Sales)."""
+
+    @staticmethod
+    def _fake_bq(captured: dict) -> MagicMock:
+        def fake_query(query, job_config=None):
+            captured["query"] = query
+            captured["params"] = {
+                p.name: p.value for p in job_config.query_parameters
+            }
+            return iter([{"total_sales": 1234.56, "units": 12}])
+
+        bq = MagicMock()
+        bq.query.side_effect = fake_query
+        return bq
+
+    def test_full_day_uses_purchase_date_window_not_report_date(self):
+        from slack_bot.main import _query_orders
+
+        captured: dict = {}
+        bq = self._fake_bq(captured)
+
+        result = _query_orders(
+            bq, "proj", "ds", "c1", "US", "2026-07-13",
+            datetime(2026, 7, 14, 7, 45, tzinfo=timezone.utc),
+            full_day=True,
+        )
+
+        assert result == {"total_sales": 1234.56, "units": 12}
+        query = captured["query"]
+        # The fix: bound the completed day by its purchase-date window...
+        assert "purchase_date >= @day_start" in query
+        assert "purchase_date < @day_end" in query
+        # ...and never filter the recap by the ingestion report_date partition,
+        # which caused the ~2x Total Sales overcount.
+        assert "report_date" not in query
+
+        params = captured["params"]
+        # US -> America/Los_Angeles; 2026-07-13 is PDT (UTC-7): 00:00 local = 07:00Z.
+        # BigQuery parses the TIMESTAMP param string into a datetime.
+        assert params["day_start"] == datetime(2026, 7, 13, 7, 0, tzinfo=timezone.utc)
+        assert params["day_end"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
+
+    def test_hourly_still_filters_purchases_since_midnight(self):
+        from slack_bot.main import _query_orders
+
+        captured: dict = {}
+        bq = self._fake_bq(captured)
+
+        _query_orders(
+            bq, "proj", "ds", "c1", "US", "2026-07-13",
+            datetime(2026, 7, 13, 23, 45, tzinfo=timezone.utc),
+            full_day=False,
+        )
+
+        query = captured["query"]
+        assert "purchase_date >= @mkt_midnight" in query
+
+
 # ---------------------------------------------------------------------------
 # Full handler integration
 # ---------------------------------------------------------------------------
