@@ -17,6 +17,7 @@ import flask
 
 from shared import ads_api_client, sp_api_client
 from shared.ads_api_errors import AdsProfileUnauthorizedError
+from shared.ads_sb_legacy import augment_sb_campaigns_content
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.firestore_utils import get_client, update_job_status
@@ -67,7 +68,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if api_source == "sp_api":
             content = _download_sp_report(client_id, marketplace, report_type, download_info)
         elif api_source == "ads_api":
-            content = _download_ads_report(client_id, marketplace, report_type, download_info)
+            content = _download_ads_report(
+                client_id, marketplace, report_type, download_info, report_params
+            )
         else:
             return {"error": f"Unknown api_source: {api_source}", "code": "INVALID_SOURCE"}, 400
 
@@ -238,19 +241,35 @@ def _download_ads_report(
     marketplace: str,
     report_type: str,
     download_info: dict,
+    report_params: dict | None = None,
 ) -> bytes:
     download_url = download_info.get("download_url")
     if not download_url:
         raise ValueError("Missing download_url in download_info")
 
     creds = get_ads_credentials(client_id)
-    return ads_api_client.download_report(
+    content = ads_api_client.download_report(
         creds,
         marketplace,
         download_url,
         client_id=client_id,
         report_type=report_type,
     )
+
+    # The v3 reporting endpoint silently omits legacy (non-multi-ad-group) SB
+    # campaigns. For the SB Campaigns report, re-include them via the deprecated
+    # v2 reporting endpoints so the export total matches the Ads console.
+    if report_type == "sbCampaigns":
+        start, end = _extract_report_dates("ads_api", report_params or {})
+        content = augment_sb_campaigns_content(
+            content,
+            credentials=creds,
+            marketplace=marketplace,
+            start_date=start,
+            end_date=end,
+        )
+
+    return content
 
 
 def _extract_report_dates(api_source: str, report_params: dict) -> tuple[date, date]:

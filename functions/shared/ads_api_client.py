@@ -37,6 +37,11 @@ _MARKETPLACE_ENUM: dict[str, Marketplaces] = {
 }
 
 
+def marketplace_enum(marketplace: str) -> Marketplaces:
+    """Return the SDK ``Marketplaces`` enum value for a marketplace code."""
+    return _MARKETPLACE_ENUM[marketplace]
+
+
 def _client(credentials: dict, marketplace: str) -> Reports:
     return Reports(credentials=credentials, marketplace=_MARKETPLACE_ENUM[marketplace])
 
