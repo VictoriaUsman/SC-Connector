@@ -103,7 +103,8 @@ export const api = {
     request<{ client_id: string; sp_api_connected: boolean; ads_api_connected: boolean }>(
       `/oauth/status/${clientId}`,
     ),
-  getSpApiAuthUrl: (clientId: string, region: string) => `${BASE_URL}/oauth/sp-api/authorize?client_id=${clientId}&region=${region}`,
+  getSpApiAuthUrl: (clientId: string, region: string) =>
+    `${BASE_URL}/oauth/sp-api/authorize?client_id=${encodeURIComponent(clientId)}&region=${encodeURIComponent(region)}`,
   getAdsApiAuthUrl: (clientId: string) => `${BASE_URL}/oauth/ads-api/authorize?client_id=${clientId}`,
   connectManual: (clientId: string, data: { api_source: string; refresh_token?: string; profile_id?: string }) =>
     request<{ id: string; api_source: string; status: string }>(`/clients/${clientId}/connect`, {
