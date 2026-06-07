@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -103,7 +103,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         currency = config.get("base_currency", "USD")
 
         try:
-            totals = _query_account_totals(client_id, marketplaces, recap_date.isoformat())
+            totals = _query_account_totals(
+                client_id, marketplaces, recap_date.isoformat(), client_tz,
+            )
             blocks = _build_recap_blocks(recap_date, totals, currency)
             text_fallback = f"Daily Recap — {recap_date.strftime('%m/%d/%y')}"
             result = post_message(channel_id, blocks, text_fallback)
@@ -150,19 +152,37 @@ def _query_account_totals(
     client_id: str,
     marketplaces: list[str],
     report_date: str,
+    client_tz: ZoneInfo,
 ) -> AccountTotals:
     """Sum Spend, PPC Sales, and Total Sales for ``report_date`` across marketplaces.
 
-    Reads the full calendar-day partition from the shared report tables. Both the
-    orders and ads tables keep the most-recent value per (client, marketplace,
-    report_date) bucket via the ingestion pipeline's dedup, so summing here yields
-    post-restatement totals.
+    Metrics are keyed off each row's **actual data date** — the campaign
+    performance ``date`` for ads and the order ``purchase_date`` for sales — not
+    the ingestion ``report_date`` partition. The ingestion ``report_date`` is the
+    *start* of the report's pulled range, so a client whose report schedule uses a
+    multi-day timeframe (``last_n_days``, ``rolling_window``, …) stamps every row
+    with the same range-start date. Filtering on ``report_date`` would then match
+    zero rows for the recap day and yield an all-zero recap.
+
+    Because the same data date can be re-pulled under several overlapping ranges
+    (each ingested under a different ``report_date``), the ads query keeps only the
+    most-recently-ingested row per campaign bucket before summing, giving
+    post-restatement totals without double counting. Orders are already deduped at
+    ingestion (MERGE on order id + sku), so a plain sum over the purchase-date
+    window is correct.
+
+    The recap day is bounded by midnight-to-midnight in the client's configured
+    timezone, converted to UTC for the ``purchase_date`` (TIMESTAMP) comparison.
     """
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
     bq = _get_bq()
 
-    orders = _query_orders_total(bq, project, dataset, client_id, marketplaces, report_date)
+    day_start_utc, day_end_utc = _day_bounds_utc(report_date, client_tz)
+
+    orders = _query_orders_total(
+        bq, project, dataset, client_id, marketplaces, day_start_utc, day_end_utc,
+    )
     ads = _query_ads_total(bq, project, dataset, client_id, marketplaces, report_date)
 
     return AccountTotals(
@@ -172,26 +192,41 @@ def _query_account_totals(
     )
 
 
+def _day_bounds_utc(report_date: str, client_tz: ZoneInfo) -> tuple[str, str]:
+    """UTC [start, end) timestamps for ``report_date`` as a full day in ``client_tz``."""
+    day = date.fromisoformat(report_date)
+    start_local = datetime(day.year, day.month, day.day, tzinfo=client_tz)
+    end_local = start_local + timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        start_local.astimezone(timezone.utc).strftime(fmt),
+        end_local.astimezone(timezone.utc).strftime(fmt),
+    )
+
+
 def _query_orders_total(
     bq: bigquery.Client,
     project: str,
     dataset: str,
     client_id: str,
     marketplaces: list[str],
-    report_date: str,
+    day_start_utc: str,
+    day_end_utc: str,
 ) -> dict[str, Any]:
     query = f"""
         SELECT COALESCE(SUM(item_price), 0) AS total_sales
         FROM `{project}.{dataset}.orders`
         WHERE client_id = @client_id
-          AND report_date = @report_date
+          AND purchase_date >= @day_start
+          AND purchase_date < @day_end
           AND order_status != 'Cancelled'
           AND marketplace IN UNNEST(@marketplaces)
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-            bigquery.ScalarQueryParameter("report_date", "DATE", report_date),
+            bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", day_start_utc),
+            bigquery.ScalarQueryParameter("day_end", "TIMESTAMP", day_end_utc),
             bigquery.ArrayQueryParameter("marketplaces", "STRING", marketplaces),
         ]
     )
@@ -213,14 +248,26 @@ def _query_ads_total(
         "sb_campaigns": "sales",
         "sd_campaigns": "sales",
     }
+    # Keep only the most-recently-ingested row per (marketplace, campaign) for the
+    # data date, so overlapping re-pulls (each a distinct report_date partition)
+    # don't double count.
     unions = []
     for table, sales_col in tables.items():
         unions.append(f"""
-            SELECT cost, {sales_col} AS ppc_sales
-            FROM `{project}.{dataset}.{table}`
-            WHERE client_id = @client_id
-              AND report_date = @report_date
-              AND marketplace IN UNNEST(@marketplaces)
+            SELECT cost, ppc_sales FROM (
+                SELECT
+                    cost,
+                    {sales_col} AS ppc_sales,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY marketplace, campaign_id
+                        ORDER BY ingested_at DESC
+                    ) AS _rn
+                FROM `{project}.{dataset}.{table}`
+                WHERE client_id = @client_id
+                  AND date = @report_date
+                  AND marketplace IN UNNEST(@marketplaces)
+            )
+            WHERE _rn = 1
         """)
 
     query = f"""
