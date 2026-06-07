@@ -1388,8 +1388,10 @@ def oauth_ads_api_authorize():
 
 @app.route("/oauth/callback", methods=["GET"])
 def oauth_callback():
+    # NB: avoid the reserved LogRecord key "args" in extra (it raises KeyError in
+    # logging.makeRecord and 500s the whole callback); use a safe field name.
     logger.info("OAuth callback received", extra={
-        "args": dict(flask.request.args),
+        "query_args": dict(flask.request.args),
     })
 
     error = flask.request.args.get("error")
