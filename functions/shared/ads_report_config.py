@@ -84,6 +84,17 @@ ADS_REPORT_TYPES: dict[str, dict] = {
             ],
         },
     },
+    # KNOWN LIMITATION (Amazon platform, not a bug in our pipeline):
+    # The Ads API v3 reporting endpoint (POST /reporting/reports) only returns
+    # Sponsored Brands *version 4* campaigns — i.e. those with
+    # `isMultiAdGroupsEnabled = true`. Legacy SB campaigns (multi-ad-group
+    # disabled) are silently omitted from v3 reports, so their cost/sales never
+    # reach the Drive export and the total under-counts the Ads console
+    # ("All but archived" view). To include legacy SB campaigns, Amazon requires
+    # the deprecated v2 reporting endpoints (with `creativeType: "all"`); that
+    # fallback is tracked as a separate work item. See Amazon Ads docs
+    # discussion #246. This affects every client that still runs legacy SB
+    # campaigns (e.g. Glove Station, Rolio), not just one account.
     "sbCampaigns": {
         "adProduct": "SPONSORED_BRANDS",
         "groupBy": ["campaign"],

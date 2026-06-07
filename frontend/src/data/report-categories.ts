@@ -257,11 +257,13 @@ export const ADS_REPORT_CATEGORIES: ReportCategory[] = [
         id: "sbCampaigns",
         label: "SB \u2014 Campaigns",
         description: "Campaign-level metrics: campaignName, status, budget, impressions, clicks, cost, purchases, sales, detailPageViews, newToBrand",
+        constraint: "v3 reporting only returns Sponsored Brands v4 (multi-ad-group) campaigns. Legacy SB campaigns are omitted by Amazon, so totals can be lower than the Ads console \u201CAll but archived\u201D view.",
       },
       {
         id: "sbSearchTerm",
         label: "SB \u2014 Search Term",
         description: "Search term performance: searchTerm, campaignName, adGroupName, impressions, clicks, cost, purchases, sales",
+        constraint: "v3 reporting only returns Sponsored Brands v4 (multi-ad-group) campaigns. Legacy SB campaign search terms are omitted by Amazon.",
       },
     ],
   },

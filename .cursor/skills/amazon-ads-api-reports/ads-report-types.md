@@ -63,6 +63,17 @@ Campaign-level performance for Sponsored Brands.
 - Metrics: `impressions`, `clicks`, `cost`, `purchases14d`, `sales14d`, `unitsSoldClicks14d`, `detailPageViews14d`, `newToBrandPurchases14d`, `newToBrandSales14d`
 - Time: `date`
 
+> **⚠️ v3 reporting only returns SB *version 4* (multi-ad-group) campaigns.**
+> The v3 `POST /reporting/reports` endpoint silently omits legacy Sponsored
+> Brands campaigns (those with `isMultiAdGroupsEnabled = false`). Their
+> spend/sales are therefore missing from the export, and the report total will
+> be lower than the Amazon Ads console "All but archived" view. To confirm
+> whether an account has legacy campaigns, call `POST /sb/v4/campaigns/list`
+> and check `isMultiAdGroupsEnabled`. To pull legacy SB campaign data you must
+> use the deprecated **v2** reporting endpoints (`/v2/hsa/campaigns/report`)
+> with `creativeType: "all"`. Reference: Amazon Ads `ads-advanced-tools-docs`
+> discussion #246.
+
 ### sbSearchTerm
 
 Search term performance for Sponsored Brands.

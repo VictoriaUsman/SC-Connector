@@ -310,3 +310,138 @@ class TestColumnFiltering:
         lines = content.decode().strip().split("\n")
         assert lines[0] == "campaign\tcost"
         assert lines[1] == "A\t1.5"
+
+
+# Columns matching the live sbCampaigns config (functions/shared/ads_report_config.py).
+_SB_COLUMNS = [
+    "date", "campaignName", "campaignId", "campaignStatus", "campaignBudgetAmount",
+    "impressions", "clicks", "cost",
+    "purchases", "sales", "unitsSoldClicks",
+    "detailPageViewsClicks", "newToBrandPurchases", "newToBrandSales",
+]
+
+
+def _sb_report_rows() -> list[dict]:
+    """A realistic v3 sbCampaigns report payload (top-level JSON array).
+
+    timeUnit=DAILY yields one row per (campaign, day). Three distinct
+    campaigns across two days, mixing ENABLED/PAUSED states so the fixture
+    mirrors the "All but archived" console view from the ticket.
+    """
+    rows: list[dict] = []
+    campaigns = [
+        ("123", "TG - SB Video", "ENABLED", 100.0),
+        ("456", "Hard Hat - D - SBV - Color", "PAUSED", 50.5),
+        ("789", "Hyper Fit - SB Video", "ENABLED", 75.25),
+    ]
+    for day in ("2026-05-21", "2026-05-22"):
+        for cid, name, status, cost in campaigns:
+            rows.append({
+                "date": day,
+                "campaignName": name,
+                "campaignId": cid,
+                "campaignStatus": status,
+                "campaignBudgetAmount": 500,
+                "impressions": 1000,
+                "clicks": 25,
+                "cost": cost,
+                "purchases": 3,
+                "sales": 250.0,
+                "unitsSoldClicks": 4,
+                "detailPageViewsClicks": 10,
+                "newToBrandPurchases": 1,
+                "newToBrandSales": 80.0,
+            })
+    return rows
+
+
+class TestSbCampaignAggregation:
+    """SB Campaigns export logic.
+
+    These tests pin the behaviour exercised by the Glove Station ticket
+    (CU-868jy1cgf): given whatever campaigns Amazon's v3 report returns, the
+    converter must preserve *every* campaign row and never silently drop or
+    collapse rows, so summing the `cost` column reproduces the report total.
+    (Campaigns missing from the v3 response itself — legacy non-multi-ad-group
+    SB campaigns — are an Amazon platform limitation, not a converter bug.)
+    """
+
+    def _to_rows(self, content: bytes) -> tuple[list[str], list[list[str]]]:
+        # Split on newlines only (not str.strip(), which would also trim a
+        # trailing empty cell's tab on the last row).
+        lines = content.decode().split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+        header = lines[0].split("\t")
+        body = [ln.split("\t") for ln in lines[1:]]
+        return header, body
+
+    def test_all_campaign_rows_preserved(self):
+        rows = _sb_report_rows()
+        content, converted = maybe_convert_to_tsv(
+            json.dumps(rows).encode(), "ads_api", "sbCampaigns",
+        )
+        assert converted
+        header, body = self._to_rows(content)
+        # One row per (campaign, day): 3 campaigns x 2 days = 6 rows, none dropped.
+        assert len(body) == len(rows) == 6
+        cid_idx = header.index("campaignId")
+        assert {r[cid_idx] for r in body} == {"123", "456", "789"}
+
+    def test_total_cost_sums_to_report_total(self):
+        rows = _sb_report_rows()
+        content, _ = maybe_convert_to_tsv(
+            json.dumps(rows).encode(), "ads_api", "sbCampaigns",
+        )
+        header, body = self._to_rows(content)
+        cost_idx = header.index("cost")
+        total = sum(float(r[cost_idx]) for r in body)
+        expected = sum(r["cost"] for r in rows)
+        assert total == pytest.approx(expected)
+        # Guard against silently exporting only a subset (the reported symptom).
+        assert total == pytest.approx((100.0 + 50.5 + 75.25) * 2)
+
+    def test_paused_and_enabled_campaigns_both_included(self):
+        rows = _sb_report_rows()
+        content, _ = maybe_convert_to_tsv(
+            json.dumps(rows).encode(), "ads_api", "sbCampaigns",
+        )
+        header, body = self._to_rows(content)
+        status_idx = header.index("campaignStatus")
+        statuses = {r[status_idx] for r in body}
+        assert statuses == {"ENABLED", "PAUSED"}
+
+    def test_column_filter_keeps_every_campaign_row(self):
+        rows = _sb_report_rows()
+        content, _ = maybe_convert_to_tsv(
+            json.dumps(rows).encode(),
+            "ads_api",
+            "sbCampaigns",
+            output_columns=_SB_COLUMNS,
+        )
+        header, body = self._to_rows(content)
+        assert header == _SB_COLUMNS
+        # Filtering columns must not drop campaign rows.
+        assert len(body) == 6
+        cost_idx = header.index("cost")
+        assert sum(float(r[cost_idx]) for r in body) == pytest.approx(451.5)
+
+    def test_campaign_with_missing_metric_still_exported(self):
+        """A null/absent metric (e.g. unitsSoldClicks on a v4 campaign) must
+        not cause the campaign to be dropped — it gets a blank cell instead."""
+        rows = [
+            {"campaignId": "1", "campaignName": "Legacy-ish", "cost": 10.0, "unitsSoldClicks": 2},
+            {"campaignId": "2", "campaignName": "V4 no units", "cost": 20.0},
+        ]
+        content, _ = maybe_convert_to_tsv(
+            json.dumps(rows).encode(),
+            "ads_api",
+            "sbCampaigns",
+            output_columns=["campaignId", "campaignName", "cost", "unitsSoldClicks"],
+        )
+        header, body = self._to_rows(content)
+        assert len(body) == 2
+        units_idx = header.index("unitsSoldClicks")
+        cost_idx = header.index("cost")
+        assert body[1][units_idx] == ""
+        assert sum(float(r[cost_idx]) for r in body) == pytest.approx(30.0)
