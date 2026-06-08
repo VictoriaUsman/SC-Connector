@@ -30,17 +30,46 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import random
 import time
 from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
+import requests
 from ad_api.api.sb import CampaignsV4
 from ad_api.api.sb import Reports as SbV2Reports
+from ad_api.base.exceptions import AdvertisingApiException
 
 from shared.ads_api_client import ADS_API_STATUS_MAP, marketplace_enum
 
 logger = logging.getLogger(__name__)
+
+# The legacy v2 reporting calls share one host (advertising-api*.amazon.com) with
+# the rest of the pipeline. During the scheduler's concurrent fan-out, many
+# download_upload functions open fresh (keep-alive-less) TLS connections to that
+# host at once, and Amazon intermittently resets some of them
+# (``ConnectionResetError: [Errno 104] Connection reset by peer``). Without
+# retries a single reset aborts the whole augmentation and the legacy SB
+# campaigns silently drop out of the export, so the total under-counts the Ads
+# console. Retrying transient network / 429 / 5xx failures with backoff lets the
+# fetch complete so the merged total matches the console.
+_RETRYABLE_API_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+# ``requests.exceptions.ConnectionError`` wraps the urllib3 connection-reset; the
+# builtin ``ConnectionError`` (parent of ``ConnectionResetError``) covers the
+# rare un-wrapped case. ``Timeout`` / ``ChunkedEncodingError`` are likewise
+# transient.
+_RETRYABLE_NETWORK_ERRORS: tuple[type[Exception], ...] = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+    ConnectionError,
+)
+
+_MAX_RETRY_ATTEMPTS = 5
+_RETRY_BASE_SECONDS = 2.0
+_RETRY_MAX_SECONDS = 30.0
 
 # Comma-separated metrics requested from the v2 hsa campaigns report. We rely on
 # the v4 campaign list for dimensions (name/status/budget) and only need the
@@ -207,7 +236,59 @@ def _extract_budget(campaign: dict) -> Any:
 # Network orchestration
 # ----------------------------------------------------------------------------
 
-def collect_legacy_sb_campaigns(credentials: dict, marketplace: str) -> dict[str, dict]:
+def _is_retryable(exc: Exception) -> bool:
+    """True for transient Ads API failures worth retrying (network resets,
+    timeouts, 429, and 5xx)."""
+    if isinstance(exc, _RETRYABLE_NETWORK_ERRORS):
+        return True
+    if isinstance(exc, AdvertisingApiException):
+        return getattr(exc, "code", None) in _RETRYABLE_API_CODES
+    return False
+
+
+def _call_with_retry(
+    fn: Callable[[], Any],
+    *,
+    description: str,
+    sleep_fn: Callable[[float], None],
+    max_attempts: int = _MAX_RETRY_ATTEMPTS,
+) -> Any:
+    """Call *fn*, retrying transient failures with exponential backoff + jitter.
+
+    Non-retryable errors (auth, 4xx other than 429, programming errors) are
+    re-raised immediately. The jitter spreads concurrent retries out so the
+    scheduler's fan-out does not re-collide on the same backoff schedule.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — classified by _is_retryable
+            if not _is_retryable(exc) or attempt == max_attempts:
+                raise
+            last_exc = exc
+            backoff = min(_RETRY_BASE_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_SECONDS)
+            backoff += random.uniform(0, backoff / 2)
+            logger.warning(
+                "Transient Ads v2 error; retrying",
+                extra={
+                    "operation": description,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "error": str(exc)[:200],
+                },
+            )
+            sleep_fn(backoff)
+    # Loop always returns or raises; this satisfies type checkers.
+    raise last_exc  # type: ignore[misc]
+
+
+def collect_legacy_sb_campaigns(
+    credentials: dict,
+    marketplace: str,
+    *,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> dict[str, dict]:
     """List SB campaigns for the profile and return legacy ones keyed by id.
 
     Paginates ``POST /sb/v4/campaigns/list`` over enabled + paused campaigns
@@ -227,7 +308,11 @@ def collect_legacy_sb_campaigns(credentials: dict, marketplace: str) -> dict[str
         if next_token:
             body["nextToken"] = next_token
 
-        resp = client.list_campaigns(body=body)
+        resp = _call_with_retry(
+            lambda body=body: client.list_campaigns(body=body),
+            description="sb_v4_list_campaigns",
+            sleep_fn=sleep_fn,
+        )
         payload = resp.payload if hasattr(resp, "payload") else resp
         if isinstance(payload, (bytes, str)):
             payload = json.loads(payload)
@@ -311,7 +396,7 @@ def augment_sb_campaigns_content(
         return content
 
     try:
-        legacy = collect_legacy_sb_campaigns(credentials, marketplace)
+        legacy = collect_legacy_sb_campaigns(credentials, marketplace, sleep_fn=sleep_fn)
         if not legacy:
             logger.info("No legacy SB campaigns found; v3 report is complete")
             return content
@@ -354,7 +439,11 @@ def _request_and_download_v2_report(
         "creativeType": "all",
         "metrics": ",".join(_V2_CAMPAIGN_METRICS),
     }
-    create_resp = client.post_report(recordType="campaigns", body=body)
+    create_resp = _call_with_retry(
+        lambda: client.post_report(recordType="campaigns", body=body),
+        description="sb_v2_post_report",
+        sleep_fn=sleep_fn,
+    )
     create_payload = _payload(create_resp)
     report_id = create_payload.get("reportId")
     if not report_id:
@@ -363,7 +452,13 @@ def _request_and_download_v2_report(
 
     download_url: str | None = None
     for _ in range(max_polls):
-        status_payload = _payload(client.get_report(reportId=report_id))
+        status_payload = _payload(
+            _call_with_retry(
+                lambda: client.get_report(reportId=report_id),
+                description="sb_v2_get_report",
+                sleep_fn=sleep_fn,
+            )
+        )
         raw_status = status_payload.get("status", "")
         normalized = ADS_API_STATUS_MAP.get(raw_status, "unknown")
         if normalized == "ready":
@@ -381,7 +476,7 @@ def _request_and_download_v2_report(
         logger.warning("v2 SB report did not complete in time", extra={"date": report_date.isoformat()})
         return []
 
-    raw = _download_v2(client, download_url)
+    raw = _download_v2(client, download_url, sleep_fn=sleep_fn)
     return _parse_v2_records(raw)
 
 
@@ -395,9 +490,28 @@ def _payload(resp: Any) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _download_v2(client: SbV2Reports, url: str) -> bytes:
-    resp = client.download_report(url=url, format="raw")
-    payload = resp.payload if hasattr(resp, "payload") else resp
+def _download_v2(
+    client: SbV2Reports,
+    url: str,
+    *,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> bytes:
+    def _do() -> Any:
+        resp = client.download_report(url=url, format="raw")
+        payload = resp.payload if hasattr(resp, "payload") else resp
+        # The SDK's _download swallows network errors into an error ApiResponse
+        # ({"success": False, "code": 503, ...}) instead of raising. Re-raise the
+        # transient ones so _call_with_retry can retry the download.
+        if isinstance(payload, dict) and payload.get("success") is False:
+            code = payload.get("code")
+            if code in _RETRYABLE_API_CODES:
+                raise requests.exceptions.ConnectionError(
+                    f"v2 SB report download failed (transient, code={code})"
+                )
+            raise RuntimeError(f"v2 SB report download failed (code={code})")
+        return payload
+
+    payload = _call_with_retry(_do, description="sb_v2_download", sleep_fn=sleep_fn)
     if isinstance(payload, bytes):
         if payload[:2] == b"\x1f\x8b":
             return gzip.decompress(payload)
