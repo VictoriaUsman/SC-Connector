@@ -6,6 +6,7 @@ Uses Flask routing internally for clean path-based dispatch.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -88,6 +89,28 @@ _CLIENT_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
 def _is_valid_client_id(client_id: str) -> bool:
     """True if client_id is a kebab-case slug safe for Secret Manager names."""
     return bool(client_id) and bool(_CLIENT_ID_PATTERN.fullmatch(client_id))
+
+
+# Secret Manager secret ids only allow [A-Za-z0-9_-]. Some existing clients have
+# legacy free-form ids (e.g. "thehome&office") that contain characters Secret
+# Manager rejects, so embedding the raw id in a secret name makes create_secret
+# throw INVALID_ARGUMENT and the OAuth connect silently fails to persist.
+_SECRET_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _secret_safe_segment(client_id: str) -> str:
+    """Return a Secret Manager-safe segment derived from a client id.
+
+    Valid kebab-case ids pass through unchanged so previously created secrets
+    keep resolving. Ids with characters Secret Manager rejects are sanitized and
+    given a short deterministic hash suffix derived from the original id, so two
+    distinct ids can never collide onto the same secret name.
+    """
+    if _is_valid_client_id(client_id):
+        return client_id
+    sanitized = _SECRET_UNSAFE_PATTERN.sub("-", client_id).strip("-")
+    digest = hashlib.sha1(client_id.encode("utf-8")).hexdigest()[:8]
+    return f"{sanitized}-{digest}" if sanitized else f"client-{digest}"
 
 
 def _validate_timeframe(timeframe: dict) -> str | None:
@@ -1215,7 +1238,7 @@ def _store_client_secret(client_id: str, api_source: str, data: dict[str, str]) 
     """Create or update a client-level secret in Secret Manager. Returns secret name."""
     env = get_environment()
     prefix = "sp-api" if api_source == "sp_api" else "ads-api"
-    secret_name = f"kalilos-{env}-{prefix}-{client_id}"
+    secret_name = f"kalilos-{env}-{prefix}-{_secret_safe_segment(client_id)}"
     project = get_project()
     parent = f"projects/{project}"
     full_name = f"{parent}/secrets/{secret_name}"

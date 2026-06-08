@@ -1126,3 +1126,106 @@ class TestSpApiOAuthAuthorize:
         assert "vendorcentral.amazon.com" in loc
         assert "/apps/authorize/consent" in loc
         assert save_state.call_args[0][1]["account_type"] == "vendor"
+
+
+class TestSecretSafeSegment:
+    """Client ids must be transliterated into Secret Manager-safe segments.
+
+    Secret ids only allow [A-Za-z0-9_-]; a raw id like 'thehome&office' makes
+    Secret Manager reject the name, which is why Matini connected but never
+    persisted its credential.
+    """
+
+    def test_kebab_slug_passes_through_unchanged(self):
+        from api.main import _secret_safe_segment
+
+        assert _secret_safe_segment("acme") == "acme"
+        assert _secret_safe_segment("the-home-office") == "the-home-office"
+
+    def test_ampersand_id_is_sanitized(self):
+        from api.main import _secret_safe_segment
+
+        seg = _secret_safe_segment("thehome&office")
+        assert "&" not in seg
+        # Only Secret Manager-safe characters remain.
+        assert all(c.isalnum() or c in "-_" for c in seg)
+        assert seg.startswith("thehome-office-")
+
+    def test_distinct_ids_do_not_collide(self):
+        from api.main import _secret_safe_segment
+
+        # Two different raw ids that transliterate to the same prefix must still
+        # produce distinct secret segments (hash suffix disambiguates).
+        assert _secret_safe_segment("a&b") != _secret_safe_segment("a/b")
+
+    def test_same_id_is_deterministic(self):
+        from api.main import _secret_safe_segment
+
+        assert _secret_safe_segment("thehome&office") == _secret_safe_segment("thehome&office")
+
+    def test_all_unsafe_id_still_valid(self):
+        from api.main import _secret_safe_segment
+
+        seg = _secret_safe_segment("&&&")
+        assert seg
+        assert all(c.isalnum() or c in "-_" for c in seg)
+
+    def test_store_client_secret_builds_safe_name(self):
+        from api.main import _store_client_secret
+
+        sm = MagicMock()
+        with (
+            patch("api.main._get_sm", return_value=sm),
+            patch("api.main.get_project", return_value="test-project"),
+            patch("api.main.get_environment", return_value="staging"),
+        ):
+            name = _store_client_secret(
+                "thehome&office", "sp_api", {"refresh_token": "Atzr|tok"}
+            )
+        assert "&" not in name
+        assert name.startswith("kalilos-staging-sp-api-thehome-office-")
+        sm.add_secret_version.assert_called_once()
+
+
+class TestSpApiOAuthCallback:
+    """The OAuth callback must persist credentials even when the client id
+    contains characters that are invalid in a Secret Manager secret name."""
+
+    _APP_CREDS = {"client_id": "amzn1.app", "client_secret": "shh"}
+
+    def test_callback_persists_for_special_char_client_id(self, client):
+        """Regression for Matini: id 'thehome&office' connected but showed as
+        unchecked because the secret name was rejected and never stored."""
+        token_resp = MagicMock()
+        token_resp.ok = True
+        token_resp.json.return_value = {"refresh_token": "Atzr|newtoken"}
+
+        sm = MagicMock()
+        upsert = MagicMock()
+        with (
+            patch(
+                "api.main._pop_oauth_state",
+                return_value={
+                    "client_id": "thehome&office",
+                    "api_source": "sp_api",
+                    "account_type": "seller",
+                },
+            ),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main.requests.post", return_value=token_resp),
+            patch("api.main._get_sm", return_value=sm),
+            patch("api.main.get_project", return_value="test-project"),
+            patch("api.main.upsert_client", upsert),
+        ):
+            resp = client.get("/oauth/callback?spapi_oauth_code=code123&state=abc")
+
+        assert resp.status_code == 302
+        assert "oauth=success" in resp.headers["Location"]
+        # Credential persisted on the correct client doc with a sanitized secret.
+        upsert.assert_called_once()
+        called_client_id, fields = upsert.call_args[0]
+        assert called_client_id == "thehome&office"
+        assert "&" not in fields["sp_api_secret_name"]
+        assert fields["sp_api_secret_name"].startswith(
+            "kalilos-staging-sp-api-thehome-office-"
+        )
