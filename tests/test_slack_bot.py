@@ -363,7 +363,12 @@ class TestQueryOrders:
         assert params["day_start"] == datetime(2026, 7, 13, 7, 0, tzinfo=timezone.utc)
         assert params["day_end"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
 
-    def test_hourly_still_filters_purchases_since_midnight(self):
+    def test_hourly_bounds_current_day_by_purchase_date_not_report_date(self):
+        """Hourly Total Sales freeze bug: the hourly query must bound the current
+        day purely by its purchase-date window. Filtering on the ingestion
+        ``report_date`` partition pinned Total Sales to the first run's pull
+        while ads metrics kept refreshing, so PPC Sales could exceed Total
+        Sales."""
         from slack_bot.main import _query_orders
 
         captured: dict = {}
@@ -377,6 +382,76 @@ class TestQueryOrders:
 
         query = captured["query"]
         assert "purchase_date >= @mkt_midnight" in query
+        # The fix: bound the top of the current day too, and never pin to the
+        # ingestion report_date partition (the source of the freeze).
+        assert "purchase_date < @mkt_next_midnight" in query
+        assert "report_date" not in query
+
+        params = captured["params"]
+        # US -> America/Los_Angeles; 2026-07-13 is PDT (UTC-7): 00:00 local = 07:00Z,
+        # next midnight 2026-07-14 00:00 local = 2026-07-14 07:00Z.
+        assert params["mkt_midnight"] == datetime(2026, 7, 13, 7, 0, tzinfo=timezone.utc)
+        assert params["mkt_next_midnight"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
+
+
+class TestTotalSalesInvariant:
+    """Total Sales >= PPC Sales must hold for every hourly row: total ordered
+    sales include ad-attributed sales, so PPC Sales can never exceed them."""
+
+    def test_passes_when_total_ge_ppc(self):
+        from slack_bot.main import MarketplaceMetrics, _check_total_sales_invariant
+
+        metrics = [
+            MarketplaceMetrics(marketplace="US", currency="USD", total_sales=1000, units=10, spend=100, ppc_sales=500),
+            MarketplaceMetrics(marketplace="CA", currency="CAD", total_sales=500, units=5, spend=50, ppc_sales=500),
+        ]
+        # Should not raise (equality is allowed).
+        _check_total_sales_invariant(metrics)
+
+    def test_raises_when_ppc_exceeds_total(self):
+        from slack_bot.main import (
+            MarketplaceMetrics,
+            TotalSalesInvariantError,
+            _check_total_sales_invariant,
+        )
+
+        metrics = [
+            MarketplaceMetrics(marketplace="US", currency="USD", total_sales=100, units=1, spend=50, ppc_sales=300),
+        ]
+        with pytest.raises(TotalSalesInvariantError) as exc_info:
+            _check_total_sales_invariant(metrics)
+        assert "US" in str(exc_info.value)
+
+    def test_brook_whittle_6am_regression(self):
+        """Fixture from the ticket: Brook Whittle 6 AM had PPC Sales $293.79
+        against a frozen Total Sales of $90.69 — impossible. The invariant must
+        catch it. (Fails before the fix added the assertion; passes after.)"""
+        from slack_bot.main import (
+            MarketplaceMetrics,
+            TotalSalesInvariantError,
+            _check_total_sales_invariant,
+        )
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=90.69, units=3, spend=102.57, ppc_sales=293.79,
+            ),
+        ]
+        with pytest.raises(TotalSalesInvariantError) as exc_info:
+            _check_total_sales_invariant(metrics)
+        msg = str(exc_info.value)
+        assert "293.79" in msg
+        assert "90.69" in msg
+
+    def test_tolerance_allows_subcent_rounding(self):
+        from slack_bot.main import MarketplaceMetrics, _check_total_sales_invariant
+
+        metrics = [
+            MarketplaceMetrics(marketplace="US", currency="USD", total_sales=100.0, units=1, spend=10, ppc_sales=100.004),
+        ]
+        # Within half-cent rounding tolerance — must not raise.
+        _check_total_sales_invariant(metrics)
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +518,38 @@ class TestHandlerIntegration:
         assert "Day 1 Recap" in fallback
         blocks = mock_post.call_args[0][1]
         assert "Day 1 Recap" in blocks[0]["text"]["text"]
+
+    def test_invariant_violation_alerts_and_does_not_post(self):
+        """When Total Sales < PPC Sales, the run must alert (failed activity +
+        ERROR log) instead of posting a misleading update."""
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        bad_metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=90.69, units=3, spend=102.57, ppc_sales=293.79,
+            ),
+        ]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=bad_metrics),
+            patch("slack_bot.main.post_message") as mock_post,
+            patch("slack_bot.main.log_bot_activity") as mock_log,
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 0
+        assert body["errors"] == 1
+        mock_post.assert_not_called()
+        log_data = mock_log.call_args[0][0]
+        assert log_data["status"] == "failed"
+        assert "invariant" in log_data["error"].lower()
 
     def test_logs_failure(self):
         from slack_bot.main import handler

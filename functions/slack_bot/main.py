@@ -70,6 +70,38 @@ class MarketplaceMetrics:
         return (self.spend / self.total_sales * 100) if self.total_sales else 0.0
 
 
+# Half-cent tolerance so currency rounding noise (e.g. total == ppc within a
+# fraction of a cent) does not trip the invariant; only real violations fail.
+_INVARIANT_TOLERANCE = 0.005
+
+
+class TotalSalesInvariantError(Exception):
+    """Raised when an hourly row has PPC Sales greater than Total Sales.
+
+    Total ordered sales include ad-attributed sales, so PPC Sales can never
+    exceed Total Sales. A violation means Total Sales is stale/frozen (the very
+    bug this guard protects against), so we alert instead of posting a
+    misleading update.
+    """
+
+
+def _check_total_sales_invariant(metrics: list[MarketplaceMetrics]) -> None:
+    """Assert Total Sales >= PPC Sales for every hourly row.
+
+    Raises ``TotalSalesInvariantError`` listing each offending marketplace.
+    """
+    violations = [
+        m for m in metrics
+        if m.ppc_sales > m.total_sales + _INVARIANT_TOLERANCE
+    ]
+    if violations:
+        detail = "; ".join(
+            f"{m.marketplace}: PPC Sales={m.ppc_sales:.2f} > Total Sales={m.total_sales:.2f}"
+            for m in violations
+        )
+        raise TotalSalesInvariantError(detail)
+
+
 def handler(request: flask.Request) -> tuple[dict, int]:
     now = datetime.now(timezone.utc)
 
@@ -147,6 +179,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 text_fallback = f"Day {recap_day} Recap — {client_name} | {event_name}"
             else:
                 metrics = _query_metrics(client_id, marketplaces, now)
+                _check_total_sales_invariant(metrics)
                 blocks = _build_message_blocks(
                     client_name=client_name,
                     event_name=event_name,
@@ -167,6 +200,24 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "marketplaces_reported": marketplaces,
             })
             sent += 1
+
+        except TotalSalesInvariantError as exc:
+            logger.error(
+                "Total Sales invariant violated — skipping hourly post",
+                extra={
+                    "client_id": client_id,
+                    "phase": "total_sales_invariant",
+                    "error_code": "TOTAL_SALES_LT_PPC",
+                    "detail": str(exc),
+                },
+            )
+            errors.append(f"{client_id}: invariant: {str(exc)[:100]}")
+            log_bot_activity({
+                "client_id": client_id,
+                "event_id": live_event["id"],
+                "status": "failed",
+                "error": f"Total Sales invariant violated: {str(exc)[:500]}",
+            })
 
         except Exception as exc:
             logger.exception("Failed to send hourly bot message", extra={"client_id": client_id})
@@ -241,18 +292,21 @@ def _query_orders(
 ) -> dict[str, Any]:
     """Sum orders for a single marketplace on ``report_date``.
 
-    Hourly updates filter to purchases since marketplace midnight today.
-    Day-end recaps sum the completed day's full window (00:00–23:59 in the
-    marketplace's local timezone).
+    Hourly updates filter to purchases within the current marketplace-local day
+    (midnight today up to next midnight). Day-end recaps sum the completed day's
+    full window (00:00–23:59 in the marketplace's local timezone).
 
     Both paths key off each order's ``purchase_date`` rather than the ingestion
     ``report_date`` partition. The ``report_date`` is the *start* of the report's
     pulled range, so a multi-day pull (e.g. by-last-update orders) stamps rows
-    spanning many purchase days with a single range-start date. Filtering the
-    recap on ``report_date`` therefore summed several days of orders into one
-    day, roughly doubling Total Sales. Orders are deduped at ingestion (MERGE on
-    order id + sku), so summing ``item_price`` over the purchase-date window is
-    correct and does not double count.
+    spanning many purchase days with a single range-start date — and later
+    hourly pulls land today's orders under a different range-start partition.
+    Filtering on ``report_date`` therefore (a) summed several days of orders
+    into one recap day, roughly doubling Total Sales, and (b) froze the hourly
+    Total Sales to whichever partition matched the first run while ads metrics
+    kept refreshing — letting PPC Sales exceed Total Sales. Orders are deduped
+    at ingestion (MERGE on order id + sku), so summing ``item_price`` over the
+    purchase-date window is correct and does not double count.
     """
     from shared.config import MARKETPLACE_TIMEZONES
 
@@ -287,7 +341,9 @@ def _query_orders(
     else:
         mkt_now = now.astimezone(mkt_tz)
         mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        mkt_next_midnight = mkt_midnight + timedelta(days=1)
         mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))
+        mkt_next_midnight_utc = mkt_next_midnight.astimezone(ZoneInfo("UTC"))
 
         query = f"""
             SELECT
@@ -295,18 +351,21 @@ def _query_orders(
                 COALESCE(SUM(quantity), 0) AS units
             FROM `{project}.{dataset}.orders`
             WHERE client_id = @client_id
-              AND report_date = @today
               AND purchase_date >= @mkt_midnight
+              AND purchase_date < @mkt_next_midnight
               AND order_status != 'Cancelled'
               AND marketplace = @marketplace
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-                bigquery.ScalarQueryParameter("today", "DATE", report_date),
                 bigquery.ScalarQueryParameter(
                     "mkt_midnight", "TIMESTAMP",
                     mkt_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ),
+                bigquery.ScalarQueryParameter(
+                    "mkt_next_midnight", "TIMESTAMP",
+                    mkt_next_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 ),
                 bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
             ]
