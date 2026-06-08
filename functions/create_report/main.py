@@ -19,6 +19,7 @@ from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, get_
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.firestore_utils import create_job, update_job_status
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
+from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import marketplace_yesterday
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
@@ -89,6 +90,24 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         update_job_status(job_id, "requesting")
 
         if api_source == "sp_api":
+            removed_reason = removed_report_reason(report_type)
+            if removed_reason:
+                logger.warning(
+                    "Rejected removed SP-API report type",
+                    extra={"report_type": report_type, "client_id": client_id},
+                )
+                if job_id:
+                    update_job_status(
+                        job_id,
+                        "failed",
+                        error_details={
+                            "message": removed_reason,
+                            "phase": "create_report",
+                            "code": "REPORT_REMOVED",
+                        },
+                    )
+                return {"error": removed_reason, "code": "REPORT_REMOVED"}, 422
+
             creds = get_sp_credentials(client_id)
             report_params = _ensure_sp_report_options(report_type, report_params)
             report_id = sp_api_client.create_report(

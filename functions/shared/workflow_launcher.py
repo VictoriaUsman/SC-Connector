@@ -21,6 +21,7 @@ from google.cloud.workflows.executions_v1.types import Execution
 
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES
 from shared.firestore_utils import create_job, update_job_status
+from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import (
     compute_date_range,
     compute_report_dates,
@@ -237,6 +238,45 @@ def launch_for_marketplace(
     for report_type in report_types:
         effective_source = infer_api_source(report_type, schedule_api_source)
         type_params = params_map.get(report_type, {})
+
+        # Report types Amazon has permanently removed are accepted by createReport
+        # but immediately cancelled, wasting the limited createReport quota and
+        # surfacing a generic "no data" failure.  Record a clearly-documented
+        # failed job instead of launching a doomed workflow.
+        removed_reason = removed_report_reason(report_type)
+        if removed_reason and effective_source == "sp_api":
+            job_data = {
+                "client_id": client_id,
+                "api_source": effective_source,
+                "marketplace": marketplace,
+                "report_type": report_type,
+                "schedule_id": schedule["id"],
+                "frequency": frequency,
+                "execution_date": execution_date_val.isoformat(),
+            }
+            if extra_job_fields:
+                job_data.update(extra_job_fields)
+            job_id = create_job(job_data)
+            update_job_status(
+                job_id,
+                "failed",
+                error_details={
+                    "message": removed_reason,
+                    "phase": "create_report",
+                    "code": "REPORT_REMOVED",
+                },
+            )
+            logger.warning(
+                "Skipped removed SP-API report type",
+                extra={
+                    "report_type": report_type,
+                    "client_id": client_id,
+                    "marketplace": marketplace,
+                    "job_id": job_id,
+                },
+            )
+            job_ids.append(job_id)
+            continue
 
         for variant_params in _expand_report_option_variants(type_params):
             report_params = {**variant_params}
