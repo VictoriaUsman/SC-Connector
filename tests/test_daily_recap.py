@@ -175,6 +175,7 @@ class TestHandlerGating:
                 _make_bot_config(daily_recap_enabled=True, hourly_enabled=False),
             ]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._resolve_effective_date", return_value="2026-06-04"),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
@@ -196,6 +197,7 @@ class TestHandlerDelivery:
             patch("daily_recap.main.datetime") as mock_dt,
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._resolve_effective_date", return_value="2026-06-04") as mock_resolve,
             patch("daily_recap.main._query_account_totals", return_value=totals) as mock_query,
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity") as mock_log,
@@ -206,7 +208,9 @@ class TestHandlerDelivery:
         assert status == 200
         assert body["messages_sent"] == 1
 
-        # Queried the previous full calendar day in the client's timezone.
+        # Resolution targets the previous full calendar day in the client's timezone.
+        assert mock_resolve.call_args[0][2] == "2026-06-04"
+        # The resolved effective date drives the metric query.
         assert mock_query.call_args[0][2] == "2026-06-04"
 
         blocks = mock_post.call_args[0][1]
@@ -230,6 +234,7 @@ class TestHandlerDelivery:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._resolve_effective_date", return_value="2026-06-04"),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
@@ -244,6 +249,7 @@ class TestHandlerDelivery:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._resolve_effective_date", return_value="2026-06-04"),
             patch("daily_recap.main._query_account_totals", side_effect=RuntimeError("BQ down")),
             patch("daily_recap.main.log_bot_activity") as mock_log,
         ):
@@ -361,3 +367,106 @@ class TestQueryConstruction:
         ads_sql = next(c[0] for c in fake.calls if "UNION ALL" in c[0])
         assert "purchase_date" in orders_sql
         assert "ROW_NUMBER()" in ads_sql
+
+
+# ---------------------------------------------------------------------------
+# Effective-date resolution (regression: recap showed 0 when yesterday's data
+# had not been ingested yet due to Amazon reporting / schedule latency)
+# ---------------------------------------------------------------------------
+
+import datetime as _dt  # noqa: E402
+
+
+class TestResolveEffectiveDate:
+    def test_falls_back_to_latest_available_day(self):
+        """When yesterday has no rows, resolve the most recent day that does."""
+        from daily_recap.main import _resolve_effective_date
+
+        # The recap targets 2026-06-08, but the freshest ingested data is 06-07.
+        fake = _FakeBQ([("data_date", [{"data_date": _dt.date(2026, 6, 7)}])])
+        with (
+            patch("daily_recap.main._get_bq", return_value=fake),
+            patch.dict(os.environ, {"GCP_PROJECT": "proj", "BQ_DATASET": "ds"}),
+        ):
+            resolved = _resolve_effective_date(
+                "c1", ["US"], "2026-06-08", ZoneInfo("America/Los_Angeles"),
+            )
+
+        assert resolved == "2026-06-07"
+        sql, job_config = fake.calls[0]
+        # Resolution keys on the actual data date, never the ingestion partition.
+        assert "MAX(date)" in sql
+        assert "report_date" not in sql
+        # Bounded lookback below the target day, capped at the target day.
+        # BigQuery coerces DATE params to datetime.date.
+        params = _params(job_config)
+        assert params["target_date"] == _dt.date(2026, 6, 8)
+        assert params["lookback_start"] == _dt.date(2026, 5, 25)  # 14 days before target
+        # Considers ads campaign tables and orders purchase dates.
+        for table in ("sp_campaigns", "sb_campaigns", "sd_campaigns", "orders"):
+            assert table in sql
+
+    def test_returns_target_when_yesterday_has_data(self):
+        from daily_recap.main import _resolve_effective_date
+
+        fake = _FakeBQ([("data_date", [{"data_date": _dt.date(2026, 6, 8)}])])
+        with (
+            patch("daily_recap.main._get_bq", return_value=fake),
+            patch.dict(os.environ, {"GCP_PROJECT": "proj", "BQ_DATASET": "ds"}),
+        ):
+            resolved = _resolve_effective_date(
+                "c1", ["US"], "2026-06-08", ZoneInfo("America/Los_Angeles"),
+            )
+
+        assert resolved == "2026-06-08"
+
+    def test_returns_target_when_no_data_in_window(self):
+        """A genuinely dark account still legitimately reports zeros for the day."""
+        from daily_recap.main import _resolve_effective_date
+
+        fake = _FakeBQ([("data_date", [{"data_date": None}])])
+        with (
+            patch("daily_recap.main._get_bq", return_value=fake),
+            patch.dict(os.environ, {"GCP_PROJECT": "proj", "BQ_DATASET": "ds"}),
+        ):
+            resolved = _resolve_effective_date(
+                "c1", ["US"], "2026-06-08", ZoneInfo("America/Los_Angeles"),
+            )
+
+        assert resolved == "2026-06-08"
+
+
+class TestHandlerUsesEffectiveDate:
+    def test_recap_labels_and_queries_latest_available_day(self):
+        """End to end: a lagging client recaps its freshest day, not an empty one."""
+        from daily_recap.main import handler, AccountTotals
+
+        totals = AccountTotals(spend=12.34, ppc_sales=56.78, total_sales=0.0)
+        now = datetime(2026, 6, 9, 10, 0, tzinfo=timezone.utc)  # -> targets 06-08
+
+        with (
+            patch("daily_recap.main.datetime") as mock_dt,
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            # Yesterday (06-08) has no data yet; latest available is 06-07.
+            patch("daily_recap.main._resolve_effective_date", return_value="2026-06-07") as mock_resolve,
+            patch("daily_recap.main._query_account_totals", return_value=totals) as mock_query,
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity") as mock_log,
+        ):
+            mock_dt.now.return_value = now
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+        # Resolution targeted yesterday...
+        assert mock_resolve.call_args[0][2] == "2026-06-08"
+        # ...but metrics + the date line use the resolved (freshest) day.
+        assert mock_query.call_args[0][2] == "2026-06-07"
+        text = mock_post.call_args[0][1][0]["text"]["text"]
+        assert text.startswith("06/07/26\n")
+        assert "• Spend: $12.34" in text
+
+        log_data = mock_log.call_args[0][0]
+        assert log_data["recap_date"] == "2026-06-07"
+        assert log_data["target_date"] == "2026-06-08"
