@@ -169,6 +169,38 @@ def _parse_tsv(
     return rows
 
 
+def _dedupe_merge_rows(rows: list[dict], schema: TableSchema) -> list[dict]:
+    """Collapse rows that share the same MERGE key down to one row each.
+
+    BigQuery's MERGE rejects a target row that matches more than one source
+    row ("UPDATE/MERGE must match at most one source row for each target row").
+    Amazon's by-last-update All Orders flat file re-emits the same
+    ``(amazon_order_id, sku)`` line — across pulls and occasionally within a
+    single pull — so the staging table could hold duplicate dedup keys and the
+    MERGE failed on every run after the first, freezing the ingested data.
+
+    Keep the most recently updated row per key (matching the WHEN MATCHED
+    UPDATE "latest wins" semantics) so the staging source is unique and the
+    MERGE always succeeds.
+    """
+    if not schema.dedup_key:
+        return rows
+
+    key_cols = (*schema.dedup_key, "client_id", "marketplace")
+
+    def recency(row: dict) -> str:
+        # ISO-8601 strings sort chronologically; fall back to ingest time.
+        return str(row.get("last_updated_date") or row.get("ingested_at") or "")
+
+    best: dict[tuple, dict] = {}
+    for row in rows:
+        key = tuple(row.get(col) for col in key_cols)
+        existing = best.get(key)
+        if existing is None or recency(row) >= recency(existing):
+            best[key] = row
+    return list(best.values())
+
+
 def _load_with_merge(
     table_ref: str,
     schema: TableSchema,
@@ -179,6 +211,10 @@ def _load_with_merge(
 ) -> None:
     """Orders dedup: MERGE on dedup_key columns — update existing, insert new."""
     client = _get_bq_client()
+
+    # The staging source must be unique on the MERGE key; otherwise BigQuery
+    # raises "UPDATE/MERGE must match at most one source row for each target row".
+    rows = _dedupe_merge_rows(rows, schema)
 
     suffix = f"_staging_{client_id}_{marketplace}".replace("-", "_")
     staging_table = f"{table_ref}{suffix}"
