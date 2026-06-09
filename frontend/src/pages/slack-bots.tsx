@@ -154,24 +154,39 @@ function ActiveEventBanner({
 // Create / Edit Event Dialog
 // ---------------------------------------------------------------------------
 
+const NO_PRIOR_EVENT = "__none__";
+
 function EventDialog({
   open,
   onOpenChange,
   initial,
+  events,
   onSubmit,
   loading,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initial?: Event;
-  onSubmit: (data: { name: string; start_date: string; end_date: string }) => void;
+  events: Event[];
+  onSubmit: (data: {
+    name: string;
+    start_date: string;
+    end_date: string;
+    prior_event_id: string;
+  }) => void;
   loading: boolean;
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [startDate, setStartDate] = useState(initial?.start_date ?? "");
   const [endDate, setEndDate] = useState(initial?.end_date ?? "");
+  const [priorEventId, setPriorEventId] = useState(
+    initial?.prior_event_id ?? NO_PRIOR_EVENT,
+  );
 
   const isEdit = !!initial;
+
+  // Any other event can be linked as the prior-year comparison source.
+  const priorOptions = events.filter((e) => e.id !== initial?.id);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -206,6 +221,31 @@ function EventDialog({
               />
             </div>
           </div>
+          <div className="space-y-2">
+            <Label>Prior-Year Event (for YoY)</Label>
+            <Select
+              value={priorEventId}
+              onValueChange={(v) => v && setPriorEventId(v)}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="None — no year-over-year comparison" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PRIOR_EVENT}>
+                  None — no year-over-year comparison
+                </SelectItem>
+                {priorOptions.map((e) => (
+                  <SelectItem key={e.id} value={e.id}>
+                    {e.name} ({e.start_date} — {e.end_date})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Link last year's equivalent event so the midnight recap can show
+              year-over-year stats. Leave as None to omit YoY.
+            </p>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -213,7 +253,15 @@ function EventDialog({
           </Button>
           <Button
             disabled={!name || !startDate || !endDate || loading}
-            onClick={() => onSubmit({ name, start_date: startDate, end_date: endDate })}
+            onClick={() =>
+              onSubmit({
+                name,
+                start_date: startDate,
+                end_date: endDate,
+                prior_event_id:
+                  priorEventId === NO_PRIOR_EVENT ? "" : priorEventId,
+              })
+            }
           >
             {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isEdit ? "Save" : "Create"}
@@ -492,8 +540,14 @@ export function SlackBots() {
   } | null>(null);
 
   const configByClientId = new Map(botConfigs.map((c) => [c.client_id, c]));
+  const eventNameById = new Map(events.map((e) => [e.id, e.name]));
 
-  const handleCreateEvent = (data: { name: string; start_date: string; end_date: string }) => {
+  const handleCreateEvent = (data: {
+    name: string;
+    start_date: string;
+    end_date: string;
+    prior_event_id: string;
+  }) => {
     createEvent.mutate(data, {
       onSuccess: () => {
         toast.success("Event created");
@@ -503,7 +557,12 @@ export function SlackBots() {
     });
   };
 
-  const handleUpdateEvent = (data: { name: string; start_date: string; end_date: string }) => {
+  const handleUpdateEvent = (data: {
+    name: string;
+    start_date: string;
+    end_date: string;
+    prior_event_id: string;
+  }) => {
     if (!editingEvent) return;
     updateEvent.mutate({ id: editingEvent.id, ...data }, {
       onSuccess: () => {
@@ -602,6 +661,7 @@ export function SlackBots() {
                   <TableHead>Name</TableHead>
                   <TableHead>Start</TableHead>
                   <TableHead>End</TableHead>
+                  <TableHead>Prior Year</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
@@ -612,6 +672,15 @@ export function SlackBots() {
                     <TableCell className="font-medium">{event.name}</TableCell>
                     <TableCell>{event.start_date}</TableCell>
                     <TableCell>{event.end_date}</TableCell>
+                    <TableCell>
+                      {event.prior_event_id && eventNameById.get(event.prior_event_id) ? (
+                        <span className="text-sm">
+                          {eventNameById.get(event.prior_event_id)}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <EventStatusBadge status={event.status} />
                     </TableCell>
@@ -751,6 +820,7 @@ export function SlackBots() {
       <EventDialog
         open={showCreateEvent}
         onOpenChange={setShowCreateEvent}
+        events={events}
         onSubmit={handleCreateEvent}
         loading={createEvent.isPending}
       />
@@ -760,6 +830,7 @@ export function SlackBots() {
           open
           onOpenChange={(open) => !open && setEditingEvent(undefined)}
           initial={editingEvent}
+          events={events}
           onSubmit={handleUpdateEvent}
           loading={updateEvent.isPending}
         />

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { api } from "@/lib/api";
 
 describe("getSpApiAuthUrl", () => {
@@ -28,5 +28,62 @@ describe("getSpApiAuthUrl", () => {
     const params = new URLSearchParams(url.split("?")[1] ?? "");
     expect(params.get("client_id")).toBe("acme-corp");
     expect(params.get("region")).toBe("eu");
+  });
+});
+
+describe("event prior_event_id linkage", () => {
+  // Regression for CU-868jx21hw: the midnight Day N recap renders YoY stats as
+  // "—" whenever the live event has no prior_event_id. The create/edit event
+  // payload previously dropped prior_event_id entirely (the API type only
+  // allowed name/start_date/end_date), so it could never be set and YoY never
+  // populated. These tests assert the field is forwarded to the backend.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockFetchOk() {
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ id: "e1", status: "created" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+  }
+
+  it("sends prior_event_id when creating an event", async () => {
+    const fetchSpy = mockFetchOk();
+
+    await api.createEvent({
+      name: "Prime Day 2026",
+      start_date: "2026-07-13",
+      end_date: "2026-07-14",
+      prior_event_id: "prime_day_2025",
+    });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.prior_event_id).toBe("prime_day_2025");
+  });
+
+  it("forwards prior_event_id when updating an event", async () => {
+    const fetchSpy = mockFetchOk();
+
+    await api.updateEvent("e1", { prior_event_id: "prime_day_2025" });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.prior_event_id).toBe("prime_day_2025");
+  });
+
+  it("can clear the link by sending an empty prior_event_id", async () => {
+    const fetchSpy = mockFetchOk();
+
+    await api.updateEvent("e1", { prior_event_id: "" });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.prior_event_id).toBe("");
   });
 });

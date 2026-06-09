@@ -9,7 +9,7 @@ export function useEvents() {
 export function useCreateEvent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string; start_date: string; end_date: string }) =>
+    mutationFn: (data: { name: string; start_date: string; end_date: string; prior_event_id?: string }) =>
       api.createEvent(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["events"] }),
   });

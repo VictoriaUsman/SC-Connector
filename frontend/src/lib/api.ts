@@ -126,7 +126,7 @@ export const api = {
   // Events
   listEvents: () => request<Event[]>("/events"),
   getEvent: (id: string) => request<Event>(`/events/${id}`),
-  createEvent: (data: { name: string; start_date: string; end_date: string }) =>
+  createEvent: (data: { name: string; start_date: string; end_date: string; prior_event_id?: string }) =>
     request<{ id: string; status: string }>("/events", { method: "POST", body: JSON.stringify(data) }),
   updateEvent: (id: string, data: Partial<Event>) =>
     request<{ id: string; status: string }>(`/events/${id}`, { method: "PUT", body: JSON.stringify(data) }),
