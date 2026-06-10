@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
-from shared.report_converter import maybe_convert_to_tsv
+from shared.report_converter import maybe_convert_to_tsv, rows_to_tsv
 
 
 class TestMaybeConvertToTsv:
@@ -445,3 +445,30 @@ class TestSbCampaignAggregation:
         cost_idx = header.index("cost")
         assert body[1][units_idx] == ""
         assert sum(float(r[cost_idx]) for r in body) == pytest.approx(30.0)
+
+
+class TestRowsToTsv:
+    """The synchronous fetch_api path converts in-memory dict rows directly."""
+
+    def test_flattens_rows_with_header(self):
+        rows = [
+            {"asin": "A1", "window_start": "2026-01-01", "totalSubscriptionsRevenue": 12.5},
+            {"asin": "A2", "window_start": "2026-01-01", "totalSubscriptionsRevenue": 0},
+        ]
+        content = rows_to_tsv(rows)
+        lines = content.decode().strip().split("\n")
+        assert lines[0] == "asin\twindow_start\ttotalSubscriptionsRevenue"
+        assert lines[1] == "A1\t2026-01-01\t12.5"
+
+    def test_empty_rows_yield_empty_bytes(self):
+        assert rows_to_tsv([]) == b""
+
+    def test_output_columns_filter(self):
+        rows = [{"asin": "A1", "sku": "S1", "drop": "x"}]
+        content = rows_to_tsv(rows, output_columns=["asin", "sku"])
+        assert content.decode().splitlines()[0] == "asin\tsku"
+
+    def test_nested_dict_is_flattened(self):
+        rows = [{"asin": "A1", "metrics": {"units": 3}}]
+        content = rows_to_tsv(rows)
+        assert "metrics.units" in content.decode().splitlines()[0]

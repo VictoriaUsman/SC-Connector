@@ -105,6 +105,32 @@ _SD_CAMPAIGNS_COLUMNS = [
     {"name": "new_to_brand_sales", "type": "FLOAT", "mode": "NULLABLE"},
 ]
 
+_SNS_OFFER_METRICS_COLUMNS = [
+    {"name": "window_start", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "window_end", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "asin", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "sku", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "brand_name", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "fulfillment_channel_type", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "currency", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "total_subscriptions_revenue", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "shipped_subscription_units", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "active_subscriptions", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "lost_revenue_due_to_oos", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "not_delivered_due_to_oos", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "revenue_penetration", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "coupons_revenue_penetration", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "share_of_coupon_subscriptions", "type": "FLOAT", "mode": "NULLABLE"},
+]
+
+_SNS_SP_METRICS_COLUMNS = [
+    {"name": "window_start", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "window_end", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "currency", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "total_subscriptions_revenue", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "shipped_subscription_units", "type": "FLOAT", "mode": "NULLABLE"},
+]
+
 TABLE_DEFS: list[dict] = [
     {
         "name": "orders",
@@ -133,6 +159,20 @@ TABLE_DEFS: list[dict] = [
         "partition_field": "report_date",
         "clustering": ["client_id", "marketplace"],
         "description": "Sponsored Display campaign-level metrics",
+    },
+    {
+        "name": "sns_offer_metrics",
+        "columns": _SNS_OFFER_METRICS_COLUMNS,
+        "partition_field": "report_date",
+        "clustering": ["client_id", "marketplace"],
+        "description": "Subscribe & Save offer-level metrics from the Replenishment API",
+    },
+    {
+        "name": "sns_sp_metrics",
+        "columns": _SNS_SP_METRICS_COLUMNS,
+        "partition_field": "report_date",
+        "clustering": ["client_id", "marketplace"],
+        "description": "Subscribe & Save account-level metrics from the Replenishment API",
     },
 ]
 

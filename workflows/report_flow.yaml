@@ -61,6 +61,11 @@ report_pipeline:
             raise:
               message: "api_source must be sp_api or ads_api"
 
+    - route_mode:
+        switch:
+          - condition: ${default(map.get(args, "mode"), "report") == "api_call"}
+            next: api_call_fetch
+
     - log_start:
         call: sys.log
         args:
@@ -312,6 +317,99 @@ report_pipeline:
                 severity: ERROR
           - raise_timeout:
               raise: '${"Poll timeout after " + string(poll_count) + " attempts"}'
+
+    # --- Synchronous API-call path (mode == "api_call") -------------------
+    # Reached only via the route_mode jump above. The fetch_api function does
+    # auth + REST fetch + Drive upload + marks the job completed in one call;
+    # BigQuery ingestion then runs as a best-effort follow-up, exactly like the
+    # report path.
+    - api_call_fetch:
+        call: throttle_retry_call
+        args:
+          url: __FETCH_API_FUNCTION_URL__
+          body:
+            api_source: ${args.api_source}
+            client_id: ${args.client_id}
+            marketplace: ${args.marketplace}
+            report_type: ${args.report_type}
+            report_params: ${map.get(args, "report_params")}
+            job_id: ${map.get(args, "job_id")}
+            frequency: ${default(map.get(args, "frequency"), "on_demand")}
+            folder_name: ${default(map.get(args, "folder_name"), "")}
+            subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
+            execution_date: ${default(map.get(args, "execution_date"), "")}
+            report_date: ${default(map.get(args, "report_date"), "")}
+            report_end_date: ${default(map.get(args, "report_end_date"), "")}
+          max_throttle_retries: 5
+          initial_wait_seconds: 30
+        result: fetch_response
+
+    - api_call_ingest:
+        try:
+          call: http.post
+          args:
+            url: __INGEST_BIGQUERY_FUNCTION_URL__
+            auth:
+              type: OIDC
+            body:
+              api_source: ${args.api_source}
+              client_id: ${args.client_id}
+              marketplace: ${args.marketplace}
+              report_type: ${args.report_type}
+              report_date: ${default(map.get(args, "report_date"), "")}
+              job_id: ${map.get(args, "job_id")}
+              gdrive_file_id: ${fetch_response.body.drive_file_id}
+          result: api_call_ingest_response
+        except:
+          as: api_ingest_error
+          steps:
+            - log_api_ingest_error:
+                call: sys.log
+                args:
+                  json:
+                    component: "report-flow"
+                    phase: "ingest_bigquery"
+                    error_type: "ingest_error"
+                    message: "BQ ingestion failed (data delivered to Drive, not loaded to BigQuery)"
+                    job_id: ${map.get(args, "job_id")}
+                    client_id: ${args.client_id}
+                    report_type: ${args.report_type}
+                    marketplace: ${args.marketplace}
+                    error: ${text.decode(json.encode(api_ingest_error))}
+                  severity: ERROR
+            - mark_api_ingest_failed:
+                call: http.patch
+                args:
+                  url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + args.job_id + "?updateMask.fieldPaths=ingest_status&updateMask.fieldPaths=ingest_error"}'
+                  auth:
+                    type: OAuth2
+                  body:
+                    fields:
+                      ingest_status:
+                        stringValue: "failed"
+                      ingest_error:
+                        stringValue: ${text.decode(json.encode(api_ingest_error))}
+
+    - log_api_call_complete:
+        call: sys.log
+        args:
+          json:
+            component: "report-flow"
+            phase: "complete"
+            message: "API call flow complete"
+            job_id: ${map.get(args, "job_id")}
+            client_id: ${args.client_id}
+            report_type: ${args.report_type}
+            marketplace: ${args.marketplace}
+            drive_file_id: ${fetch_response.body.drive_file_id}
+          severity: INFO
+
+    - return_api_call_result:
+        return:
+          status: "completed"
+          job_id: ${map.get(args, "job_id")}
+          drive_file_id: ${fetch_response.body.drive_file_id}
+          drive_path: ${fetch_response.body.drive_path}
 
 non_throttle_retry:
   params: [e]

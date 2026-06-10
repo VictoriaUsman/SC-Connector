@@ -20,6 +20,7 @@ from google.cloud.workflows.executions_v1 import ExecutionsClient
 from google.cloud.workflows.executions_v1.types import Execution
 
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES
+from shared.api_operations import get_api_operation, is_api_operation
 from shared.firestore_utils import create_job, update_job_status
 from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import (
@@ -65,8 +66,14 @@ def build_payload(
     schedule_id: str | None = None,
     execution_date: str | None = None,
     report_date: str | None = None,
+    report_end_date: str | None = None,
+    mode: str = "report",
 ) -> dict[str, Any]:
-    """Construct the canonical workflow execution payload."""
+    """Construct the canonical workflow execution payload.
+
+    ``mode`` is ``"report"`` for the async create-report pipeline (default) or
+    ``"api_call"`` for the synchronous fetch path (``functions/fetch_api``).
+    """
     payload: dict[str, Any] = {
         "api_source": api_source,
         "client_id": client_id,
@@ -77,6 +84,7 @@ def build_payload(
         "frequency": frequency,
         "folder_name": folder_name,
         "subfolder_strategy": subfolder_strategy,
+        "mode": mode,
     }
     if schedule_id is not None:
         payload["schedule_id"] = schedule_id
@@ -84,6 +92,8 @@ def build_payload(
         payload["execution_date"] = execution_date
     if report_date is not None:
         payload["report_date"] = report_date
+    if report_end_date is not None:
+        payload["report_end_date"] = report_end_date
     return payload
 
 
@@ -129,9 +139,13 @@ def is_ads_report_type(report_type: str) -> bool:
 def infer_api_source(report_type: str, schedule_api_source: str) -> str:
     """Determine the effective API source for a report type.
 
-    When ``schedule_api_source`` is ``"both"``, the report type name determines
-    whether to call the SP API or Ads API. Otherwise uses the schedule's source.
+    Synchronous API operations declare their own ``api_source`` in the registry,
+    which always wins. Otherwise, when ``schedule_api_source`` is ``"both"`` the
+    report type name decides SP vs Ads; else the schedule's source is used.
     """
+    op = get_api_operation(report_type)
+    if op:
+        return op["api_source"]
     if schedule_api_source in ("sp_api", "ads_api"):
         return schedule_api_source
     return "ads_api" if is_ads_report_type(report_type) else "sp_api"
@@ -276,6 +290,54 @@ def launch_for_marketplace(
                 },
             )
             job_ids.append(job_id)
+            continue
+
+        # Synchronous API operations (e.g. Replenishment / S&S) take the
+        # fetch_api path instead of create-report -> poll -> download. They
+        # cover the full requested range in one call, so there is no report-
+        # option variant expansion and no single-day reconciliation re-pulls.
+        if is_api_operation(report_type):
+            op_params = {**type_params}
+            op_params.update(
+                compute_report_dates(marketplace, effective_source, start_date, end_date)
+            )
+            job_data = {
+                "client_id": client_id,
+                "api_source": effective_source,
+                "marketplace": marketplace,
+                "report_type": report_type,
+                "schedule_id": schedule["id"],
+                "frequency": frequency,
+                "report_date": start_date.isoformat(),
+                "execution_date": execution_date_val.isoformat(),
+                "mode": "api_call",
+            }
+            if end_date != start_date:
+                job_data["report_end_date"] = end_date.isoformat()
+            if extra_job_fields:
+                job_data.update(extra_job_fields)
+
+            job_id = create_job(job_data)
+            payload = build_payload(
+                api_source=effective_source,
+                client_id=client_id,
+                marketplace=marketplace,
+                report_type=report_type,
+                report_params=op_params,
+                job_id=job_id,
+                frequency=frequency,
+                folder_name=schedule.get("folder_name", ""),
+                subfolder_strategy=schedule.get("subfolder_strategy", "date"),
+                schedule_id=schedule["id"],
+                execution_date=execution_date_val.isoformat(),
+                report_date=start_date.isoformat(),
+                report_end_date=end_date.isoformat() if end_date != start_date else None,
+                mode="api_call",
+            )
+            launch_execution(parent, payload, job_id, error_phase="scheduler")
+            job_ids.append(job_id)
+            if stagger_seconds > 0:
+                time.sleep(stagger_seconds)
             continue
 
         for variant_params in _expand_report_option_variants(type_params):

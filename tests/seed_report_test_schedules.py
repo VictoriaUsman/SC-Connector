@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
 from shared.ads_report_config import ADS_REPORT_TYPES
+from shared.api_operations import API_OPERATIONS
 from shared.removed_reports import REMOVED_SP_REPORT_TYPES
 from shared.vendor_reports import VENDOR_SP_REPORT_TYPES
 
@@ -75,7 +76,6 @@ ALL_SP_REPORT_TYPES = [
     "GET_BRAND_ANALYTICS_SEARCH_CATALOG_PERFORMANCE_REPORT",
     "GET_MERCHANT_LISTINGS_DATA",
     "GET_FBA_INVENTORY_PLANNING_DATA",
-    "GET_FBA_SNS_PERFORMANCE_DATA",
 ]
 
 ALL_ADS_REPORT_TYPES = list(ADS_REPORT_TYPES.keys())
@@ -83,6 +83,10 @@ ALL_ADS_REPORT_TYPES = list(ADS_REPORT_TYPES.keys())
 # Vendor (1P) reports — require a Vendor Central account, so they live in their
 # own schedule (seeded only when a --vendor-client is supplied).
 ALL_VENDOR_REPORT_TYPES = sorted(VENDOR_SP_REPORT_TYPES)
+
+# Synchronous API operations (Replenishment / Subscribe & Save). These take the
+# fetch_api path rather than the create-report pipeline.
+ALL_API_OPERATIONS = list(API_OPERATIONS.keys())
 
 
 def classify_sp_reports() -> dict[str, list[str]]:
@@ -180,6 +184,19 @@ def build_test_schedules(
             marketplace=marketplace,
             timeframe={"strategy": "yesterday"},
             folder_name="test-reports-vendor",
+        ))
+
+    if ALL_API_OPERATIONS:
+        # Synchronous Replenishment / S&S operations (fetch_api path). A weekly
+        # window suits the Subscribe & Save metrics aggregation.
+        schedules.append(_base_schedule(
+            name="Test: Subscribe & Save (Replenishment API)",
+            client_ids=client_ids,
+            api_source="sp_api",
+            report_types=ALL_API_OPERATIONS,
+            marketplace=marketplace,
+            timeframe={"strategy": "last_calendar_week"},
+            folder_name="test-reports-sns",
         ))
 
     return schedules

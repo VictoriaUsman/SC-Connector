@@ -53,6 +53,7 @@ from shared.firestore_utils import (
     upsert_bot_config,
     upsert_client,
 )
+from shared.api_operations import is_api_operation
 from shared.workflow_launcher import (
     _expand_report_option_variants,
     build_payload,
@@ -914,6 +915,42 @@ def on_demand_route():
         effective_source = infer_api_source(report_type, api_source)
 
         base_rt_params: dict = {**report_params_map.get(report_type, {})}
+
+        # Synchronous API operations (e.g. Replenishment / S&S) go through the
+        # fetch_api path: one job for the full range, no report-option variants.
+        if is_api_operation(report_type):
+            op_params = {**base_rt_params, "dataStartTime": start_date, "dataEndTime": end_date}
+            job_id = create_job({
+                "client_id": data["client_id"],
+                "api_source": effective_source,
+                "marketplace": data["marketplace"],
+                "report_type": report_type,
+                "frequency": "on_demand",
+                "execution_date": execution_date,
+                "mode": "api_call",
+            })
+            payload = build_payload(
+                api_source=effective_source,
+                client_id=data["client_id"],
+                marketplace=data["marketplace"],
+                report_type=report_type,
+                report_params=op_params,
+                job_id=job_id,
+                frequency="on_demand",
+                folder_name=data.get("folder_name", ""),
+                subfolder_strategy=data.get("subfolder_strategy", "date"),
+                execution_date=execution_date,
+                report_date=start_date,
+                report_end_date=end_date if end_date != start_date else None,
+                mode="api_call",
+            )
+            try:
+                launch_execution(parent, payload, job_id, error_phase="trigger")
+                job_ids.append(job_id)
+            except Exception as exc:
+                logger.exception("On-demand API-call workflow failed", extra={"job_id": job_id, "report_type": report_type})
+                errors.append({"report_type": report_type, "error": str(exc)[:200]})
+            continue
 
         for variant_params in _expand_report_option_variants(base_rt_params):
             rt_params = {**variant_params}

@@ -30,6 +30,7 @@ def create(
         poll_url=cloud_functions["poll-status"].url,
         download_url=cloud_functions["download-upload"].url,
         ingest_url=cloud_functions["ingest-bigquery"].url,
+        fetch_api_url=cloud_functions["fetch-api"].url,
     ).apply(
         lambda urls: (
             template
@@ -38,6 +39,7 @@ def create(
             .replace("__POLL_STATUS_FUNCTION_URL__", urls["poll_url"])
             .replace("__DOWNLOAD_UPLOAD_FUNCTION_URL__", urls["download_url"])
             .replace("__INGEST_BIGQUERY_FUNCTION_URL__", urls["ingest_url"])
+            .replace("__FETCH_API_FUNCTION_URL__", urls["fetch_api_url"])
         )
     )
 

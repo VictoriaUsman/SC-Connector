@@ -104,10 +104,22 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
     label: "Subscribe & Save",
     reports: [
       {
-        id: "GET_FBA_SNS_PERFORMANCE_DATA",
-        label: "Subscribe & Save Performance",
-        description: "Weekly S&S performance: units shipped, sale price, discounts, and out-of-stock rate",
-        constraint: "Deprecated by Amazon (Dec 2025). Requests may return CANCELLED/FATAL. Weekly timeframe only (Saturday\u2013Monday window).",
+        id: "SNS_OFFER_METRICS",
+        label: "Subscribe & Save \u2014 Offer Metrics",
+        description: "Per-ASIN S&S performance (units shipped, subscription revenue) via the Replenishment API",
+        constraint: "Requires the Brand Analytics or Inventory & Order Tracking role on the seller's SP-API authorization.",
+      },
+      {
+        id: "SNS_SP_METRICS",
+        label: "Subscribe & Save \u2014 Account Metrics",
+        description: "Account-level S&S business metrics via the Replenishment API",
+        constraint: "Requires the Brand Analytics or Inventory & Order Tracking role on the seller's SP-API authorization.",
+      },
+      {
+        id: "SNS_OFFERS",
+        label: "Subscribe & Save \u2014 Offers",
+        description: "S&S program offer and enrollment details via the Replenishment API",
+        constraint: "Requires the Brand Analytics or Inventory & Order Tracking role on the seller's SP-API authorization.",
       },
     ],
   },

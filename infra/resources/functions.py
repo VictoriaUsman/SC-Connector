@@ -17,6 +17,7 @@ FUNCTION_DEFS = [
     {"name": "scheduler",       "source_dir": "scheduler",       "memory": "256Mi", "timeout": 540, "max_instances": 1},
     {"name": "api",             "source_dir": "api",             "memory": "256Mi", "timeout": 60,  "max_instances": 10},
     {"name": "ingest-bigquery",          "source_dir": "ingest_bigquery",          "memory": "512Mi", "timeout": 300, "max_instances": 10},
+    {"name": "fetch-api",               "source_dir": "fetch_api",               "memory": "512Mi", "timeout": 540, "max_instances": 10},
     {"name": "event-report-scheduler",  "source_dir": "event_report_scheduler",  "memory": "256Mi", "timeout": 120, "max_instances": 1},
     {"name": "slack-bot",               "source_dir": "slack_bot",               "memory": "512Mi", "timeout": 300, "max_instances": 1},
     {"name": "daily-recap",             "source_dir": "daily_recap",             "memory": "512Mi", "timeout": 300, "max_instances": 1},
@@ -81,7 +82,7 @@ def create(
             api_key = config.get_secret("api-key")
             if api_key:
                 env_vars["API_KEY"] = api_key
-        if fn_name == "download-upload":
+        if fn_name in ("download-upload", "fetch-api"):
             env_vars["GDRIVE_ROOT_FOLDER_NAME"] = config.get("gdrive-root-folder") or "Kalilos Reports"
             gdrive_folder_id = config.get("gdrive-root-folder-id")
             if gdrive_folder_id:

@@ -89,7 +89,7 @@ def bind_invokers(
     scheduler_sa = service_accounts["scheduler"]
 
     # Workflow SA invokes pipeline functions (Cloud Functions v2 = Cloud Run under the hood)
-    for fn_name in ("auth", "create-report", "poll-status", "download-upload", "ingest-bigquery"):
+    for fn_name in ("auth", "create-report", "poll-status", "download-upload", "ingest-bigquery", "fetch-api"):
         gcp.cloudrunv2.ServiceIamMember(
             f"kalilos-{env}-{fn_name}-wf-invoker",
             name=cloud_functions[fn_name].service_config.service,

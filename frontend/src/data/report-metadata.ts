@@ -367,14 +367,35 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
     ],
   },
 
-  GET_FBA_SNS_PERFORMANCE_DATA: {
-    description: "Subscribe & Save weekly performance (deprecated Dec 2025)",
+  SNS_OFFER_METRICS: {
+    description: "Subscribe & Save per-ASIN performance metrics (Replenishment API v2022-11-07)",
     format: "tsv",
     columns: [
-      "offer-asin", "offer-sku", "offer-fnsku", "product-name",
-      "subscriptions-shipped", "subscriptions-cancelled",
-      "average-selling-price", "sns-discount", "sns-discount-type",
-      "oos-rate", "total-coupons-redeemed",
+      "window_start", "window_end", "asin", "sku", "brandName",
+      "fulfillmentChannelType", "totalSubscriptionsRevenue",
+      "shippedSubscriptionUnits", "activeSubscriptions", "lostRevenueDueToOOS",
+      "notDeliveredDueToOOS", "revenuePenetration",
+      "couponsRevenuePenetration", "shareOfCouponSubscriptions", "currencyCode",
+    ],
+  },
+
+  SNS_SP_METRICS: {
+    description: "Subscribe & Save account-level business metrics (Replenishment API v2022-11-07)",
+    format: "tsv",
+    columns: [
+      "window_start", "window_end",
+      "totalSubscriptionsRevenue", "shippedSubscriptionUnits", "currencyCode",
+    ],
+  },
+
+  SNS_OFFERS: {
+    description: "Subscribe & Save program offer and enrollment details (Replenishment API v2022-11-07)",
+    format: "tsv",
+    columns: [
+      "asin", "sku", "marketplaceId", "programType", "eligibility",
+      "subscriptions", "inventory", "price", "priceCurrencyCode",
+      "offerProgramConfiguration.preferences.autoEnrollment",
+      "forecastDeliveries.next30DaysDeliveries",
     ],
   },
 

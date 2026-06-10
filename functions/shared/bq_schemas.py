@@ -150,6 +150,53 @@ _SD_CAMPAIGNS_SCHEMA = TableSchema(
 )
 
 # ---------------------------------------------------------------------------
+# Subscribe & Save offer metrics — SNS_OFFER_METRICS (Replenishment API)
+# ---------------------------------------------------------------------------
+# Synchronous API operation (see shared.api_operations). The TSV headers below
+# are the flattened response field names verified against Moxe US live
+# Replenishment responses. Unmapped headers are ignored by ingestion.
+_SNS_OFFER_METRICS_COLUMNS = (
+    ColumnMapping("window_start", "DATE", "window_start"),
+    ColumnMapping("window_end", "DATE", "window_end"),
+    ColumnMapping("asin", "STRING", "asin"),
+    ColumnMapping("sku", "STRING", "sku"),
+    ColumnMapping("brand_name", "STRING", "brandName"),
+    ColumnMapping("fulfillment_channel_type", "STRING", "fulfillmentChannelType"),
+    ColumnMapping("currency", "STRING", "currencyCode"),
+    ColumnMapping("total_subscriptions_revenue", "FLOAT", "totalSubscriptionsRevenue"),
+    ColumnMapping("shipped_subscription_units", "FLOAT", "shippedSubscriptionUnits"),
+    ColumnMapping("active_subscriptions", "INTEGER", "activeSubscriptions"),
+    ColumnMapping("lost_revenue_due_to_oos", "FLOAT", "lostRevenueDueToOOS"),
+    ColumnMapping("not_delivered_due_to_oos", "FLOAT", "notDeliveredDueToOOS"),
+    ColumnMapping("revenue_penetration", "FLOAT", "revenuePenetration"),
+    ColumnMapping("coupons_revenue_penetration", "FLOAT", "couponsRevenuePenetration"),
+    ColumnMapping("share_of_coupon_subscriptions", "FLOAT", "shareOfCouponSubscriptions"),
+)
+
+_SNS_OFFER_METRICS_SCHEMA = TableSchema(
+    table_name="sns_offer_metrics",
+    columns=_SNS_OFFER_METRICS_COLUMNS,
+    dedup_key=None,
+)
+
+# ---------------------------------------------------------------------------
+# Subscribe & Save account metrics — SNS_SP_METRICS (Replenishment API)
+# ---------------------------------------------------------------------------
+_SNS_SP_METRICS_COLUMNS = (
+    ColumnMapping("window_start", "DATE", "window_start"),
+    ColumnMapping("window_end", "DATE", "window_end"),
+    ColumnMapping("currency", "STRING", "currencyCode"),
+    ColumnMapping("total_subscriptions_revenue", "FLOAT", "totalSubscriptionsRevenue"),
+    ColumnMapping("shipped_subscription_units", "FLOAT", "shippedSubscriptionUnits"),
+)
+
+_SNS_SP_METRICS_SCHEMA = TableSchema(
+    table_name="sns_sp_metrics",
+    columns=_SNS_SP_METRICS_COLUMNS,
+    dedup_key=None,
+)
+
+# ---------------------------------------------------------------------------
 # Registry: (report_type, api_source) -> TableSchema
 # ---------------------------------------------------------------------------
 _REGISTRY: dict[tuple[str, str], TableSchema] = {
@@ -157,6 +204,8 @@ _REGISTRY: dict[tuple[str, str], TableSchema] = {
     ("spCampaigns", "ads_api"): _SP_CAMPAIGNS_SCHEMA,
     ("sbCampaigns", "ads_api"): _SB_CAMPAIGNS_SCHEMA,
     ("sdCampaigns", "ads_api"): _SD_CAMPAIGNS_SCHEMA,
+    ("SNS_OFFER_METRICS", "sp_api"): _SNS_OFFER_METRICS_SCHEMA,
+    ("SNS_SP_METRICS", "sp_api"): _SNS_SP_METRICS_SCHEMA,
 }
 
 

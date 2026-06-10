@@ -486,3 +486,54 @@ class TestExecutionDateDeterminism:
         job_data = mock_create.call_args[0][0]
         assert "execution_date" in job_data
         assert job_data["execution_date"] == "2026-03-20"
+
+
+# ---------------------------------------------------------------------------
+# launch_for_marketplace — synchronous API operations (mode="api_call")
+# ---------------------------------------------------------------------------
+
+class TestLaunchForMarketplaceApiOperations:
+    def _make_schedule(self, **overrides) -> dict:
+        sched = {
+            "id": "s-sns",
+            "api_source": "sp_api",
+            "report_types": ["SNS_OFFER_METRICS"],
+            "frequency": "daily",
+            "report_params": {},
+            "folder_name": "",
+            "subfolder_strategy": "date",
+            "reconciliation_days": [3, 7],
+            "timeframe": {"strategy": "last_calendar_week"},
+        }
+        sched.update(overrides)
+        return sched
+
+    def test_api_operation_routes_to_api_call_mode(self, mock_exec_client):
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule()
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="job-sns") as mock_create:
+            ids = launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        assert ids == ["job-sns"]
+        payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+        assert payload["mode"] == "api_call"
+        assert payload["report_type"] == "SNS_OFFER_METRICS"
+        assert payload["api_source"] == "sp_api"
+        # Job doc is stamped with mode too.
+        assert mock_create.call_args[0][0]["mode"] == "api_call"
+
+    def test_api_operation_skips_reconciliation(self, mock_exec_client):
+        """Even on the yesterday strategy, sync ops never fan out recon re-pulls."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(timeframe={"strategy": "yesterday"}, reconciliation_days=[3, 7])
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="job-sns"):
+            ids = launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        assert ids == ["job-sns"]
+        assert mock_exec_client.create_execution.call_count == 1

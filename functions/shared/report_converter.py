@@ -78,6 +78,22 @@ def maybe_convert_to_tsv(
     return raw, False
 
 
+def rows_to_tsv(
+    rows: list[dict[str, Any]],
+    *,
+    output_columns: list[str] | None = None,
+) -> bytes:
+    """Flatten an in-memory list of dict rows to TSV bytes (header + rows).
+
+    Used by the synchronous ``fetch_api`` path, which already has parsed JSON
+    rows (e.g. from the Replenishment API) rather than a raw report body. An
+    empty list yields an empty byte string.
+    """
+    if not rows:
+        return b""
+    return _rows_to_tsv(rows, output_columns=output_columns)
+
+
 # ------------------------------------------------------------------
 # Internal converters
 # ------------------------------------------------------------------
