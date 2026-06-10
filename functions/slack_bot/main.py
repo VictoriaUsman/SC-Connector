@@ -437,25 +437,47 @@ def _query_ads(
 ) -> dict[str, Any]:
     """Sum ads spend and sales across sp/sb/sd campaigns for a single marketplace.
 
-    ``report_date`` is the marketplace-local calendar day (YYYY-MM-DD),
-    matching how the ingestion pipeline stores data.
+    ``report_date`` is the marketplace-local calendar day (YYYY-MM-DD) we want
+    metrics for.
+
+    The metrics are keyed off each campaign row's actual performance ``date``,
+    **not** the ingestion ``report_date`` partition. The ``report_date`` column
+    is the *start* of a report's pulled range, so any pull that is not a
+    single-day pull for exactly that day (a multi-day range, or the prior-year
+    backfill that fetches a whole event window in one pull) stamps rows with a
+    range-start that differs from the data date. Filtering on ``report_date``
+    then matched zero rows — the reported "last year's data shows 0" bug, since
+    the linked prior-year event is backfilled as one multi-day pull. This
+    mirrors the proven-correct ``daily_recap`` bot.
+
+    Because the same performance ``date`` can be re-pulled under several
+    overlapping ranges (each ingested under a different ``report_date``), keep
+    only the most-recently-ingested row per (marketplace, campaign) before
+    summing, so overlapping re-pulls don't double count.
     """
-    tables = ["sp_campaigns", "sb_campaigns", "sd_campaigns"]
-    sales_cols = {
+    tables = {
         "sp_campaigns": "sales7d",
         "sb_campaigns": "sales",
         "sd_campaigns": "sales",
     }
 
     unions = []
-    for table in tables:
-        sales_col = sales_cols[table]
+    for table, sales_col in tables.items():
         unions.append(f"""
-            SELECT cost, {sales_col} AS ppc_sales
-            FROM `{project}.{dataset}.{table}_latest`
-            WHERE client_id = @client_id
-              AND report_date = @today
-              AND marketplace = @marketplace
+            SELECT cost, ppc_sales FROM (
+                SELECT
+                    cost,
+                    {sales_col} AS ppc_sales,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY marketplace, campaign_id
+                        ORDER BY ingested_at DESC
+                    ) AS _rn
+                FROM `{project}.{dataset}.{table}`
+                WHERE client_id = @client_id
+                  AND date = @perf_date
+                  AND marketplace = @marketplace
+            )
+            WHERE _rn = 1
         """)
 
     query = f"""
@@ -467,7 +489,7 @@ def _query_ads(
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-            bigquery.ScalarQueryParameter("today", "DATE", report_date),
+            bigquery.ScalarQueryParameter("perf_date", "DATE", report_date),
             bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
         ]
     )

@@ -394,6 +394,50 @@ class TestQueryOrders:
         assert params["mkt_next_midnight"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
 
 
+class TestQueryAds:
+    """Recap/hourly ads must key off each campaign row's actual performance
+    ``date``, not the ingestion ``report_date`` partition. The linked prior-year
+    event is backfilled as one multi-day pull, so its rows carry a range-start
+    ``report_date`` that differs from the data date — filtering on ``report_date``
+    matched nothing and rendered last year's Spend/PPC/ACoS as 0 (the reported
+    bug)."""
+
+    @staticmethod
+    def _fake_bq(captured: dict) -> MagicMock:
+        def fake_query(query, job_config=None):
+            captured["query"] = query
+            captured["params"] = {p.name: p.value for p in job_config.query_parameters}
+            return iter([{"spend": 663.41, "ppc_sales": 2075.92}])
+
+        bq = MagicMock()
+        bq.query.side_effect = fake_query
+        return bq
+
+    def test_filters_by_performance_date_not_report_date(self):
+        from slack_bot.main import _query_ads
+
+        captured: dict = {}
+        bq = self._fake_bq(captured)
+
+        result = _query_ads(bq, "proj", "ds", "c1", "US", "2025-06-09")
+
+        assert result == {"spend": 663.41, "ppc_sales": 2075.92}
+        query = captured["query"]
+        # The fix: bound by the campaign performance `date`...
+        assert "date = @perf_date" in query
+        # ...never the ingestion report_date partition (the prior-year-shows-0 bug).
+        assert "report_date" not in query
+        # ...and dedup overlapping re-pulls by most-recent ingestion.
+        assert "ROW_NUMBER()" in query
+        assert "ingested_at DESC" in query
+
+        params = captured["params"]
+        # BigQuery parses the DATE param string into a date object.
+        assert str(params["perf_date"]) == "2025-06-09"
+        assert params["marketplace"] == "US"
+        assert params["client_id"] == "c1"
+
+
 class TestTotalSalesInvariant:
     """Total Sales >= PPC Sales must hold for every hourly row: total ordered
     sales include ad-attributed sales, so PPC Sales can never exceed them."""
