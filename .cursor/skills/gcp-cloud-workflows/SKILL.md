@@ -206,7 +206,9 @@ poll_until_ready:
 
 ## Our Poll Loop Pattern
 
-This is the central pattern in this project. The unified workflow polls both SP API and Ads API reports using exponential backoff.
+This is the central pattern for `mode="report"`. The unified workflow polls both SP API and Ads API reports using exponential backoff.
+
+For synchronous API operations (`mode="api_call"`), do not enter the create/poll/download loop. Route near input validation to `fetch_api`, then run the same best-effort BigQuery ingestion step. Current API-call operations are registered in `functions/shared/api_operations.py` and include Replenishment / Subscribe & Save (`SNS_OFFER_METRICS`, `SNS_SP_METRICS`, `SNS_OFFERS`).
 
 ```yaml
 - initPolling:

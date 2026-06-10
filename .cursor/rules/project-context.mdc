@@ -5,12 +5,12 @@ alwaysApply: true
 
 # Project Context
 
-Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon SP API and Ads API reports for multiple clients/marketplaces, stores them in Google Drive.
+Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon SP API and Ads API reports, plus synchronous Amazon API data pulls (first: SP-API Replenishment / Subscribe & Save), for multiple clients/marketplaces, stores them in Google Drive and selected tables in BigQuery.
 
 ## Architecture
 
-- **Orchestration**: GCP Cloud Workflows runs a unified Wait+Poll flow for both SP API and Ads API
-- **Compute**: Cloud Functions (Python 3.12, 2nd gen) — auth, create_report, poll_status, download_upload, scheduler, api
+- **Orchestration**: GCP Cloud Workflows runs a unified flow. Default `mode="report"` uses Wait+Poll for SP API and Ads API reports; `mode="api_call"` routes synchronous API operations to `fetch_api`
+- **Compute**: Cloud Functions (Python 3.12, 2nd gen) — auth, create_report, poll_status, download_upload, fetch_api, scheduler, api
 - **State**: Firestore (collections: `clients`, `schedules`, `jobs`, `_drive_folder_locks`)
 - **Scheduling**: Cloud Scheduler -> scheduler function -> marketplace-timezone-aware fan-out -> Cloud Workflow executions
 - **Secrets**: GCP Secret Manager
@@ -28,6 +28,8 @@ Kalilos Amazon Reports Connector — serverless GCP system that downloads Amazon
 ## Schedule Data Model
 
 Schedules support multi-select clients (`client_ids: string[]`), marketplaces (`marketplaces: string[]`), and report types (`report_types: string[]`). `api_source` can be `"sp_api"`, `"ads_api"`, or `"both"`. The scheduler fans out one workflow per `(client, marketplace, report_type)` tuple. Clients without credentials for the API source are silently skipped. Each schedule has an optional `name` field for display.
+
+Some `report_types` are synchronous API operations from `functions/shared/api_operations.py` rather than Amazon Reports API types. These launch with `mode="api_call"` and go through `functions/fetch_api/main.py` instead of create_report -> poll_status -> download_upload. The first operations are `SNS_OFFER_METRICS`, `SNS_SP_METRICS`, and `SNS_OFFERS` for the SP-API Replenishment API.
 
 Scheduling uses `schedule_config` with `type` (daily/weekly/monthly/hourly), `time` (UTC), `days_of_week`, and `day_of_month`.
 
@@ -56,7 +58,10 @@ Each schedule has `folder_name` (custom Drive folder) and `subfolder_strategy` (
 
 - `functions/shared/config.py` — env config, marketplace regions, `MARKETPLACE_TIMEZONES`
 - `functions/shared/schedule_compute.py` — timezone-aware date computation, `compute_date_range()` for timeframe strategies, `compute_report_dates()` for single-day and range API params, flexible `compute_next_run()`
-- `functions/shared/workflow_launcher.py` — unified workflow launch helpers: `build_payload()`, `launch_execution()` with retry, `launch_for_marketplace()` with timeframe-aware date ranges and conditional reconciliation
+- `functions/shared/workflow_launcher.py` — unified workflow launch helpers: `build_payload()`, `launch_execution()` with retry, `launch_for_marketplace()` with timeframe-aware date ranges, conditional reconciliation, removed-report guards, and `mode="api_call"` routing
+- `functions/shared/api_operations.py` — registry for synchronous API operations; currently Replenishment / Subscribe & Save operation ids
+- `functions/shared/sp_api_rest.py` / `functions/shared/ads_api_rest.py` — generic LWA-authenticated REST transports for non-report endpoints
+- `functions/shared/replenishment_client.py` — SP-API Replenishment v2022-11-07 client; uses `/offers/search`, `/offers/metrics/search`, and `/sellingPartners/metrics/search`
 - `functions/shared/drive_client.py` — Drive folder hierarchy, Firestore-coordinated concurrent folder creation, upload with replace, range-aware filenames
 - `functions/shared/report_converter.py` — JSON→TSV flattening for SP API JSON reports and Ads API columnar JSON reports
 - `functions/shared/firestore_utils.py` — CRUD for clients, schedules, jobs

@@ -1,6 +1,6 @@
 ---
 name: amazon-sp-api-reports
-description: Amazon SP API report types, endpoints, rate limits, and authentication. Use when building or modifying SP API report creation, polling, or downloading logic, or when the user mentions SP API, Selling Partner API, or Amazon seller reports.
+description: Amazon SP API report types, Replenishment API, endpoints, rate limits, and authentication. Use when building or modifying SP API report creation, polling, downloading, synchronous API operations, Selling Partner API, Amazon seller reports, or Subscribe & Save data.
 ---
 
 # Amazon SP API Reports
@@ -40,6 +40,13 @@ def get_sp_api_token(refresh_token: str, client_id: str, client_secret: str) -> 
 ```
 
 ## Report Flow
+
+SP API has two different data shapes in this codebase:
+
+- **Reports API (async):** `createReport` -> poll -> report document -> download. This is the default `mode="report"` path.
+- **Synchronous REST APIs:** immediate JSON responses with endpoint-specific pagination. These are registered in `functions/shared/api_operations.py` and run through `mode="api_call"` / `functions/fetch_api`.
+
+Do not force synchronous APIs through `createReport`; add an API operation instead.
 
 ### Step 1: Create Report
 
@@ -89,6 +96,81 @@ Download from the pre-signed URL. If `compressionAlgorithm` is `GZIP`, decompres
 | getReportDocument   | 0.0167         | 15    |
 
 `createReport` and `getReportDocument` are very slow (1 request per ~60 seconds sustained). Batch carefully and use the burst allowance.
+
+## Replenishment API (Subscribe & Save)
+
+Amazon removed the legacy Subscribe & Save report types `GET_FBA_SNS_PERFORMANCE_DATA` and `GET_FBA_SNS_FORECAST_DATA`. Use SP-API Replenishment v2022-11-07 instead.
+
+Current operation ids in this project:
+
+| Operation | Endpoint | Use |
+|---|---|---|
+| `SNS_OFFER_METRICS` | `POST /replenishment/2022-11-07/offers/metrics/search` | Per-ASIN/offer S&S metrics |
+| `SNS_SP_METRICS` | `POST /replenishment/2022-11-07/sellingPartners/metrics/search` | Account-level S&S metrics |
+| `SNS_OFFERS` | `POST /replenishment/2022-11-07/offers/search` | Offer enrollment/config |
+
+Implementation files:
+
+- `functions/shared/replenishment_client.py` — request shapes, week alignment, offset pagination
+- `functions/shared/sp_api_rest.py` — generic LWA-authenticated SP-API REST transport
+- `functions/shared/api_operations.py` — operation registry
+- `functions/fetch_api/main.py` — workflow target for `mode="api_call"`
+
+### Request Shapes
+
+`/offers/search` uses offset pagination and nests marketplace/program filters:
+
+```json
+{
+  "pagination": {"limit": 100, "offset": 0},
+  "filters": {
+    "marketplaceId": "ATVPDKIKX0DER",
+    "programTypes": ["SUBSCRIBE_AND_SAVE"]
+  }
+}
+```
+
+`/offers/metrics/search` requires `aggregationFrequency`, `timeInterval`, `timePeriodType`, `marketplaceId`, and `programTypes` inside `filters`:
+
+```json
+{
+  "pagination": {"limit": 100, "offset": 0},
+  "metrics": ["TOTAL_SUBSCRIPTIONS_REVENUE", "SHIPPED_SUBSCRIPTION_UNITS"],
+  "filters": {
+    "aggregationFrequency": "WEEK",
+    "timeInterval": {
+      "startDate": "2026-05-24T00:00:00Z",
+      "endDate": "2026-05-30T23:59:59Z"
+    },
+    "timePeriodType": "PERFORMANCE",
+    "marketplaceId": "ATVPDKIKX0DER",
+    "programTypes": ["SUBSCRIBE_AND_SAVE"]
+  }
+}
+```
+
+`/sellingPartners/metrics/search` uses top-level metric filters:
+
+```json
+{
+  "aggregationFrequency": "WEEK",
+  "timeInterval": {
+    "startDate": "2026-05-24T00:00:00Z",
+    "endDate": "2026-05-30T23:59:59Z"
+  },
+  "metrics": ["TOTAL_SUBSCRIPTIONS_REVENUE", "SHIPPED_SUBSCRIPTION_UNITS"],
+  "timePeriodType": "PERFORMANCE",
+  "marketplaceId": "ATVPDKIKX0DER",
+  "programTypes": ["SUBSCRIBE_AND_SAVE"]
+}
+```
+
+### Replenishment Gotchas
+
+- `WEEK` aggregation is Amazon Sunday-Saturday, not arbitrary 7-day or Monday-Sunday ranges. The client aligns overlapping requested windows to Amazon weeks.
+- `offers/search` and `offers/metrics/search` use `pagination.offset`, not `nextToken`.
+- `shippedSubscriptionUnits` can be fractional at offer level; store it as `FLOAT`.
+- Roles: Brand Analytics or Inventory and Order Tracking may be required depending on operation/account. A 403 on one Replenishment endpoint does not prove all Replenishment access is missing; test the specific endpoint.
 
 ## Status Values
 

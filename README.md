@@ -1,6 +1,6 @@
 # Kalilos Amazon Reports Connector
 
-Serverless system on GCP that automatically downloads Amazon SP API and Ads API reports for multiple clients and marketplaces on configurable schedules, and stores them in Google Drive.
+Serverless system on GCP that automatically downloads Amazon SP API and Ads API reports, plus synchronous Amazon API data pulls (first: SP-API Replenishment / Subscribe & Save), for multiple clients and marketplaces on configurable schedules. Results are stored in Google Drive and selected BigQuery tables.
 
 ## Architecture
 
@@ -15,10 +15,14 @@ Cloud Scheduler (cron)
         ▼
   Cloud Workflow (report_flow.yaml)
         │
-        ├── 1. Authenticate (LWA / Ads API tokens)
-        ├── 2. Create Report (Amazon SP API or Ads API)
-        ├── 3. Poll Status (exponential backoff)
-        └── 4. Download & Upload to Google Drive
+        ├── mode=report
+        │   ├── 1. Authenticate (LWA / Ads API tokens)
+        │   ├── 2. Create Report (Amazon SP API or Ads API)
+        │   ├── 3. Poll Status (exponential backoff)
+        │   └── 4. Download & Upload to Google Drive
+        │
+        └── mode=api_call
+            └── fetch_api (synchronous REST API -> TSV -> Drive -> BigQuery)
 ```
 
 **Stack:** Cloud Functions (Python 3.12) · Cloud Workflows · Firestore · Cloud Scheduler · Secret Manager · Google Drive API · React + Vite + shadcn/ui on Firebase Hosting · Pulumi (IaC)
@@ -26,12 +30,14 @@ Cloud Scheduler (cron)
 ## Key Features
 
 - **Multi-client, multi-marketplace** — one schedule fans out across all selected clients and marketplaces
-- **Dual API support** — SP API and Ads API handled through the same pipeline
+- **Dual API support** — SP API and Ads API reports handled through the same pipeline
+- **Synchronous API operations** — non-report endpoints such as SP-API Replenishment / Subscribe & Save route through `fetch_api`
 - **Timezone-aware scheduling** — report dates computed in each marketplace's local timezone
 - **Configurable timeframes** — yesterday, today, last N days, rolling windows, last calendar week/month
 - **Data reconciliation** — automatic re-pull of stale data at T-3 / T-7
 - **Google Drive storage** — configurable folder layouts with date subfolders
-- **JSON-to-TSV conversion** — SP API JSON reports converted to spreadsheet-friendly TSV
+- **JSON-to-TSV conversion** — SP API JSON reports and synchronous API rows converted to spreadsheet-friendly TSV
+- **BigQuery ingestion** — selected outputs are loaded into managed BigQuery tables after Drive delivery
 - **Concurrent folder safety** — Firestore-based distributed locks prevent duplicate Drive folders
 - **Real-time UI** — React dashboard with Firestore listeners for live job status
 
@@ -93,6 +99,7 @@ make test                        # Run all tests
 │   ├── create_report/           # Submit report request to Amazon
 │   ├── poll_status/             # Poll report generation status
 │   ├── download_upload/         # Download from Amazon, upload to Drive
+│   ├── fetch_api/               # Synchronous API pulls (Replenishment / S&S)
 │   ├── api/                     # Frontend REST API
 │   └── shared/                  # Shared modules
 │       ├── config.py            # Env, marketplace timezones
@@ -100,8 +107,12 @@ make test                        # Run all tests
 │       ├── workflow_launcher.py # Unified workflow launch helpers
 │       ├── drive_client.py      # Drive folder hierarchy + upload
 │       ├── report_converter.py  # JSON → TSV flattening
-│       ├── sp_api_client.py     # SP API HTTP client
-│       ├── ads_api_client.py    # Ads API HTTP client
+│       ├── sp_api_client.py     # SP API Reports client
+│       ├── ads_api_client.py    # Ads API Reports client
+│       ├── sp_api_rest.py       # Generic SP-API REST client for non-report endpoints
+│       ├── ads_api_rest.py      # Generic Ads API REST client for non-report endpoints
+│       ├── api_operations.py    # Registry for synchronous API operations
+│       ├── replenishment_client.py # Subscribe & Save / Replenishment client
 │       └── firestore_utils.py   # Firestore CRUD
 ├── workflows/
 │   └── report_flow.yaml         # Cloud Workflow definition
@@ -135,6 +146,16 @@ Schedules are configured through the React UI and support:
 - **Multi-select:** multiple clients and marketplaces per schedule
 - **Custom folders:** configurable Drive folder names and subfolder strategies
 - **Reconciliation:** automatic re-pull at T-3 / T-7 for data that Amazon revises after initial reporting
+
+Some selectable entries are **synchronous API operations** rather than Amazon report types. These use the same schedule/job UI but launch `mode="api_call"` and route to `functions/fetch_api` instead of create-report/poll/download. Current operation ids:
+
+| Operation | Source | Description |
+|---|---|---|
+| `SNS_OFFER_METRICS` | SP-API Replenishment | Subscribe & Save offer/ASIN metrics |
+| `SNS_SP_METRICS` | SP-API Replenishment | Account-level Subscribe & Save metrics |
+| `SNS_OFFERS` | SP-API Replenishment | Subscribe & Save offer enrollment/config |
+
+Legacy `GET_FBA_SNS_PERFORMANCE_DATA` and `GET_FBA_SNS_FORECAST_DATA` were removed by Amazon and should not be used for new schedules.
 
 ## Conventions
 

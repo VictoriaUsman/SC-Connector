@@ -4,19 +4,19 @@
 
 ## Purpose
 
-Serverless connector on GCP that downloads Amazon SP API and Ads API reports for multiple clients and marketplaces on configurable schedules, stores them in Google Drive. An employee-facing React UI allows configuration of clients, schedules, and on-demand report requests.
+Serverless connector on GCP that downloads Amazon SP API and Ads API reports, plus synchronous Amazon API data pulls (first: SP-API Replenishment / Subscribe & Save), for multiple clients and marketplaces on configurable schedules. Results are stored in Google Drive and selected tables in BigQuery. An employee-facing React UI allows configuration of clients, schedules, and on-demand report/API requests.
 
 ## Architecture
 
-The system is fully serverless on GCP, organized around a unified Wait+Poll flow that handles both SP API and Ads API reports through the same pipeline.
+The system is fully serverless on GCP, organized around one Cloud Workflow with two execution modes: the default async report Wait+Poll pipeline for SP API and Ads API reports, and a synchronous API-call branch for non-report Amazon endpoints.
 
-**Orchestration**: GCP Cloud Workflows executes a single `report_flow.yaml` that accepts an `api_source` parameter (`"sp_api"` or `"ads_api"`). The workflow calls Cloud Functions for each step: authenticate, create report request, poll until ready, download and upload to Google Drive. Polling uses exponential backoff (30s base, 120s max). The workflow also passes `folder_name` and `subfolder_strategy` to the download_upload step for custom Drive folder paths.
+**Orchestration**: GCP Cloud Workflows executes a single `report_flow.yaml` that accepts an `api_source` parameter (`"sp_api"` or `"ads_api"`) plus an optional `mode`. `mode="report"` (default) calls Cloud Functions for each async report step: authenticate, create report request, poll until ready, download and upload to Google Drive. Polling uses exponential backoff (30s base, 120s max). `mode="api_call"` skips create/poll/download and calls `fetch_api` for synchronous REST operations, then runs the same best-effort BigQuery ingestion step. The workflow also passes `folder_name` and `subfolder_strategy` for custom Drive folder paths.
 
-**Compute**: Cloud Functions (Python 3.12, 2nd gen) handle each discrete step. Each function receives the `api_source` param and branches internally to call the correct Amazon API. Functions are stateless; all state lives in Firestore.
+**Compute**: Cloud Functions (Python 3.12, 2nd gen) handle each discrete step. Report functions receive the `api_source` param and branch internally to call the correct Amazon API. `fetch_api` dispatches registered synchronous API operations (currently Replenishment / S&S). Functions are stateless; all state lives in Firestore.
 
 **Storage & Config**: Firestore stores client configurations, report schedules, and job history. Collections: `clients`, `schedules`, `jobs`, `_drive_folder_locks` (transient coordination docs). The frontend reads these in real-time via Firestore listeners.
 
-**Scheduling**: Cloud Scheduler triggers a scheduler Cloud Function on a cron. The scheduler reads active schedules from Firestore, resolves each schedule's `timeframe` strategy into a date range (default: yesterday), and launches Cloud Workflow executions for each `(client, marketplace, report_type)` tuple. When `api_source` is `"both"`, each report type's effective API source is inferred from its membership in SP or Ads report type lists. Clients without credentials for the schedule's API source are silently skipped. For the default `yesterday` strategy, reconciliation jobs (T-3, T-7) re-pull data updated by Amazon. Multi-day strategies skip reconciliation.
+**Scheduling**: Cloud Scheduler triggers a scheduler Cloud Function on a cron. The scheduler reads active schedules from Firestore, resolves each schedule's `timeframe` strategy into a date range (default: yesterday), and launches Cloud Workflow executions for each `(client, marketplace, report_type)` tuple. When `api_source` is `"both"`, each report type's effective API source is inferred from its membership in Ads report types, API operations, or SP report types. Clients without credentials for the schedule's API source are silently skipped. For normal reports using the default `yesterday` strategy, reconciliation jobs (T-3, T-7) re-pull data updated by Amazon. Multi-day strategies and synchronous API operations skip reconciliation.
 
 **Three-Clock Timezone Architecture**:
 - **Backend Clock (UTC)**: All timestamps in Firestore, all scheduler logic runs on UTC.
@@ -32,6 +32,13 @@ The system is fully serverless on GCP, organized around a unified Wait+Poll flow
 **MCP Server (Agentic Interface)**: A FastMCP (Python) server deployed on Cloud Run (`kalilos-{env}-mcp`) that exposes 14 tools for Claude agents to manage reports. The MCP server is a thin proxy that delegates all operations to the existing REST API via HTTP. It supports Streamable HTTP transport for remote access (Claude.ai, Claude Desktop, Anthropic API) and stdio for local development (Cursor, Claude Code). Authentication uses a static bearer token validated against `MCP_API_KEY`. Tools cover clients (list, get), schedules (CRUD + trigger), jobs (list, get, retry), on-demand reports, and report type discovery.
 
 **Workflow Error Handling**: The workflow YAML uses a global try/except pattern — `main` calls a `report_pipeline` subworkflow, and any unhandled error (auth failure, create_report error, etc.) is caught by the global handler which marks the Firestore job as `"failed"` using `args.job_id`. This prevents zombie "pending" jobs. Error serialization uses `json.encode(e)` (not `string(e)`, which crashes on dicts). The workflow service account has `roles/datastore.user` for Firestore REST API access.
+
+**Synchronous API Operations**: Non-report endpoints are registered in `functions/shared/api_operations.py` and launch with `mode="api_call"`. The reusable REST transports are `sp_api_rest.py` and `ads_api_rest.py`; both use cached LWA access tokens and bounded retry for 429/5xx responses. The first supported sync operations are SP-API Replenishment v2022-11-07 for Subscribe & Save:
+- `SNS_OFFER_METRICS` -> `/replenishment/2022-11-07/offers/metrics/search` (offer/ASIN metrics)
+- `SNS_SP_METRICS` -> `/replenishment/2022-11-07/sellingPartners/metrics/search` (account metrics)
+- `SNS_OFFERS` -> `/replenishment/2022-11-07/offers/search` (offer enrollment/config)
+
+Replenishment uses offset pagination (`pagination.limit` + `pagination.offset`) and requires request fields nested under `filters` for `offers/metrics/search`. Amazon's `WEEK` aggregation is Sunday-Saturday; `replenishment_client.py` aligns requested windows to those Amazon weeks.
 
 **Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Shared GCS state backend (`gs://kalilos-connector-pulumi-state`, versioned) so local and CI deploys share one source of truth. Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
 
@@ -135,11 +142,17 @@ kalilos-connector/
 │   │   └── main.py                   # Check report generation status
 │   ├── download_upload/
 │   │   └── main.py                   # Download report, upload to Drive
+│   ├── fetch_api/
+│   │   └── main.py                   # Synchronous API operations (Replenishment / S&S)
 │   ├── api/
 │   │   └── main.py                   # Frontend API (CRUD schedules, clients)
 │   └── shared/
 │       ├── sp_api_client.py          # SP API HTTP client
 │       ├── ads_api_client.py         # Ads API HTTP client
+│       ├── sp_api_rest.py            # Generic SP-API REST transport for non-report endpoints
+│       ├── ads_api_rest.py           # Generic Ads API REST transport for non-report endpoints
+│       ├── api_operations.py         # Registry for synchronous API operations
+│       ├── replenishment_client.py   # SP-API Replenishment / Subscribe & Save client
 │       ├── ads_report_config.py      # Ads report type definitions (columns, groupBy)
 │       ├── credentials.py            # SP/Ads credential retrieval from Secret Manager
 │       ├── drive_client.py           # Google Drive upload, Firestore-coordinated folder creation
@@ -275,7 +288,23 @@ Unified workflow launch helpers used by the scheduler, API on-demand triggers, a
 - `get_workflow_parent()` — builds the fully-qualified Cloud Workflows parent path from env vars
 - `build_payload(...)` — constructs the canonical workflow execution payload dict, including `execution_date`
 - `launch_execution(parent, payload, job_id)` — starts a Cloud Workflow execution with retry-and-backoff. Marks job as failed in Firestore on exhausted retries
-- `launch_for_marketplace(parent, now, schedule, client_id, marketplace)` — launches primary + reconciliation jobs for one `(client, marketplace)` pair across all `report_types`. When `api_source` is `"both"`, infers effective api_source per report type. Computes `execution_date` (marketplace today) once and passes it through. Reconciliation only runs for `yesterday` strategy
+- `launch_for_marketplace(parent, now, schedule, client_id, marketplace)` — launches primary + reconciliation jobs for one `(client, marketplace)` pair across all `report_types`. When `api_source` is `"both"`, infers effective api_source per report type. Computes `execution_date` (marketplace today) once and passes it through. Reconciliation only runs for normal reports using the `yesterday` strategy; API operations launch one `mode="api_call"` job for the full requested range
+- Removed report guard: `removed_reports.py` marks permanently removed SP report types (`GET_FBA_SNS_PERFORMANCE_DATA`, `GET_FBA_SNS_FORECAST_DATA`) as deterministic `REPORT_REMOVED` failed jobs instead of launching doomed workflows
+
+### `functions/shared/api_operations.py`
+
+Registry for synchronous Amazon API operations:
+- `API_OPERATIONS` maps pseudo-report ids (e.g. `SNS_OFFER_METRICS`) to `api_source`, handler key, labels, and BQ table names
+- `is_api_operation(report_type)` lets the scheduler/API route operations to `mode="api_call"`
+- Add new non-report endpoints here instead of treating them as SP/Ads report types
+
+### `functions/shared/replenishment_client.py`
+
+SP-API Replenishment v2022-11-07 client for Subscribe & Save:
+- `list_offers(client_id, marketplace)` calls `/offers/search`
+- `fetch_sp_metrics(...)` calls `/sellingPartners/metrics/search`
+- `fetch_offer_metrics(...)` calls `/offers/metrics/search`
+- Uses offset pagination, nested `filters`, and Sunday-Saturday week alignment for `aggregationFrequency="WEEK"`
 
 ### `functions/shared/drive_client.py`
 
@@ -299,6 +328,7 @@ JSON-to-TSV conversion for spreadsheet-friendly output:
 - `json_report_to_tsv(raw_bytes, report_type)` — SP API: parses JSON, locates data arrays, recursively flattens nested objects, outputs TSV
 - `ads_json_report_to_tsv(raw_bytes)` — Ads API: flattens the columnar JSON format (`columns`/`index`/`data`) to TSV
 - Called by `download_upload` before uploading to Drive; files are saved as `.tsv` for Google Sheets compatibility
+- `rows_to_tsv(rows, output_columns=None)` is used by `fetch_api` for already-parsed synchronous API JSON rows
 
 ## Common Agent Tasks
 
@@ -333,6 +363,14 @@ All of the above, plus:
 4. Add a label entry to `ADS_REPORT_LABELS` in `frontend/src/lib/format.ts`.
 5. Re-run: `python3 tests/seed_report_test_schedules.py`.
 
+**For a new synchronous API operation (non-report endpoint):**
+1. Add the operation id/config to `functions/shared/api_operations.py`.
+2. Add or extend a client module using `sp_api_rest.py` or `ads_api_rest.py` (do not force synchronous endpoints through create_report/poll/download).
+3. Add TSV conversion through `rows_to_tsv()` or a purpose-built flattener if the response shape is unusual.
+4. Add a BigQuery schema in `functions/shared/bq_schemas.py` and a matching table in `infra/resources/bigquery.py` if it should ingest to BQ.
+5. Add the operation to the frontend selector and metadata (`frontend/src/types/index.ts`, `report-categories.ts`, `report-metadata.ts`).
+6. Add tests for transport, client request shape/pagination, workflow_launcher `mode="api_call"` routing, and converter/BQ mapping.
+
 ### Report timeframe requirements
 
 Not all reports support all timeframe strategies. Key constraints:
@@ -345,6 +383,8 @@ Not all reports support all timeframe strategies. Key constraints:
 | Brand Analytics (Market Basket, Repeat Purchase) | `last_calendar_week`, `last_calendar_month` | No DAY support — dates must align to period boundaries |
 | Brand Analytics (Search Query/Catalog Performance) | `last_calendar_week`, `last_calendar_month` | Same as above |
 | Settlement Reports | N/A | Auto-generated by Amazon, cannot be requested |
+| Subscribe & Save legacy reports | N/A | `GET_FBA_SNS_PERFORMANCE_DATA` and `GET_FBA_SNS_FORECAST_DATA` were removed by Amazon; use Replenishment operations instead |
+| Replenishment / S&S operations | Prefer `last_calendar_week` | Amazon `WEEK` aggregation is Sunday-Saturday; `replenishment_client.py` aligns overlapping ranges to Amazon weeks |
 | All Ads API reports | Any | Standard date range support |
 
 ### Test report schedules
@@ -357,10 +397,12 @@ python3 tests/seed_report_test_schedules.py --project kalilos-connector-prod --c
 python3 tests/seed_report_test_schedules.py --dry-run          # preview without writing
 ```
 
-Creates 3 inactive schedules (trigger via "Run Now" in the UI):
+Creates inactive schedules (trigger via "Run Now" in the UI):
 - **Test: SP Daily Reports** — all SP reports that work with `yesterday` timeframe
 - **Test: SP Monthly Reports** — Brand Analytics reports needing `last_calendar_month`
 - **Test: Ads Daily Reports** — all Ads API reports
+- **Test: Subscribe & Save (Replenishment API)** — synchronous API operations (`SNS_OFFER_METRICS`, `SNS_SP_METRICS`, `SNS_OFFERS`)
+- **Test: Vendor (1P) Reports** — vendor reports, only when `--vendor-client` is supplied
 
 Re-running is idempotent — removes existing test schedules and recreates from current report registry. Non-requestable reports (settlements) are automatically skipped.
 

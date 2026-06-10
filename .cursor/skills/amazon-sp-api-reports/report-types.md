@@ -39,6 +39,25 @@
 | `GET_FBA_STORAGE_FEE_CHARGES_DATA` | FBA storage fees | Yes |
 | `GET_FBA_INVENTORY_AGED_DATA` | FBA aged inventory | Yes |
 
+## Subscribe & Save / Replenishment
+
+The legacy SP-API Subscribe & Save report types were removed by Amazon:
+
+| Removed Report Type | Status | Replacement |
+|---------------------|--------|-------------|
+| `GET_FBA_SNS_PERFORMANCE_DATA` | Removed by Amazon; requests are accepted then cancelled | `SNS_OFFER_METRICS` or `SNS_SP_METRICS` |
+| `GET_FBA_SNS_FORECAST_DATA` | Removed by Amazon; requests are accepted then cancelled | Replenishment forecast via `SNS_OFFER_METRICS` with `timePeriodType=FORECAST` |
+
+Kalilos exposes Replenishment API operations as pseudo-report ids so they can use the same schedule/job UI:
+
+| Operation | Description | Schedule Support |
+|-----------|-------------|-----------------|
+| `SNS_OFFER_METRICS` | Subscribe & Save offer/ASIN metrics via `/offers/metrics/search` | Yes (`mode="api_call"`) |
+| `SNS_SP_METRICS` | Account-level Subscribe & Save metrics via `/sellingPartners/metrics/search` | Yes (`mode="api_call"`) |
+| `SNS_OFFERS` | Subscribe & Save offer enrollment/config via `/offers/search` | Yes (`mode="api_call"`) |
+
+Use `last_calendar_week` for S&S metrics when possible. Amazon's Replenishment `WEEK` aggregation is Sunday-Saturday; `functions/shared/replenishment_client.py` aligns requested ranges to Amazon weeks.
+
 ## Financial Reports
 
 | Report Type | Description | Schedule Support |
