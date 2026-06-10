@@ -59,4 +59,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         return {"error": str(exc), "code": "CREDENTIAL_ERROR"}, 400
     except Exception:
         logger.exception("Auth failed", extra={"client_id": client_id, "api_source": api_source})
-        return {"error": "Token exchange failed", "code": "AUTH_FAILED"}, 500
+        return {
+            "error": (
+                "Amazon authentication failed for this client (LWA token exchange). "
+                "The refresh token may be expired or revoked, or Amazon's auth endpoint "
+                "is temporarily unavailable. Re-authorize the Kalilos app for this client "
+                "in Seller Central if this persists, then retry."
+            ),
+            "code": "AUTH_FAILED",
+        }, 500

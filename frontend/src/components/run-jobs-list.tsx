@@ -107,8 +107,10 @@ function getRetryableJobIds(jobs: Job[]): string[] {
     .filter((j) => {
       if (j.status !== "failed") return false;
       const raw = j.error_details?.message ?? "";
-      // Forbidden (403) jobs stay retriable: in practice these are mostly
-      // transient auth-throttling under load and recover on a later run.
+      // Forbidden (403) jobs stay retriable so an operator can re-run them after
+      // re-authorizing the Kalilos app / granting the required role in Seller
+      // Central. The pipeline itself never auto-retries a 403 (it's a permissions
+      // error, not a transient one) — this button is the deliberate manual retry.
       return !isNoDataError(raw);
     })
     .map((j) => j.id);
