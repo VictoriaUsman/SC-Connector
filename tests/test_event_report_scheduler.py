@@ -184,6 +184,146 @@ class TestLaunchReports:
         mock_create.assert_not_called()
 
 
+class TestPriorYearBackfill:
+    """When the live event is linked to a prior-year event, the scheduler must
+    backfill that event's window into BigQuery once, so the midnight recap's YoY
+    queries have data instead of rendering 0 (the reported bug)."""
+
+    _CONFIGS = [_make_bot_config()]
+
+    @staticmethod
+    def _client(sp: bool = True, ads: bool = True) -> dict:
+        c = {"id": "c1", "is_active": True}
+        if sp:
+            c["sp_api_secret_name"] = "secret"
+        if ads:
+            c["ads_profile_id"] = "123"
+        return c
+
+    def test_backfills_orders_and_ads_when_linked_and_unsynced(self):
+        from event_report_scheduler.main import (
+            _maybe_backfill_prior_year, ORDERS_REPORT, ADS_REPORTS,
+        )
+
+        live = _make_event(event_id="live1", start_date="2026-06-08", end_date="2026-06-10")
+        live["prior_event_id"] = "prior1"
+        # Recent prior event (within ads retention window).
+        prior = _make_event(event_id="prior1", start_date="2026-04-08", end_date="2026-04-10")
+        now = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("event_report_scheduler.main.get_event", return_value=prior),
+            patch("event_report_scheduler.main.get_client", return_value=self._client()),
+            patch("event_report_scheduler.main.create_job", return_value="job-1"),
+            patch("event_report_scheduler.main.launch_execution") as mock_launch,
+            patch("event_report_scheduler.main.update_event") as mock_update,
+            patch("event_report_scheduler.main.time"),
+        ):
+            launched = _maybe_backfill_prior_year("parent", live, self._CONFIGS, now)
+
+        assert launched == 1 + len(ADS_REPORTS)
+        payloads = [c[0][1] for c in mock_launch.call_args_list]
+        by_type = {p["report_type"]: p for p in payloads}
+        assert ORDERS_REPORT in by_type
+        for rt in ADS_REPORTS:
+            assert rt in by_type
+        # Prior-year reports must target the prior event's dates (range pull).
+        ads_payload = by_type[ADS_REPORTS[0]]
+        assert ads_payload["report_params"]["startDate"] == "2026-04-08"
+        assert ads_payload["report_params"]["endDate"] == "2026-04-10"
+        # The link is recorded as synced so it does not re-fan-out every run.
+        mock_update.assert_called_once()
+        assert mock_update.call_args[0][1]["prior_year_synced_for"] == "prior1"
+
+    def test_skips_when_already_synced(self):
+        from event_report_scheduler.main import _maybe_backfill_prior_year
+
+        live = _make_event(event_id="live1")
+        live["prior_event_id"] = "prior1"
+        live["prior_year_synced_for"] = "prior1"
+        now = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("event_report_scheduler.main.get_event") as mock_get,
+            patch("event_report_scheduler.main.launch_execution") as mock_launch,
+            patch("event_report_scheduler.main.update_event") as mock_update,
+        ):
+            launched = _maybe_backfill_prior_year("parent", live, self._CONFIGS, now)
+
+        assert launched == 0
+        mock_get.assert_not_called()
+        mock_launch.assert_not_called()
+        mock_update.assert_not_called()
+
+    def test_noop_without_prior_link(self):
+        from event_report_scheduler.main import _maybe_backfill_prior_year
+
+        live = _make_event(event_id="live1")  # no prior_event_id
+        now = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
+
+        with patch("event_report_scheduler.main.launch_execution") as mock_launch:
+            launched = _maybe_backfill_prior_year("parent", live, self._CONFIGS, now)
+
+        assert launched == 0
+        mock_launch.assert_not_called()
+
+    def test_skips_ads_when_prior_event_too_old_but_still_backfills_orders(self):
+        from event_report_scheduler.main import (
+            _maybe_backfill_prior_year, ORDERS_REPORT, ADS_REPORTS,
+        )
+
+        live = _make_event(event_id="live1", start_date="2026-06-08", end_date="2026-06-10")
+        live["prior_event_id"] = "prior1"
+        # A true prior-year event: orders retained (~2y) but ads are out of
+        # Amazon's reporting window, so ads must be skipped.
+        prior = _make_event(event_id="prior1", start_date="2025-06-08", end_date="2025-06-10")
+        now = datetime(2026, 6, 10, 14, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("event_report_scheduler.main.get_event", return_value=prior),
+            patch("event_report_scheduler.main.get_client", return_value=self._client()),
+            patch("event_report_scheduler.main.create_job", return_value="job-1"),
+            patch("event_report_scheduler.main.launch_execution") as mock_launch,
+            patch("event_report_scheduler.main.update_event"),
+            patch("event_report_scheduler.main.time"),
+        ):
+            launched = _maybe_backfill_prior_year("parent", live, self._CONFIGS, now)
+
+        assert launched == 1
+        report_types = [c[0][1]["report_type"] for c in mock_launch.call_args_list]
+        assert ORDERS_REPORT in report_types
+        for rt in ADS_REPORTS:
+            assert rt not in report_types
+
+    def test_handler_invokes_backfill_for_linked_event(self):
+        from event_report_scheduler.main import handler
+
+        live = _make_event(start_date="2026-06-08", end_date="2026-06-10")
+        live["prior_event_id"] = "prior1"
+        prior = _make_event(event_id="prior1", start_date="2026-04-08", end_date="2026-04-10")
+        now = datetime(2026, 6, 10, 14, 30, tzinfo=timezone.utc)  # off the hour
+
+        with (
+            patch("event_report_scheduler.main.datetime") as mock_dt,
+            patch("event_report_scheduler.main.list_events", return_value=[]),
+            patch("event_report_scheduler.main.get_live_event", return_value=live),
+            patch("event_report_scheduler.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("event_report_scheduler.main.get_event", return_value=prior),
+            patch("event_report_scheduler.main.get_client", return_value=self._client()),
+            patch("event_report_scheduler.main.create_job", return_value="job-1"),
+            patch("event_report_scheduler.main.launch_execution") as mock_launch,
+            patch("event_report_scheduler.main.update_event"),
+            patch("event_report_scheduler.main.time"),
+        ):
+            mock_dt.now.return_value = now
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            body, status = handler(_make_request())
+
+        assert status == 200
+        frequencies = [c[0][1].get("frequency") for c in mock_launch.call_args_list]
+        assert "event_prior_year" in frequencies
+
+
 class TestAutoTransition:
     def test_upcoming_to_live(self):
         from event_report_scheduler.main import _auto_transition_events
