@@ -828,3 +828,103 @@ class TestThreadedHourlyDelivery:
         parent_call = mock_post.call_args_list[0]
         assert "Day 2" in parent_call.args[1][0]["text"]["text"]
         assert "Jun 22" in parent_call.args[1][0]["text"]["text"]
+
+
+class TestManualPriorAds:
+    """Operator-supplied prior-year ads back-fill recap YoY when Amazon Ads can
+    no longer serve the history (its reporting API retains only ~95 days, so an
+    event a full year in the past returns no ads rows and YoY rendered 0/—).
+    """
+
+    def test_lookup_returns_entry_and_coerces(self):
+        from slack_bot.main import _manual_ads_lookup
+
+        manual = {"US": {"2025-06-09": {"spend": "150.5", "ppc_sales": 600}}}
+        assert _manual_ads_lookup(manual, "US", "2025-06-09") == {
+            "spend": 150.5,
+            "ppc_sales": 600.0,
+        }
+
+    def test_lookup_misses_return_none(self):
+        from slack_bot.main import _manual_ads_lookup
+
+        manual = {"US": {"2025-06-09": {"spend": 1, "ppc_sales": 2}}}
+        assert _manual_ads_lookup(None, "US", "2025-06-09") is None
+        assert _manual_ads_lookup(manual, "CA", "2025-06-09") is None
+        assert _manual_ads_lookup(manual, "US", "2025-06-08") is None
+
+    def test_query_metrics_prefers_manual_ads_over_bigquery(self):
+        import slack_bot.main as mod
+
+        manual = {"US": {"2025-06-09": {"spend": 150.0, "ppc_sales": 600.0}}}
+        with (
+            patch.object(mod, "_get_bq", return_value=MagicMock()),
+            patch.object(mod, "_query_orders", return_value={"total_sales": 1000.0, "units": 10}),
+            patch.object(mod, "_query_ads") as mock_ads,
+        ):
+            result = mod._query_metrics(
+                "c1", ["US"], datetime(2026, 6, 10, tzinfo=timezone.utc),
+                report_date="2025-06-09", full_day=True, manual_ads=manual,
+            )
+
+        # Manual ads win; BigQuery ads must not even be queried for that day.
+        mock_ads.assert_not_called()
+        assert result[0].spend == 150.0
+        assert result[0].ppc_sales == 600.0
+        assert result[0].total_sales == 1000.0
+
+    def test_query_metrics_falls_back_to_bigquery_without_manual(self):
+        import slack_bot.main as mod
+
+        manual = {"US": {"2025-06-08": {"spend": 1.0, "ppc_sales": 2.0}}}
+        with (
+            patch.object(mod, "_get_bq", return_value=MagicMock()),
+            patch.object(mod, "_query_orders", return_value={"total_sales": 1000.0, "units": 10}),
+            patch.object(mod, "_query_ads", return_value={"spend": 50.0, "ppc_sales": 200.0}) as mock_ads,
+        ):
+            result = mod._query_metrics(
+                "c1", ["US"], datetime(2026, 6, 10, tzinfo=timezone.utc),
+                report_date="2025-06-09", full_day=True, manual_ads=manual,
+            )
+
+        mock_ads.assert_called_once()
+        assert result[0].spend == 50.0
+        assert result[0].ppc_sales == 200.0
+
+    def test_prior_yoy_uses_manual_ads_for_single_and_cumulative(self):
+        """Regression: a year-ago prior event returns 0 ads from BigQuery, so the
+        recap YoY ads rendered 0. With manual ads on the prior event, single-day
+        and cumulative YoY ads populate from the operator figures."""
+        import slack_bot.main as mod
+
+        prior_event = {
+            "id": "prior_e1",
+            "start_date": "2025-06-08",
+            "manual_ads": {
+                "US": {
+                    "2025-06-08": {"spend": 100.0, "ppc_sales": 400.0},
+                    "2025-06-09": {"spend": 150.0, "ppc_sales": 600.0},
+                }
+            },
+        }
+
+        with (
+            patch.object(mod, "get_event", return_value=prior_event),
+            patch.object(mod, "_get_bq", return_value=MagicMock()),
+            patch.object(mod, "_query_orders", return_value={"total_sales": 1000.0, "units": 10}),
+            # Simulate Amazon no longer serving year-old ads: BigQuery returns nothing.
+            patch.object(mod, "_query_ads", return_value={"spend": 0.0, "ppc_sales": 0.0}),
+        ):
+            prior_single, prior_cumulative = mod._fetch_prior_yoy_metrics(
+                "prior_e1", "c1", ["US"], recap_day=2, client_tz=ZoneInfo("America/Los_Angeles"),
+            )
+
+        # Single-day YoY = prior Day 2 (2025-06-09).
+        assert prior_single is not None
+        assert prior_single[0].spend == 150.0
+        assert prior_single[0].ppc_sales == 600.0
+
+        # Cumulative YoY = prior Days 1+2 (2025-06-08 + 2025-06-09).
+        assert prior_cumulative is not None
+        assert prior_cumulative[0].spend == 250.0
+        assert prior_cumulative[0].ppc_sales == 1000.0

@@ -299,12 +299,19 @@ def _query_metrics(
     *,
     report_date: str | None = None,
     full_day: bool = False,
+    manual_ads: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[MarketplaceMetrics]:
     """Query BQ for orders and ads data, returning per-marketplace metrics.
 
     When ``report_date`` is set, queries that calendar day (used for day-end
     recaps). ``full_day=True`` uses the complete report_date partition without
     filtering orders to purchases since midnight (hourly updates use partial day).
+
+    ``manual_ads`` lets the caller supply operator-provided ads figures keyed by
+    ``{marketplace: {YYYY-MM-DD: {"spend": float, "ppc_sales": float}}}``. When a
+    matching ``(marketplace, date)`` entry exists it overrides the BigQuery ads
+    query. This is how prior-year YoY ads are populated for events older than
+    Amazon Ads' ~95-day reporting window, which the API can no longer pull.
     """
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
@@ -316,7 +323,9 @@ def _query_metrics(
         orders = _query_orders(
             bq, project, dataset, client_id, mkt, mkt_date, now, full_day=full_day,
         )
-        ads = _query_ads(bq, project, dataset, client_id, mkt, mkt_date)
+        ads = _manual_ads_lookup(manual_ads, mkt, mkt_date)
+        if ads is None:
+            ads = _query_ads(bq, project, dataset, client_id, mkt, mkt_date)
         results.append(MarketplaceMetrics(
             marketplace=mkt,
             currency=MARKETPLACE_CURRENCIES.get(mkt, "USD"),
@@ -499,6 +508,28 @@ def _query_ads(
             "ppc_sales": float(row["ppc_sales"]),
         }
     return {}
+
+
+def _manual_ads_lookup(
+    manual_ads: dict[str, dict[str, dict[str, Any]]] | None,
+    marketplace: str,
+    report_date: str,
+) -> dict[str, Any] | None:
+    """Return operator-supplied ads for a marketplace/date, or None if unset.
+
+    ``manual_ads`` is keyed ``{marketplace: {YYYY-MM-DD: {spend, ppc_sales}}}``.
+    A present entry takes precedence over BigQuery so prior-year ads beyond
+    Amazon's ~95-day reporting window can be filled in by hand.
+    """
+    if not manual_ads:
+        return None
+    entry = manual_ads.get(marketplace, {}).get(report_date)
+    if not entry:
+        return None
+    return {
+        "spend": float(entry.get("spend", 0.0) or 0.0),
+        "ppc_sales": float(entry.get("ppc_sales", 0.0) or 0.0),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -706,6 +737,7 @@ def _query_cumulative_metrics(
     event_start: str,
     through_day: int,
     client_tz: ZoneInfo,
+    manual_ads: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[MarketplaceMetrics]:
     """Sum full-day metrics for event days 1 through ``through_day``."""
     accumulated: dict[str, MarketplaceMetrics] = {}
@@ -713,7 +745,7 @@ def _query_cumulative_metrics(
         day_date = _report_date_for_event_day(event_start, day, client_tz)
         for m in _query_metrics(
             client_id, marketplaces, datetime.now(timezone.utc),
-            report_date=day_date, full_day=True,
+            report_date=day_date, full_day=True, manual_ads=manual_ads,
         ):
             if m.marketplace not in accumulated:
                 accumulated[m.marketplace] = MarketplaceMetrics(
@@ -749,14 +781,22 @@ def _fetch_prior_yoy_metrics(
     if not prior_start:
         return None, None
 
+    # Operator-supplied ads for the prior-year event fill the YoY ads metrics
+    # (Spend / PPC Sales / ACoS) when Amazon Ads can no longer serve that
+    # history (its reporting API only retains ~95 days). Orders/Total Sales
+    # still come from BigQuery (SP-API retains ~2 years).
+    manual_ads = prior_event.get("manual_ads") or None
+
     now = datetime.now(timezone.utc)
     prior_date = _report_date_for_event_day(prior_start, recap_day, client_tz)
     prior_single = _query_metrics(
         client_id, marketplaces, now, report_date=prior_date, full_day=True,
+        manual_ads=manual_ads,
     )
     prior_cumulative = (
         _query_cumulative_metrics(
             client_id, marketplaces, prior_start, recap_day, client_tz,
+            manual_ads=manual_ads,
         )
         if recap_day >= 2
         else None

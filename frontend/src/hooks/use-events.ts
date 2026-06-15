@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { Event } from "@/types";
+import type { Event, ManualAds } from "@/types";
 
 export function useEvents() {
   return useQuery({ queryKey: ["events"], queryFn: () => api.listEvents() });
@@ -9,7 +9,7 @@ export function useEvents() {
 export function useCreateEvent() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { name: string; start_date: string; end_date: string; prior_event_id?: string }) =>
+    mutationFn: (data: { name: string; start_date: string; end_date: string; prior_event_id?: string; manual_ads?: ManualAds }) =>
       api.createEvent(data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["events"] }),
   });

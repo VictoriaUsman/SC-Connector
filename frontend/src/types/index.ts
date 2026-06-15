@@ -267,6 +267,16 @@ export function isAdsReportType(reportType: string): boolean {
 
 export type EventStatus = "upcoming" | "live" | "completed";
 
+export interface ManualAdsEntry {
+  spend: number;
+  ppc_sales: number;
+}
+
+// Operator-supplied prior-year ads, keyed by marketplace then YYYY-MM-DD.
+// Fills the midnight recap's year-over-year ads metrics when Amazon Ads no
+// longer serves that history (its reporting API retains only ~95 days).
+export type ManualAds = Record<string, Record<string, ManualAdsEntry>>;
+
 export interface Event {
   id: string;
   name: string;
@@ -274,6 +284,7 @@ export interface Event {
   end_date: string;
   status: EventStatus;
   prior_event_id?: string;
+  manual_ads?: ManualAds;
   manually_activated?: boolean;
   activated_at?: string;
   created_at?: string;

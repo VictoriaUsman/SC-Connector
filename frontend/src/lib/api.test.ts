@@ -87,3 +87,54 @@ describe("event prior_event_id linkage", () => {
     expect(body.prior_event_id).toBe("");
   });
 });
+
+describe("event manual_ads (prior-year ads beyond Amazon's 95-day window)", () => {
+  // CU-868jx21hw follow-up: Amazon Ads' reporting API only retains ~95 days, so
+  // a year-ago prior event can't be pulled and recap YoY ads stayed 0. Operators
+  // now provide those figures by hand; the payload must carry manual_ads through.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockFetchOk() {
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ id: "e1", status: "updated" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+  }
+
+  it("forwards manual_ads when creating an event", async () => {
+    const fetchSpy = mockFetchOk();
+
+    await api.createEvent({
+      name: "Prime Day 2025",
+      start_date: "2025-07-13",
+      end_date: "2025-07-14",
+      manual_ads: { US: { "2025-07-13": { spend: 100.5, ppc_sales: 400 } } },
+    });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.manual_ads).toEqual({
+      US: { "2025-07-13": { spend: 100.5, ppc_sales: 400 } },
+    });
+  });
+
+  it("forwards manual_ads when updating an event", async () => {
+    const fetchSpy = mockFetchOk();
+
+    await api.updateEvent("e1", {
+      manual_ads: { CA: { "2025-07-14": { spend: 1, ppc_sales: 2 } } },
+    });
+
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.manual_ads).toEqual({
+      CA: { "2025-07-14": { spend: 1, ppc_sales: 2 } },
+    });
+  });
+});
