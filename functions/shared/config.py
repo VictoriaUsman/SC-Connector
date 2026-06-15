@@ -22,6 +22,14 @@ MARKETPLACE_TO_REGION: dict[str, str] = {
     "AU": "fe", "SG": "fe",
 }
 
+# Operations clock — the team's operating timezone (Philippine Time, UTC+8).
+# Used to anchor the Sales & Traffic trailing-window end date to a single,
+# marketplace-independent "run date" so that a run firing near a day boundary
+# (e.g. ~6am PHT, which is the previous calendar day in UTC and in the western
+# marketplaces) resolves to the operator's calendar date rather than each
+# marketplace's local date. Overridable via the OPERATIONS_TIMEZONE env var.
+OPERATIONS_TIMEZONE: str = os.environ.get("OPERATIONS_TIMEZONE", "Asia/Manila")
+
 MARKETPLACE_TIMEZONES: dict[str, str] = {
     "US": "America/Los_Angeles",
     "CA": "America/Los_Angeles",

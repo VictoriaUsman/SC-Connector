@@ -298,6 +298,115 @@ class TestComputeDateRange:
 
 
 # ---------------------------------------------------------------------------
+# compute_date_range — anchor_tz override
+# ---------------------------------------------------------------------------
+
+class TestComputeDateRangeAnchorTz:
+
+    def test_anchor_tz_overrides_marketplace_today(self):
+        """With anchor_tz, 'today' is resolved in that zone, not the marketplace's."""
+        from shared.schedule_compute import compute_date_range
+
+        # 6am PHT on Jun 11 == 22:00 UTC Jun 10. In Asia/Manila (UTC+8) the
+        # calendar date is Jun 11; in America/Los_Angeles it's still Jun 10.
+        now = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc)
+        manila = ZoneInfo("Asia/Manila")
+
+        anchored = compute_date_range(
+            "US", {"strategy": "last_n_days", "days": 30}, now, anchor_tz=manila
+        )
+        marketplace = compute_date_range("US", {"strategy": "last_n_days", "days": 30}, now)
+
+        # Anchored to Manila (Jun 11) → end Jun 10; marketplace-local (Jun 10) → end Jun 9
+        assert anchored[1] == date(2026, 6, 10)
+        assert marketplace[1] == date(2026, 6, 9)
+
+
+# ---------------------------------------------------------------------------
+# compute_sales_traffic_date_range — consistent, lagged end date
+# ---------------------------------------------------------------------------
+
+class TestComputeSalesTrafficDateRange:
+
+    # 6am PHT on Jun 11 2026 == 22:00 UTC Jun 10 — the incident's run instant.
+    _RUN_6AM_PHT = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc)
+
+    def test_end_date_is_consistent_across_marketplaces(self):
+        """Every marketplace must get the SAME end date for the same run."""
+        from shared.schedule_compute import compute_sales_traffic_date_range
+
+        tf = {"strategy": "last_n_days", "days": 30, "end_offset_days": 0}
+        ends = {
+            mkt: compute_sales_traffic_date_range(mkt, tf, self._RUN_6AM_PHT)[1]
+            for mkt in ["US", "CA", "MX", "UK", "DE", "FR", "AU", "SG"]
+        }
+        assert len(set(ends.values())) == 1, f"end dates diverged by marketplace: {ends}"
+
+    def test_zero_delay_end_is_d_minus_2_from_run_date(self):
+        """0-day delay → end date is D-2 from the operations (PHT) run date.
+
+        Regression for the incident: a 6am-PHT Jun-11 run must end at Jun 9, and
+        no account may land a day short (Jun 8) or a day ahead (Jun 10).
+        """
+        from shared.schedule_compute import compute_sales_traffic_date_range
+
+        tf = {"strategy": "last_n_days", "days": 30, "end_offset_days": 0}
+        for mkt in ["US", "CA", "MX", "UK", "DE", "AU", "SG"]:
+            start, end = compute_sales_traffic_date_range(mkt, tf, self._RUN_6AM_PHT)
+            assert end == date(2026, 6, 9), f"{mkt} ended at {end}, expected 2026-06-09"
+            assert start == date(2026, 5, 11), f"{mkt} started at {start}"
+            assert (end - start).days == 29  # 30 inclusive days
+
+    def test_explicit_delay_composes_with_data_lag(self):
+        from shared.schedule_compute import compute_sales_traffic_date_range
+
+        tf = {"strategy": "last_n_days", "days": 30, "end_offset_days": 3}
+        # end = ops_today(Jun 11) - 1 (yesterday) - 3 (delay) - 1 (S&T lag) = Jun 6
+        start, end = compute_sales_traffic_date_range("US", tf, self._RUN_6AM_PHT)
+        assert end == date(2026, 6, 6)
+
+    def test_yesterday_strategy_is_lagged_and_consistent(self):
+        from shared.schedule_compute import compute_sales_traffic_date_range
+
+        us = compute_sales_traffic_date_range("US", {"strategy": "yesterday"}, self._RUN_6AM_PHT)
+        de = compute_sales_traffic_date_range("DE", {"strategy": "yesterday"}, self._RUN_6AM_PHT)
+        # yesterday end = ops_today(Jun 11) - 1 - 1 (lag) = Jun 9, single day, all marketplaces
+        assert us == (date(2026, 6, 9), date(2026, 6, 9))
+        assert de == us
+
+    def test_midday_run_applies_data_lag(self):
+        """Away from the day boundary, S&T still lags one day behind a normal report."""
+        from shared.schedule_compute import compute_date_range, compute_sales_traffic_date_range
+
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        tf = {"strategy": "last_n_days", "days": 30}
+        _, st_end = compute_sales_traffic_date_range("US", tf, now)
+        _, normal_end = compute_date_range("US", tf, now)
+        assert st_end == normal_end - timedelta(days=1)
+
+    def test_calendar_month_falls_back_to_marketplace_range(self):
+        """Fixed calendar periods must not be shifted by the S&T data lag."""
+        from shared.schedule_compute import compute_date_range, compute_sales_traffic_date_range
+
+        now = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        tf = {"strategy": "last_calendar_month"}
+        assert (
+            compute_sales_traffic_date_range("US", tf, now)
+            == compute_date_range("US", tf, now)
+        )
+
+    def test_calendar_week_falls_back_to_marketplace_range(self):
+        from shared.schedule_compute import compute_date_range, compute_sales_traffic_date_range
+
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+        tf = {"strategy": "last_calendar_week", "week_start": 0}
+        assert (
+            compute_sales_traffic_date_range("US", tf, now)
+            == compute_date_range("US", tf, now)
+        )
+
+
+# ---------------------------------------------------------------------------
 # compute_report_dates — single day and range
 # ---------------------------------------------------------------------------
 

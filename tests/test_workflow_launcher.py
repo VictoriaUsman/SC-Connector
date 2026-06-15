@@ -489,6 +489,73 @@ class TestExecutionDateDeterminism:
 
 
 # ---------------------------------------------------------------------------
+# launch_for_marketplace — Sales & Traffic end-date consistency
+# ---------------------------------------------------------------------------
+
+class TestLaunchForMarketplaceSalesTraffic:
+    """Regression for the ~28-account incident: Sales & Traffic must pull
+    through the same complete end date (D-2 from the operations run date) for
+    every account, regardless of marketplace timezone or the hour the
+    scheduler fires.
+    """
+
+    def _make_schedule(self, **overrides) -> dict:
+        sched = {
+            "id": "s1",
+            "api_source": "sp_api",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
+            "frequency": "daily",
+            "report_params": {},
+            "folder_name": "",
+            "subfolder_strategy": "date",
+            "reconciliation_days": [],
+            "timeframe": {"strategy": "last_n_days", "days": 30, "end_offset_days": 0},
+        }
+        sched.update(overrides)
+        return sched
+
+    def _data_end_date(self, mock_exec_client) -> str:
+        payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+        # dataEndTime is midnight after the end day in the marketplace tz; its
+        # date component can roll to the next day, so assert via report_date +
+        # report_end_date which are plain marketplace calendar dates.
+        return payload["report_params"]["dataEndTime"]
+
+    def test_same_end_date_across_marketplaces_at_6am_pht(self, mock_exec_client):
+        """US and DE must request the same end date for a 6am-PHT run."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule()
+        now = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc)  # 6am PHT Jun 11
+
+        ends = {}
+        for mkt in ["US", "DE"]:
+            mock_exec_client.reset_mock()
+            with patch("shared.workflow_launcher.create_job", return_value="j1") as mc:
+                launch_for_marketplace("parent", now, sched, "c1", mkt)
+            ends[mkt] = mc.call_args[0][0]["report_end_date"]
+
+        assert ends["US"] == ends["DE"] == "2026-06-09", ends
+
+    def test_other_report_types_remain_marketplace_local(self, mock_exec_client):
+        """A non-S&T SP report keeps marketplace-local dates (DE differs from US)."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(report_types=["GET_FLAT_FILE_OPEN_LISTINGS_DATA"])
+        now = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc)
+
+        ends = {}
+        for mkt in ["US", "DE"]:
+            mock_exec_client.reset_mock()
+            with patch("shared.workflow_launcher.create_job", return_value="j1") as mc:
+                launch_for_marketplace("parent", now, sched, "c1", mkt)
+            ends[mkt] = mc.call_args[0][0]["report_end_date"]
+
+        assert ends["US"] == "2026-06-09"
+        assert ends["DE"] == "2026-06-10"
+
+
+# ---------------------------------------------------------------------------
 # launch_for_marketplace — synchronous API operations (mode="api_call")
 # ---------------------------------------------------------------------------
 

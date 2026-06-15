@@ -6,7 +6,7 @@ import calendar
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from shared.config import MARKETPLACE_TIMEZONES
+from shared.config import MARKETPLACE_TIMEZONES, OPERATIONS_TIMEZONE
 
 VALID_TIMEFRAME_STRATEGIES = {
     "yesterday",
@@ -18,10 +18,30 @@ VALID_TIMEFRAME_STRATEGIES = {
     "prior_year_window",
 }
 
+# Sales & Traffic is the only daily SP report whose end date must be identical
+# across every marketplace in a single scheduler run (ops requirement) and must
+# respect Amazon's data-finalization lag. ``SALES_TRAFFIC_DATA_LAG_DAYS`` is the
+# extra trailing-day offset applied on top of the normal "yesterday" end so the
+# last requested day is always complete: with a 0-day delay this lands the end
+# date at D-2 from the operations run date.
+SALES_TRAFFIC_REPORT_TYPE = "GET_SALES_AND_TRAFFIC_REPORT"
+SALES_TRAFFIC_DATA_LAG_DAYS = 1
+
+# Strategies whose end is a moving "trailing" boundary (i.e. relative to today),
+# for which the Sales & Traffic ops-anchoring + data lag is meaningful. Fixed
+# calendar-period strategies (last_calendar_week/month) and historical windows
+# (prior_year_window) are already aligned and must not be shifted.
+_SALES_TRAFFIC_TRAILING_STRATEGIES = {"yesterday", "today", "last_n_days", "rolling_window"}
+
 
 def get_marketplace_tz(marketplace: str) -> ZoneInfo:
     tz_name = MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles")
     return ZoneInfo(tz_name)
+
+
+def get_operations_tz() -> ZoneInfo:
+    """Return the team's operating timezone (used for run-date anchoring)."""
+    return ZoneInfo(OPERATIONS_TIMEZONE)
 
 
 def marketplace_today(marketplace: str, utc_now: datetime | None = None) -> date:
@@ -51,6 +71,8 @@ def compute_date_range(
     marketplace: str,
     timeframe: dict,
     utc_now: datetime | None = None,
+    *,
+    anchor_tz: ZoneInfo | None = None,
 ) -> tuple[date, date]:
     """Resolve a timeframe config dict into (start_date, end_date) in marketplace local time.
 
@@ -62,9 +84,17 @@ def compute_date_range(
       last_calendar_week — most recent completed week, configurable week_start
       last_calendar_month — first to last day of previous calendar month
       prior_year_window — window around today's date shifted back N years
+
+    When ``anchor_tz`` is provided, "today" is resolved in that timezone instead
+    of the marketplace's local timezone. This is used to compute a single,
+    marketplace-independent run date (see ``compute_sales_traffic_date_range``).
     """
     strategy = timeframe.get("strategy", "yesterday")
-    today = marketplace_today(marketplace, utc_now)
+    if anchor_tz is not None:
+        ref = utc_now if utc_now is not None else datetime.now(timezone.utc)
+        today = ref.astimezone(anchor_tz).date()
+    else:
+        today = marketplace_today(marketplace, utc_now)
 
     if strategy == "yesterday":
         d = today - timedelta(days=1)
@@ -114,6 +144,44 @@ def compute_date_range(
 
     d = today - timedelta(days=1)
     return d, d
+
+
+def compute_sales_traffic_date_range(
+    marketplace: str,
+    timeframe: dict,
+    utc_now: datetime | None = None,
+) -> tuple[date, date]:
+    """Resolve the (start, end) date range for a Sales & Traffic pull.
+
+    Sales & Traffic differs from other reports in two ways that this function
+    corrects:
+
+    1. **Consistent end date across marketplaces.** The trailing window's "today"
+       is anchored to the fixed operations timezone (OPERATIONS_TIMEZONE) rather
+       than each marketplace's local timezone. Without this, a run firing near a
+       day boundary (e.g. ~6am PHT, which is still the previous calendar day in
+       UTC and in the western marketplaces) resolves to different calendar dates
+       per marketplace, so some accounts end up one day short of the others.
+
+    2. **Data-availability lag.** Amazon's Sales & Traffic data for the most
+       recent day(s) is not finalized at run time. The trailing end is pulled
+       back by ``SALES_TRAFFIC_DATA_LAG_DAYS`` so the last requested day is
+       always complete. Combined with the standard "yesterday" end, a 0-day
+       delay lands the end date at D-2 from the operations run date.
+
+    Only trailing strategies (yesterday/today/last_n_days/rolling_window) get
+    this treatment. Fixed calendar-period and prior-year strategies are already
+    aligned and fall back to the standard marketplace-anchored computation.
+    """
+    strategy = timeframe.get("strategy", "yesterday")
+    if strategy not in _SALES_TRAFFIC_TRAILING_STRATEGIES:
+        return compute_date_range(marketplace, timeframe, utc_now)
+
+    start, end = compute_date_range(
+        marketplace, timeframe, utc_now, anchor_tz=get_operations_tz()
+    )
+    lag = timedelta(days=SALES_TRAFFIC_DATA_LAG_DAYS)
+    return start - lag, end - lag
 
 
 def compute_report_dates(

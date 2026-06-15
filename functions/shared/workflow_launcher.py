@@ -24,8 +24,10 @@ from shared.api_operations import get_api_operation, is_api_operation
 from shared.firestore_utils import create_job, update_job_status
 from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import (
+    SALES_TRAFFIC_REPORT_TYPE,
     compute_date_range,
     compute_report_dates,
+    compute_sales_traffic_date_range,
     marketplace_today,
     marketplace_yesterday,
 )
@@ -253,6 +255,16 @@ def launch_for_marketplace(
         effective_source = infer_api_source(report_type, schedule_api_source)
         type_params = params_map.get(report_type, {})
 
+        # Sales & Traffic needs a marketplace-independent end date anchored to
+        # the operations clock plus a data-availability lag, so every account
+        # pulls through the same complete end date (D-2 from the run date) even
+        # when the scheduler fires near a day boundary. All other report types
+        # use the standard marketplace-local range computed above.
+        if report_type == SALES_TRAFFIC_REPORT_TYPE and effective_source == "sp_api":
+            rt_start, rt_end = compute_sales_traffic_date_range(marketplace, timeframe, now)
+        else:
+            rt_start, rt_end = start_date, end_date
+
         # Report types Amazon has permanently removed are accepted by createReport
         # but immediately cancelled, wasting the limited createReport quota and
         # surfacing a generic "no data" failure.  Record a clearly-documented
@@ -299,7 +311,7 @@ def launch_for_marketplace(
         if is_api_operation(report_type):
             op_params = {**type_params}
             op_params.update(
-                compute_report_dates(marketplace, effective_source, start_date, end_date)
+                compute_report_dates(marketplace, effective_source, rt_start, rt_end)
             )
             job_data = {
                 "client_id": client_id,
@@ -308,12 +320,12 @@ def launch_for_marketplace(
                 "report_type": report_type,
                 "schedule_id": schedule["id"],
                 "frequency": frequency,
-                "report_date": start_date.isoformat(),
+                "report_date": rt_start.isoformat(),
                 "execution_date": execution_date_val.isoformat(),
                 "mode": "api_call",
             }
-            if end_date != start_date:
-                job_data["report_end_date"] = end_date.isoformat()
+            if rt_end != rt_start:
+                job_data["report_end_date"] = rt_end.isoformat()
             if extra_job_fields:
                 job_data.update(extra_job_fields)
 
@@ -330,8 +342,8 @@ def launch_for_marketplace(
                 subfolder_strategy=schedule.get("subfolder_strategy", "date"),
                 schedule_id=schedule["id"],
                 execution_date=execution_date_val.isoformat(),
-                report_date=start_date.isoformat(),
-                report_end_date=end_date.isoformat() if end_date != start_date else None,
+                report_date=rt_start.isoformat(),
+                report_end_date=rt_end.isoformat() if rt_end != rt_start else None,
                 mode="api_call",
             )
             launch_execution(parent, payload, job_id, error_phase="scheduler")
@@ -343,17 +355,17 @@ def launch_for_marketplace(
         for variant_params in _expand_report_option_variants(type_params):
             report_params = {**variant_params}
             report_params.update(
-                compute_report_dates(marketplace, effective_source, start_date, end_date)
+                compute_report_dates(marketplace, effective_source, rt_start, rt_end)
             )
 
             dates_to_pull: list[tuple[date, date, dict]] = [
-                (start_date, end_date, report_params),
+                (rt_start, rt_end, report_params),
             ]
 
             if strategy == "yesterday":
                 reconciliation_days: list[int] = schedule.get("reconciliation_days", [3, 7])
                 for days_back in reconciliation_days:
-                    recon_date = start_date - timedelta(days=days_back - 1)
+                    recon_date = rt_start - timedelta(days=days_back - 1)
                     recon_params = {**variant_params}
                     recon_params.update(
                         compute_report_dates(marketplace, effective_source, recon_date)
