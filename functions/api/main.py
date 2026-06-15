@@ -1357,7 +1357,19 @@ def oauth_sp_api_authorize():
         "application_id": application_id,
         "state": state,
     }
-    if app_creds.get("draft", True):
+    # Draft (unpublished) apps MUST add version=beta or Amazon rejects consent
+    # with error MD5100 ("...add the version=beta parameter..."). A single SP-API
+    # app publishes its Seller and Vendor surfaces independently: this app is
+    # published in the Seller appstore (draft=false) but its Vendor authorization
+    # is still in draft, so vendor consent needs version=beta even though seller
+    # consent does not. Track the vendor draft state separately (defaulting to
+    # draft) instead of inheriting the seller `draft` flag — otherwise vendors
+    # silently get no version=beta and every Vendor Central connect fails.
+    if account_type == "vendor":
+        is_draft = app_creds.get("vendor_draft", True)
+    else:
+        is_draft = app_creds.get("draft", True)
+    if is_draft:
         params["version"] = "beta"
 
     auth_url = f"{central}/apps/authorize/consent?{urlencode(params)}"
@@ -1366,6 +1378,7 @@ def oauth_sp_api_authorize():
         "requested_client_id": requested_client_id,
         "application_id": application_id,
         "account_type": account_type,
+        "draft": is_draft,
         "central": central,
         "auth_url": auth_url,
     })

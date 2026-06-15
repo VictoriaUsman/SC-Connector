@@ -1127,6 +1127,70 @@ class TestSpApiOAuthAuthorize:
         assert "/apps/authorize/consent" in loc
         assert save_state.call_args[0][1]["account_type"] == "vendor"
 
+    # App credentials for a Seller-published app: the seller surface is live
+    # (draft=false) while the vendor surface is still in draft. This is the
+    # exact state of the deployed app that triggered MD5100 for vendor connects.
+    _PUBLISHED_SELLER_APP = {"app_id": "amzn1.sp.app", "client_id": "amzn1.app", "draft": False}
+
+    def test_vendor_gets_version_beta_when_seller_app_published(self, client):
+        """Regression (MD5100): a vendor connecting through a Seller-published app
+        (draft=false) must still get version=beta, because the app's vendor
+        authorization is independently still in draft. Omitting it makes Vendor
+        Central reject consent with error MD5100."""
+        with (
+            patch(
+                "api.main.resolve_client",
+                return_value={"id": "acme-1p", "name": "Acme Vendor", "account_type": "vendor"},
+            ),
+            patch("api.main._read_app_secret", return_value=self._PUBLISHED_SELLER_APP),
+            patch("api.main._save_oauth_state", MagicMock()),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme-1p&region=eu")
+        assert resp.status_code == 302
+        assert "version=beta" in resp.headers["Location"]
+
+    def test_vendor_omits_version_beta_when_vendor_surface_published(self, client):
+        """Once Amazon publishes the app's vendor surface, setting vendor_draft=false
+        drops version=beta for vendor consent (mirrors the published-seller path)."""
+        published_both = {**self._PUBLISHED_SELLER_APP, "vendor_draft": False}
+        with (
+            patch(
+                "api.main.resolve_client",
+                return_value={"id": "acme-1p", "name": "Acme Vendor", "account_type": "vendor"},
+            ),
+            patch("api.main._read_app_secret", return_value=published_both),
+            patch("api.main._save_oauth_state", MagicMock()),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme-1p&region=eu")
+        assert resp.status_code == 302
+        assert "version=beta" not in resp.headers["Location"]
+
+    def test_seller_omits_version_beta_when_app_published(self, client):
+        """No regression for sellers: a published seller app (draft=false) keeps
+        authorizing seller consent without version=beta."""
+        with (
+            patch("api.main.resolve_client", return_value={"id": "acme", "name": "Acme"}),
+            patch("api.main._read_app_secret", return_value=self._PUBLISHED_SELLER_APP),
+            patch("api.main._save_oauth_state", MagicMock()),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme&region=na")
+        assert resp.status_code == 302
+        assert "version=beta" not in resp.headers["Location"]
+
+    def test_vendor_gets_version_beta_with_default_draft_app(self, client):
+        """A fully-draft app (no flags) still gives vendor consent version=beta."""
+        with (
+            patch(
+                "api.main.resolve_client",
+                return_value={"id": "acme-1p", "name": "Acme Vendor", "account_type": "vendor"},
+            ),
+            patch("api.main._read_app_secret", return_value=self._APP_CREDS),
+            patch("api.main._save_oauth_state", MagicMock()),
+        ):
+            resp = client.get("/oauth/sp-api/authorize?client_id=acme-1p&region=na")
+        assert resp.status_code == 302
+        assert "version=beta" in resp.headers["Location"]
+
 
 class TestSecretSafeSegment:
     """Client ids must be transliterated into Secret Manager-safe segments.
