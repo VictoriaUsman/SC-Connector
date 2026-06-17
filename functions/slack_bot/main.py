@@ -25,8 +25,10 @@ from shared.firestore_utils import (
     get_client,
     get_event,
     get_live_event,
+    get_thread_anchor_ts,
     list_bot_configs,
     log_bot_activity,
+    set_thread_anchor_ts,
 )
 from shared.logging_setup import init_logging
 from shared.schedule_compute import marketplace_today
@@ -147,6 +149,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         try:
             if is_midnight_recap:
                 recap_date = _report_date_for_event_day(event_start, recap_day, client_tz)
+                # The recap reports the just-completed day, so it threads under
+                # that day's anchor (not the new day that just rolled over).
+                anchor_date = date_type.fromisoformat(recap_date)
+                anchor_day = recap_day
                 metrics = _query_metrics(
                     client_id, marketplaces, now, report_date=recap_date, full_day=True,
                 )
@@ -180,6 +186,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             else:
                 metrics = _query_metrics(client_id, marketplaces, now)
                 _check_total_sales_invariant(metrics)
+                # Hourly updates report the current local day.
+                anchor_date = now.astimezone(client_tz).date()
+                anchor_day = day_index
                 blocks = _build_message_blocks(
                     client_name=client_name,
                     event_name=event_name,
@@ -190,13 +199,28 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     base_currency=config.get("base_currency", "USD"),
                 )
                 text_fallback = f"Hourly Update — {client_name} | {event_name}"
-            result = post_message(channel_id, blocks, text_fallback)
+
+            # One thin parent message per event-day acts as the thread anchor;
+            # every update for that day (hourly + the next-morning recap) lands
+            # as a threaded reply under it. The anchor is created lazily on the
+            # first update of the day and reused thereafter, so a mid-day
+            # restart never spawns a duplicate parent.
+            parent_ts = _ensure_day_anchor(
+                channel_id=channel_id,
+                event_id=live_event["id"],
+                client_id=client_id,
+                event_name=event_name,
+                event_date=anchor_date,
+                day_index=anchor_day,
+            )
+            result = post_message(channel_id, blocks, text_fallback, thread_ts=parent_ts)
 
             log_bot_activity({
                 "client_id": client_id,
                 "event_id": live_event["id"],
                 "status": "sent",
                 "message_ts": result.get("ts"),
+                "parent_ts": parent_ts,
                 "marketplaces_reported": marketplaces,
             })
             sent += 1
@@ -428,6 +452,62 @@ def _query_ads(
             "ppc_sales": float(row["ppc_sales"]),
         }
     return {}
+
+
+# ---------------------------------------------------------------------------
+# Per-day thread anchor
+# ---------------------------------------------------------------------------
+
+def _build_day_anchor_blocks(
+    event_name: str, day_index: int, event_date: date_type
+) -> tuple[list[dict], str]:
+    """Build the thin daily anchor message (e.g. "📊 Prime Day — Day 2, Jun 22").
+
+    The anchor carries no metrics — it exists only as the thread parent and is
+    never rewritten on subsequent updates.
+    """
+    date_label = event_date.strftime("%b %-d")
+    day_label = f"Day {day_index}" if day_index and day_index > 0 else ""
+    suffix = f"{day_label}, {date_label}" if day_label else date_label
+    text = f":bar_chart: *{event_name} — {suffix}*"
+    fallback = f"{event_name} — {suffix}"
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}], fallback
+
+
+def _ensure_day_anchor(
+    *,
+    channel_id: str,
+    event_id: str,
+    client_id: str,
+    event_name: str,
+    event_date: date_type,
+    day_index: int,
+) -> str | None:
+    """Return the parent ts for ``event_date``, creating the anchor if absent.
+
+    Looks up the stored parent ts first (so a mid-day restart reuses it). Only
+    when none exists does it post a fresh top-level anchor and persist its ts.
+    """
+    date_iso = event_date.isoformat()
+    existing = get_thread_anchor_ts(event_id, client_id, channel_id, date_iso)
+    if existing:
+        return existing
+
+    blocks, fallback = _build_day_anchor_blocks(event_name, day_index, event_date)
+    result = post_message(channel_id, blocks, fallback)
+    parent_ts = result.get("ts")
+    if not parent_ts:
+        return None
+
+    try:
+        set_thread_anchor_ts(event_id, client_id, channel_id, date_iso, parent_ts)
+    except Exception:
+        # Lost a create race with a concurrent run; thread under the winner's
+        # anchor instead of our now-orphaned one.
+        winner = get_thread_anchor_ts(event_id, client_id, channel_id, date_iso)
+        if winner:
+            return winner
+    return parent_ts
 
 
 # ---------------------------------------------------------------------------

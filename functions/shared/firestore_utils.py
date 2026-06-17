@@ -351,6 +351,72 @@ def log_bot_activity(data: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Slack Thread Anchors
+# ---------------------------------------------------------------------------
+# Per-event-day parent ("anchor") message that the hourly event bot threads its
+# updates under. Keyed deterministically on (event, client, channel, local date)
+# so a mid-day restart reuses the stored parent ts instead of creating a
+# duplicate top-level message.
+
+_THREAD_ANCHORS_COLLECTION = "slack_thread_anchors"
+
+
+def _thread_anchor_doc_id(
+    event_id: str, client_id: str, channel_id: str, event_date: str
+) -> str:
+    """Deterministic document id for a per-day thread anchor.
+
+    Includes the channel so switching between a test and production channel
+    never reuses a parent ts that belongs to the other channel. Slashes are
+    replaced because Firestore document ids cannot contain them.
+    """
+    raw = f"{event_id}__{client_id}__{channel_id}__{event_date}"
+    return raw.replace("/", "_")
+
+
+def get_thread_anchor_ts(
+    event_id: str, client_id: str, channel_id: str, event_date: str
+) -> str | None:
+    """Return the stored parent message ts for an event-day, or None."""
+    doc = (
+        get_db()
+        .collection(_THREAD_ANCHORS_COLLECTION)
+        .document(_thread_anchor_doc_id(event_id, client_id, channel_id, event_date))
+        .get()
+    )
+    if not doc.exists:
+        return None
+    return doc.to_dict().get("parent_ts")
+
+
+def set_thread_anchor_ts(
+    event_id: str,
+    client_id: str,
+    channel_id: str,
+    event_date: str,
+    parent_ts: str,
+) -> None:
+    """Persist the parent message ts for an event-day (create-if-absent).
+
+    Uses ``create()`` so a concurrent run that already wrote the anchor wins and
+    a second writer fails loudly rather than silently overwriting the ts.
+    """
+    doc_ref = (
+        get_db()
+        .collection(_THREAD_ANCHORS_COLLECTION)
+        .document(_thread_anchor_doc_id(event_id, client_id, channel_id, event_date))
+    )
+    doc_ref.create({
+        "event_id": event_id,
+        "client_id": client_id,
+        "channel_id": channel_id,
+        "event_date": event_date,
+        "parent_ts": parent_ts,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+
+# ---------------------------------------------------------------------------
 # Jobs
 # ---------------------------------------------------------------------------
 

@@ -469,6 +469,8 @@ class TestHandlerIntegration:
             patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("slack_bot.main._query_metrics", return_value=[]),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
             patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
             patch("slack_bot.main.log_bot_activity"),
         ):
@@ -476,7 +478,9 @@ class TestHandlerIntegration:
 
         assert status == 200
         assert body["messages_sent"] == 1
+        # Anchor already exists, so only the threaded update is posted.
         mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs.get("thread_ts") == "999.000"
 
     def test_midnight_slot_posts_recap_not_hourly(self):
         from slack_bot.main import handler, MarketplaceMetrics
@@ -502,6 +506,8 @@ class TestHandlerIntegration:
             patch("slack_bot.main._query_metrics", return_value=metrics) as mock_query,
             patch("slack_bot.main._fetch_prior_yoy_metrics", return_value=(None, None)),
             patch("slack_bot.main._query_cumulative_metrics", return_value=None),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
             patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
             patch("slack_bot.main.log_bot_activity"),
         ):
@@ -514,10 +520,12 @@ class TestHandlerIntegration:
         call_kwargs = mock_query.call_args[1]
         assert call_kwargs.get("report_date") == "2026-07-13"
         assert call_kwargs.get("full_day") is True
+        # Anchor already exists, so the recap is the only post and is threaded.
         fallback = mock_post.call_args[0][2]
         assert "Day 1 Recap" in fallback
         blocks = mock_post.call_args[0][1]
         assert "Day 1 Recap" in blocks[0]["text"]["text"]
+        assert mock_post.call_args.kwargs.get("thread_ts") == "999.000"
 
     def test_invariant_violation_alerts_and_does_not_post(self):
         """When Total Sales < PPC Sales, the run must alert (failed activity +
@@ -568,3 +576,208 @@ class TestHandlerIntegration:
         assert body["errors"] == 1
         log_data = mock_log.call_args[0][0]
         assert log_data["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Per-day thread anchor (daily parent message + threaded hourly replies)
+# ---------------------------------------------------------------------------
+
+class TestBuildDayAnchorBlocks:
+    def test_thin_anchor_text_and_fallback(self):
+        from datetime import date
+
+        from slack_bot.main import _build_day_anchor_blocks
+
+        blocks, fallback = _build_day_anchor_blocks("Prime Day", 2, date(2026, 6, 22))
+
+        assert len(blocks) == 1
+        text = blocks[0]["text"]["text"]
+        assert ":bar_chart:" in text
+        assert "Prime Day" in text
+        assert "Day 2" in text
+        assert "Jun 22" in text
+        assert fallback == "Prime Day — Day 2, Jun 22"
+
+    def test_anchor_carries_no_metrics(self):
+        """The anchor is a thin parent — never any spend/sales lines."""
+        from datetime import date
+
+        from slack_bot.main import _build_day_anchor_blocks
+
+        blocks, _ = _build_day_anchor_blocks("Prime Day", 1, date(2026, 6, 21))
+        text = blocks[0]["text"]["text"]
+        assert "Spend" not in text
+        assert "PPC Sales" not in text
+        assert "Total Sales" not in text
+
+
+class TestEnsureDayAnchor:
+    def test_creates_parent_when_absent_and_persists_ts(self):
+        from datetime import date
+
+        from slack_bot.main import _ensure_day_anchor
+
+        with (
+            patch("slack_bot.main.get_thread_anchor_ts", return_value=None),
+            patch("slack_bot.main.set_thread_anchor_ts") as mock_set,
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "PARENT.1"}) as mock_post,
+        ):
+            ts = _ensure_day_anchor(
+                channel_id="C1",
+                event_id="e1",
+                client_id="c1",
+                event_name="Prime Day",
+                event_date=date(2026, 6, 21),
+                day_index=1,
+            )
+
+        assert ts == "PARENT.1"
+        # Parent posted top-level (no thread_ts).
+        mock_post.assert_called_once()
+        assert "thread_ts" not in mock_post.call_args.kwargs
+        # Stored keyed on (event, client, channel, local date).
+        mock_set.assert_called_once_with("e1", "c1", "C1", "2026-06-21", "PARENT.1")
+
+    def test_reuses_existing_parent_without_posting(self):
+        from datetime import date
+
+        from slack_bot.main import _ensure_day_anchor
+
+        with (
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="PARENT.EXISTING"),
+            patch("slack_bot.main.set_thread_anchor_ts") as mock_set,
+            patch("slack_bot.main.post_message") as mock_post,
+        ):
+            ts = _ensure_day_anchor(
+                channel_id="C1",
+                event_id="e1",
+                client_id="c1",
+                event_name="Prime Day",
+                event_date=date(2026, 6, 22),
+                day_index=2,
+            )
+
+        assert ts == "PARENT.EXISTING"
+        mock_post.assert_not_called()
+        mock_set.assert_not_called()
+
+
+class TestThreadedHourlyDelivery:
+    def test_first_update_creates_parent_then_threads_reply(self):
+        """First hourly update of a new event-day: one top-level parent anchor,
+        then the update posted as a threaded reply under it."""
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-06-21",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value=None),
+            patch("slack_bot.main.set_thread_anchor_ts") as mock_set,
+            patch(
+                "slack_bot.main.post_message",
+                side_effect=[{"ok": True, "ts": "PARENT.1"}, {"ok": True, "ts": "REPLY.1"}],
+            ) as mock_post,
+            patch("slack_bot.main.log_bot_activity") as mock_log,
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+        # Two posts: the parent anchor, then the threaded update.
+        assert mock_post.call_count == 2
+        parent_call, reply_call = mock_post.call_args_list
+        assert "thread_ts" not in parent_call.kwargs  # parent is top-level
+        assert reply_call.kwargs.get("thread_ts") == "PARENT.1"  # update threaded
+        mock_set.assert_called_once()
+        assert mock_log.call_args[0][0]["parent_ts"] == "PARENT.1"
+
+    def test_midday_restart_reuses_stored_parent(self):
+        """A mid-day restart finds the stored parent ts and threads under it
+        instead of creating a duplicate parent."""
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-06-21",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="PARENT.EXISTING"),
+            patch("slack_bot.main.set_thread_anchor_ts") as mock_set,
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "REPLY.1"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+        # No new parent created — only the threaded reply is posted.
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs.get("thread_ts") == "PARENT.EXISTING"
+        mock_set.assert_not_called()
+
+    def test_day_rollover_keys_anchor_on_new_local_date(self):
+        """When the local date rolls over, the anchor lookup uses the new date,
+        so a new parent thread is created for the new event-day."""
+        from datetime import datetime as real_datetime
+
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+        # 10:45 AM PDT on Day 2 (2026-06-22) — a regular hourly slot, not midnight.
+        day2_morning = real_datetime(2026, 6, 22, 17, 45, tzinfo=timezone.utc)
+        captured: dict = {}
+
+        def fake_get_anchor(event_id, client_id, channel_id, event_date):
+            captured["event_date"] = event_date
+            return None
+
+        with (
+            patch("slack_bot.main.datetime") as mock_dt_cls,
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-06-21",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main.get_thread_anchor_ts", side_effect=fake_get_anchor),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch(
+                "slack_bot.main.post_message",
+                side_effect=[{"ok": True, "ts": "PARENT.D2"}, {"ok": True, "ts": "REPLY.D2"}],
+            ) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            mock_dt_cls.now.return_value = day2_morning
+            body, status = handler(_make_request())
+
+        assert status == 200
+        # Anchor keyed on Day 2's local date, and a new parent was created.
+        assert captured["event_date"] == "2026-06-22"
+        parent_call = mock_post.call_args_list[0]
+        assert "Day 2" in parent_call.args[1][0]["text"]["text"]
+        assert "Jun 22" in parent_call.args[1][0]["text"]["text"]
