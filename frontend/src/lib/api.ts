@@ -1,4 +1,4 @@
-import type { AccountType, Client, Schedule, Job, AdsReportConfigMap, AdsProfile, SpApiAccount, Event, BotConfig } from "@/types";
+import type { AccountType, Client, Schedule, Job, AdsReportConfigMap, AdsProfile, SpApiAccount, Event, ManualAds, BotConfig } from "@/types";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 const API_KEY = import.meta.env.VITE_API_KEY || "";
@@ -126,7 +126,7 @@ export const api = {
   // Events
   listEvents: () => request<Event[]>("/events"),
   getEvent: (id: string) => request<Event>(`/events/${id}`),
-  createEvent: (data: { name: string; start_date: string; end_date: string; prior_event_id?: string }) =>
+  createEvent: (data: { name: string; start_date: string; end_date: string; prior_event_id?: string; manual_ads?: ManualAds }) =>
     request<{ id: string; status: string }>("/events", { method: "POST", body: JSON.stringify(data) }),
   updateEvent: (id: string, data: Partial<Event>) =>
     request<{ id: string; status: string }>(`/events/${id}`, { method: "PUT", body: JSON.stringify(data) }),

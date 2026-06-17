@@ -97,6 +97,78 @@ class TestEventsAPI:
         assert resp.status_code == 200
         mock.assert_called_once()
 
+    # -- Manual prior-year ads (CU-868jx21hw follow-up) --------------------
+    # Amazon Ads' reporting API only retains ~95 days, so a year-ago prior
+    # event can't be pulled and recap YoY ads stayed 0. Operators provide the
+    # figures by hand; the API validates and coerces them before persisting.
+
+    _MANUAL_BASE = {
+        "name": "Prime Day 2025",
+        "start_date": "2025-07-13",
+        "end_date": "2025-07-14",
+    }
+
+    def test_create_normalizes_manual_ads(self, client):
+        payload = {
+            **self._MANUAL_BASE,
+            "manual_ads": {"US": {"2025-07-13": {"spend": "100.5", "ppc_sales": 400}}},
+        }
+        with patch("api.main.create_event", return_value="e1") as mock:
+            resp = client.post("/events", json=payload)
+
+        assert resp.status_code == 201
+        saved = mock.call_args[0][0]
+        assert saved["manual_ads"] == {
+            "US": {"2025-07-13": {"spend": 100.5, "ppc_sales": 400.0}}
+        }
+
+    def test_create_rejects_bad_date(self, client):
+        payload = {
+            **self._MANUAL_BASE,
+            "manual_ads": {"US": {"July 13": {"spend": 1, "ppc_sales": 2}}},
+        }
+        with patch("api.main.create_event") as mock:
+            resp = client.post("/events", json=payload)
+
+        assert resp.status_code == 400
+        mock.assert_not_called()
+
+    def test_create_rejects_non_numeric(self, client):
+        payload = {
+            **self._MANUAL_BASE,
+            "manual_ads": {"US": {"2025-07-13": {"spend": "abc", "ppc_sales": 2}}},
+        }
+        with patch("api.main.create_event") as mock:
+            resp = client.post("/events", json=payload)
+
+        assert resp.status_code == 400
+        mock.assert_not_called()
+
+    def test_create_rejects_negative(self, client):
+        payload = {
+            **self._MANUAL_BASE,
+            "manual_ads": {"US": {"2025-07-13": {"spend": -1, "ppc_sales": 2}}},
+        }
+        with patch("api.main.create_event") as mock:
+            resp = client.post("/events", json=payload)
+
+        assert resp.status_code == 400
+        mock.assert_not_called()
+
+    def test_update_normalizes_manual_ads(self, client):
+        payload = {"manual_ads": {"US": {"2025-07-13": {"spend": 5, "ppc_sales": 9}}}}
+        with (
+            patch("api.main.get_event", return_value={"id": "e1", **self._MANUAL_BASE}),
+            patch("api.main.update_event") as mock,
+        ):
+            resp = client.put("/events/e1", json=payload)
+
+        assert resp.status_code == 200
+        saved = mock.call_args[0][1]
+        assert saved["manual_ads"] == {
+            "US": {"2025-07-13": {"spend": 5.0, "ppc_sales": 9.0}}
+        }
+
     def test_update_event_not_found(self, client):
         with patch("api.main.get_event", return_value=None):
             resp = client.put("/events/missing", json={"name": "New"})

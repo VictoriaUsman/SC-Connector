@@ -105,28 +105,41 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         currency = config.get("base_currency", "USD")
 
         try:
-            # Target the previous calendar day, but fall back to the most recent
-            # day that actually has data. Amazon ads/orders land with reporting
-            # latency, so at morning recap time "yesterday" is frequently not
-            # ingested yet — pinning the query to it would post an all-zero recap.
-            effective_date = _resolve_effective_date(
-                client_id, marketplaces, recap_date.isoformat(), client_tz,
-            )
-            recap_display_date = date.fromisoformat(effective_date)
+            # Always recap the previous full calendar day (the spec's "previous
+            # full calendar day") and query that exact day. The recap is
+            # scheduled to run after the day's report pulls have ingested (see
+            # infra/resources/scheduler.py), so yesterday's ads *and* orders are
+            # present by the time this runs. Earlier revisions resolved "the most
+            # recent day with any data", but that was dominated by the ads tables
+            # (which ingest before the orders report), so the chosen day's orders
+            # were still missing and Total Sales read $0 while ads were correct.
+            report_date = recap_date.isoformat()
             totals = _query_account_totals(
-                client_id, marketplaces, effective_date, client_tz,
+                client_id, marketplaces, report_date, client_tz,
             )
-            blocks = _build_recap_blocks(recap_display_date, totals, currency)
-            text_fallback = f"Daily Recap — {recap_display_date.strftime('%m/%d/%y')}"
+            blocks = _build_recap_blocks(recap_date, totals, currency)
+            text_fallback = f"Daily Recap — {recap_date.strftime('%m/%d/%y')}"
             result = post_message(channel_id, blocks, text_fallback)
 
+            # Per-client totals are logged so the recap day and each metric are
+            # verifiable in Cloud Logging (e.g. confirming Total Sales is no
+            # longer spuriously zero once orders have ingested).
+            logger.info(
+                "Daily recap posted",
+                extra={
+                    "client_id": client_id,
+                    "recap_date": report_date,
+                    "spend": round(totals.spend, 2),
+                    "ppc_sales": round(totals.ppc_sales, 2),
+                    "total_sales": round(totals.total_sales, 2),
+                },
+            )
             log_bot_activity({
                 "client_id": client_id,
                 "bot": "daily_recap",
                 "status": "sent",
                 "message_ts": result.get("ts"),
-                "recap_date": effective_date,
-                "target_date": recap_date.isoformat(),
+                "recap_date": report_date,
                 "marketplaces_reported": marketplaces,
             })
             sent += 1
@@ -164,89 +177,6 @@ def _previous_calendar_day(now: datetime, client_tz: ZoneInfo):
 # ---------------------------------------------------------------------------
 # BigQuery — sum the prior full calendar day across marketplaces
 # ---------------------------------------------------------------------------
-
-# How many days back the recap may look for the most recent day that has data.
-# Amazon ads (and the by-last-update orders feed) land with reporting latency,
-# and a client's report schedule may itself trail by a day or more, so the
-# previous calendar day is frequently not ingested yet at morning recap time.
-_DATA_LOOKBACK_DAYS = 14
-
-
-def _resolve_effective_date(
-    client_id: str,
-    marketplaces: list[str],
-    report_date: str,
-    client_tz: ZoneInfo,
-    lookback_days: int = _DATA_LOOKBACK_DAYS,
-) -> str:
-    """Most recent day (<= ``report_date``) that actually has ads or orders data.
-
-    The recap targets the previous full calendar day, but Amazon ads/orders data
-    lands with reporting latency: at the morning recap the previous day often has
-    **no ingested rows yet**, so a query pinned to exactly that day matches
-    nothing and posts a misleading all-zero recap (the reported bug). Instead,
-    resolve the most recent day within a bounded lookback window that has data and
-    report on that day. Returns ``report_date`` unchanged when no data exists in
-    the window, so a genuinely dark account still legitimately shows zeros.
-
-    The date is taken from each row's **actual data date** (the campaign
-    performance ``date`` for ads, ``purchase_date`` for orders, in the client's
-    timezone) — never the ingestion ``report_date`` partition, which is the start
-    of a report's pulled range and unrelated to when the data occurred.
-    """
-    dataset = os.environ.get("BQ_DATASET", "")
-    project = os.environ.get("GCP_PROJECT", "")
-    bq = _get_bq()
-
-    target = date.fromisoformat(report_date)
-    lookback_start = target - timedelta(days=lookback_days)
-    tz_name = str(client_tz)
-
-    start_local = datetime(
-        lookback_start.year, lookback_start.month, lookback_start.day, tzinfo=client_tz,
-    )
-    end_local = datetime(target.year, target.month, target.day, tzinfo=client_tz) + timedelta(days=1)
-    fmt = "%Y-%m-%dT%H:%M:%SZ"
-    lookback_start_ts = start_local.astimezone(timezone.utc).strftime(fmt)
-    target_end_ts = end_local.astimezone(timezone.utc).strftime(fmt)
-
-    query = f"""
-        SELECT MAX(d) AS data_date FROM (
-            SELECT MAX(date) AS d FROM `{project}.{dataset}.sp_campaigns`
-              WHERE client_id = @client_id AND marketplace IN UNNEST(@marketplaces)
-                AND date BETWEEN @lookback_start AND @target_date
-            UNION ALL
-            SELECT MAX(date) FROM `{project}.{dataset}.sb_campaigns`
-              WHERE client_id = @client_id AND marketplace IN UNNEST(@marketplaces)
-                AND date BETWEEN @lookback_start AND @target_date
-            UNION ALL
-            SELECT MAX(date) FROM `{project}.{dataset}.sd_campaigns`
-              WHERE client_id = @client_id AND marketplace IN UNNEST(@marketplaces)
-                AND date BETWEEN @lookback_start AND @target_date
-            UNION ALL
-            SELECT MAX(DATE(purchase_date, @tz)) FROM `{project}.{dataset}.orders`
-              WHERE client_id = @client_id AND marketplace IN UNNEST(@marketplaces)
-                AND purchase_date >= @lookback_start_ts AND purchase_date < @target_end_ts
-                AND order_status != 'Cancelled'
-        )
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-            bigquery.ArrayQueryParameter("marketplaces", "STRING", marketplaces),
-            bigquery.ScalarQueryParameter("lookback_start", "DATE", lookback_start.isoformat()),
-            bigquery.ScalarQueryParameter("target_date", "DATE", report_date),
-            bigquery.ScalarQueryParameter("tz", "STRING", tz_name),
-            bigquery.ScalarQueryParameter("lookback_start_ts", "TIMESTAMP", lookback_start_ts),
-            bigquery.ScalarQueryParameter("target_end_ts", "TIMESTAMP", target_end_ts),
-        ]
-    )
-    for row in bq.query(query, job_config=job_config):
-        data_date = row["data_date"]
-        if data_date:
-            return data_date.isoformat() if hasattr(data_date, "isoformat") else str(data_date)
-    return report_date
-
 
 def _query_account_totals(
     client_id: str,

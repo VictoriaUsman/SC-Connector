@@ -54,12 +54,26 @@ class TestForbiddenMessage:
     def test_role_gated_report_includes_role_hint(self):
         msg = forbidden_message("GET_SALES_AND_TRAFFIC_REPORT")
         assert "Selling Partner Insights" in msg
-        assert "transient" in msg.lower()
+        assert "permissions" in msg.lower()
 
     def test_generic_report_has_no_false_role_claim(self):
         msg = forbidden_message("GET_MERCHANT_LISTINGS_ALL_DATA")
         assert "Selling Partner Insights" not in msg
         assert "access denied" in msg.lower()
+
+    def test_does_not_claim_automatic_retry(self):
+        # Reviewer feedback: the 403 message must not tell operators it "is
+        # retried automatically" (the pipeline does NOT auto-retry a 403). It is
+        # a permissions error requiring re-authorization in Seller Central.
+        for report_type in (
+            "GET_SALES_AND_TRAFFIC_REPORT",
+            "GET_MERCHANT_LISTINGS_ALL_DATA",
+            None,
+        ):
+            msg = forbidden_message(report_type).lower()
+            assert "retried automatically" not in msg
+            assert "usually transient" not in msg
+            assert "re-authorize" in msg
 
 
 class TestRaiseIfSpApiForbidden:

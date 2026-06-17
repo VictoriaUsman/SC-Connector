@@ -50,7 +50,7 @@ import {
   CURRENCIES,
   CLIENT_TIMEZONES,
 } from "@/types";
-import type { Event, BotConfig, Client, EventStatus } from "@/types";
+import type { Event, BotConfig, Client, EventStatus, ManualAds } from "@/types";
 import {
   Loader2,
   MoreHorizontal,
@@ -156,6 +156,58 @@ function ActiveEventBanner({
 
 const NO_PRIOR_EVENT = "__none__";
 
+// ---------------------------------------------------------------------------
+// Manual prior-year ads editor helpers
+//
+// Amazon Ads' reporting API only retains ~95 days, so an event a full year in
+// the past can no longer be pulled for Spend / PPC Sales. Operators enter those
+// figures by hand here; the midnight recap uses this event's manual ads as the
+// year-over-year baseline when another event links to it.
+// ---------------------------------------------------------------------------
+
+interface ManualAdsRow {
+  marketplace: string;
+  date: string;
+  spend: string;
+  ppc_sales: string;
+}
+
+function manualAdsToRows(manualAds?: ManualAds): ManualAdsRow[] {
+  if (!manualAds) return [];
+  const rows: ManualAdsRow[] = [];
+  for (const [marketplace, byDate] of Object.entries(manualAds)) {
+    for (const [date, entry] of Object.entries(byDate)) {
+      rows.push({
+        marketplace,
+        date,
+        spend: entry.spend != null ? String(entry.spend) : "",
+        ppc_sales: entry.ppc_sales != null ? String(entry.ppc_sales) : "",
+      });
+    }
+  }
+  return rows.sort((a, b) =>
+    a.marketplace === b.marketplace
+      ? a.date.localeCompare(b.date)
+      : a.marketplace.localeCompare(b.marketplace),
+  );
+}
+
+function rowsToManualAds(rows: ManualAdsRow[]): ManualAds {
+  const out: ManualAds = {};
+  for (const row of rows) {
+    if (!row.marketplace || !row.date) continue;
+    const spend = Number(row.spend);
+    const ppc = Number(row.ppc_sales);
+    if (!row.spend && !row.ppc_sales) continue;
+    out[row.marketplace] ??= {};
+    out[row.marketplace][row.date] = {
+      spend: Number.isFinite(spend) ? spend : 0,
+      ppc_sales: Number.isFinite(ppc) ? ppc : 0,
+    };
+  }
+  return out;
+}
+
 function EventDialog({
   open,
   onOpenChange,
@@ -173,6 +225,7 @@ function EventDialog({
     start_date: string;
     end_date: string;
     prior_event_id: string;
+    manual_ads: ManualAds;
   }) => void;
   loading: boolean;
 }) {
@@ -182,6 +235,24 @@ function EventDialog({
   const [priorEventId, setPriorEventId] = useState(
     initial?.prior_event_id ?? NO_PRIOR_EVENT,
   );
+  const [manualAdsRows, setManualAdsRows] = useState<ManualAdsRow[]>(
+    manualAdsToRows(initial?.manual_ads),
+  );
+
+  const updateManualAdsRow = (index: number, patch: Partial<ManualAdsRow>) => {
+    setManualAdsRows((rows) =>
+      rows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    );
+  };
+  const addManualAdsRow = () => {
+    setManualAdsRows((rows) => [
+      ...rows,
+      { marketplace: MARKETPLACES[0]?.id ?? "US", date: startDate, spend: "", ppc_sales: "" },
+    ]);
+  };
+  const removeManualAdsRow = (index: number) => {
+    setManualAdsRows((rows) => rows.filter((_, i) => i !== index));
+  };
 
   const isEdit = !!initial;
 
@@ -194,7 +265,7 @@ function EventDialog({
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit Event" : "Create Event"}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-2">
+        <div className="space-y-4 py-2 max-h-[70vh] overflow-y-auto pr-1">
           <div className="space-y-2">
             <Label>Event Name</Label>
             <Input
@@ -246,6 +317,93 @@ function EventDialog({
               year-over-year stats. Leave as None to omit YoY.
             </p>
           </div>
+
+          <div className="space-y-2 rounded-md border p-3">
+            <div className="flex items-center justify-between">
+              <Label>Manual Ads (prior-year baseline)</Label>
+              <Button type="button" variant="outline" size="sm" onClick={addManualAdsRow}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                Add row
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Enter this event's actual Spend &amp; PPC Sales per marketplace and
+              day. Used as the year-over-year baseline when another event links to
+              this one and Amazon Ads can no longer pull the data (older than
+              ~95 days). Total Sales still comes from the connector.
+            </p>
+            {manualAdsRows.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">
+                No manual ads entered.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="grid grid-cols-[5rem_1fr_1fr_1fr_2rem] items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <span>Market</span>
+                  <span>Date</span>
+                  <span>Spend</span>
+                  <span>PPC Sales</span>
+                  <span />
+                </div>
+                {manualAdsRows.map((row, i) => (
+                  <div
+                    key={i}
+                    className="grid grid-cols-[5rem_1fr_1fr_1fr_2rem] items-center gap-2"
+                  >
+                    <Select
+                      value={row.marketplace}
+                      onValueChange={(v) => v && updateManualAdsRow(i, { marketplace: v })}
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MARKETPLACES.map((mkt) => (
+                          <SelectItem key={mkt.id} value={mkt.id}>
+                            {mkt.id}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="date"
+                      className="h-8"
+                      min={startDate || undefined}
+                      max={endDate || undefined}
+                      value={row.date}
+                      onChange={(e) => updateManualAdsRow(i, { date: e.target.value })}
+                    />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="h-8"
+                      placeholder="0.00"
+                      value={row.spend}
+                      onChange={(e) => updateManualAdsRow(i, { spend: e.target.value })}
+                    />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="h-8"
+                      placeholder="0.00"
+                      value={row.ppc_sales}
+                      onChange={(e) => updateManualAdsRow(i, { ppc_sales: e.target.value })}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => removeManualAdsRow(i)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -260,6 +418,7 @@ function EventDialog({
                 end_date: endDate,
                 prior_event_id:
                   priorEventId === NO_PRIOR_EVENT ? "" : priorEventId,
+                manual_ads: rowsToManualAds(manualAdsRows),
               })
             }
           >
@@ -547,6 +706,7 @@ export function SlackBots() {
     start_date: string;
     end_date: string;
     prior_event_id: string;
+    manual_ads: ManualAds;
   }) => {
     createEvent.mutate(data, {
       onSuccess: () => {
@@ -562,6 +722,7 @@ export function SlackBots() {
     start_date: string;
     end_date: string;
     prior_event_id: string;
+    manual_ads: ManualAds;
   }) => {
     if (!editingEvent) return;
     updateEvent.mutate({ id: editingEvent.id, ...data }, {

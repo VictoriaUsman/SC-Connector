@@ -19,22 +19,22 @@ _ROLE_GATED_REPORTS: dict[str, str] = {
 def forbidden_message(report_type: str | None = None) -> str:
     """Build an actionable 403 message.
 
-    SP-API 403 ("Access to requested resource is denied" / "forbidden") is most
-    often *transient* — it spikes when many reports are requested at once and
-    Amazon's LWA/gateway throttles auth. The job is retried automatically. A 403
-    that *persists* for one client+report points at a missing Seller Central role
-    or a revoked refresh token, which needs human action.
+    SP-API 403 ("Access to requested resource is denied" / "forbidden") is a
+    *permissions* failure, not a transient one: the seller has not authorized the
+    role the Kalilos app needs for this report, or the refresh token was revoked.
+    Retrying a 403 without fixing access just wastes quota, so the pipeline does
+    not auto-retry it — it surfaces this message for a human to act on.
     """
     role = _ROLE_GATED_REPORTS.get(report_type or "")
     role_hint = (
-        f" This report additionally requires the seller to grant the "
+        f" This report specifically requires the seller to grant the "
         f"{role} role to the Kalilos app." if role else ""
     )
     return (
-        "SP-API returned 403 (access denied). This is usually transient under load "
-        "and is retried automatically. If it persists for this client and report, "
-        "the seller likely has not authorized the required role or the refresh token "
-        f"was revoked — re-authorize the Kalilos app in Seller Central, then retry.{role_hint}"
+        "SP-API returned 403 (access denied) for this client and report. This is a "
+        "permissions issue, not a transient error — the seller has not authorized the "
+        "role the Kalilos app needs, or the refresh token was revoked. Re-authorize the "
+        f"Kalilos app in Seller Central and confirm the required role is granted, then retry.{role_hint}"
     )
 
 

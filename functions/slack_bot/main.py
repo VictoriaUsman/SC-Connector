@@ -299,12 +299,19 @@ def _query_metrics(
     *,
     report_date: str | None = None,
     full_day: bool = False,
+    manual_ads: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[MarketplaceMetrics]:
     """Query BQ for orders and ads data, returning per-marketplace metrics.
 
     When ``report_date`` is set, queries that calendar day (used for day-end
     recaps). ``full_day=True`` uses the complete report_date partition without
     filtering orders to purchases since midnight (hourly updates use partial day).
+
+    ``manual_ads`` lets the caller supply operator-provided ads figures keyed by
+    ``{marketplace: {YYYY-MM-DD: {"spend": float, "ppc_sales": float}}}``. When a
+    matching ``(marketplace, date)`` entry exists it overrides the BigQuery ads
+    query. This is how prior-year YoY ads are populated for events older than
+    Amazon Ads' ~95-day reporting window, which the API can no longer pull.
     """
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
@@ -316,7 +323,9 @@ def _query_metrics(
         orders = _query_orders(
             bq, project, dataset, client_id, mkt, mkt_date, now, full_day=full_day,
         )
-        ads = _query_ads(bq, project, dataset, client_id, mkt, mkt_date)
+        ads = _manual_ads_lookup(manual_ads, mkt, mkt_date)
+        if ads is None:
+            ads = _query_ads(bq, project, dataset, client_id, mkt, mkt_date)
         results.append(MarketplaceMetrics(
             marketplace=mkt,
             currency=MARKETPLACE_CURRENCIES.get(mkt, "USD"),
@@ -437,25 +446,47 @@ def _query_ads(
 ) -> dict[str, Any]:
     """Sum ads spend and sales across sp/sb/sd campaigns for a single marketplace.
 
-    ``report_date`` is the marketplace-local calendar day (YYYY-MM-DD),
-    matching how the ingestion pipeline stores data.
+    ``report_date`` is the marketplace-local calendar day (YYYY-MM-DD) we want
+    metrics for.
+
+    The metrics are keyed off each campaign row's actual performance ``date``,
+    **not** the ingestion ``report_date`` partition. The ``report_date`` column
+    is the *start* of a report's pulled range, so any pull that is not a
+    single-day pull for exactly that day (a multi-day range, or the prior-year
+    backfill that fetches a whole event window in one pull) stamps rows with a
+    range-start that differs from the data date. Filtering on ``report_date``
+    then matched zero rows — the reported "last year's data shows 0" bug, since
+    the linked prior-year event is backfilled as one multi-day pull. This
+    mirrors the proven-correct ``daily_recap`` bot.
+
+    Because the same performance ``date`` can be re-pulled under several
+    overlapping ranges (each ingested under a different ``report_date``), keep
+    only the most-recently-ingested row per (marketplace, campaign) before
+    summing, so overlapping re-pulls don't double count.
     """
-    tables = ["sp_campaigns", "sb_campaigns", "sd_campaigns"]
-    sales_cols = {
+    tables = {
         "sp_campaigns": "sales7d",
         "sb_campaigns": "sales",
         "sd_campaigns": "sales",
     }
 
     unions = []
-    for table in tables:
-        sales_col = sales_cols[table]
+    for table, sales_col in tables.items():
         unions.append(f"""
-            SELECT cost, {sales_col} AS ppc_sales
-            FROM `{project}.{dataset}.{table}_latest`
-            WHERE client_id = @client_id
-              AND report_date = @today
-              AND marketplace = @marketplace
+            SELECT cost, ppc_sales FROM (
+                SELECT
+                    cost,
+                    {sales_col} AS ppc_sales,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY marketplace, campaign_id
+                        ORDER BY ingested_at DESC
+                    ) AS _rn
+                FROM `{project}.{dataset}.{table}`
+                WHERE client_id = @client_id
+                  AND date = @perf_date
+                  AND marketplace = @marketplace
+            )
+            WHERE _rn = 1
         """)
 
     query = f"""
@@ -467,7 +498,7 @@ def _query_ads(
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-            bigquery.ScalarQueryParameter("today", "DATE", report_date),
+            bigquery.ScalarQueryParameter("perf_date", "DATE", report_date),
             bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
         ]
     )
@@ -477,6 +508,28 @@ def _query_ads(
             "ppc_sales": float(row["ppc_sales"]),
         }
     return {}
+
+
+def _manual_ads_lookup(
+    manual_ads: dict[str, dict[str, dict[str, Any]]] | None,
+    marketplace: str,
+    report_date: str,
+) -> dict[str, Any] | None:
+    """Return operator-supplied ads for a marketplace/date, or None if unset.
+
+    ``manual_ads`` is keyed ``{marketplace: {YYYY-MM-DD: {spend, ppc_sales}}}``.
+    A present entry takes precedence over BigQuery so prior-year ads beyond
+    Amazon's ~95-day reporting window can be filled in by hand.
+    """
+    if not manual_ads:
+        return None
+    entry = manual_ads.get(marketplace, {}).get(report_date)
+    if not entry:
+        return None
+    return {
+        "spend": float(entry.get("spend", 0.0) or 0.0),
+        "ppc_sales": float(entry.get("ppc_sales", 0.0) or 0.0),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +737,7 @@ def _query_cumulative_metrics(
     event_start: str,
     through_day: int,
     client_tz: ZoneInfo,
+    manual_ads: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[MarketplaceMetrics]:
     """Sum full-day metrics for event days 1 through ``through_day``."""
     accumulated: dict[str, MarketplaceMetrics] = {}
@@ -691,7 +745,7 @@ def _query_cumulative_metrics(
         day_date = _report_date_for_event_day(event_start, day, client_tz)
         for m in _query_metrics(
             client_id, marketplaces, datetime.now(timezone.utc),
-            report_date=day_date, full_day=True,
+            report_date=day_date, full_day=True, manual_ads=manual_ads,
         ):
             if m.marketplace not in accumulated:
                 accumulated[m.marketplace] = MarketplaceMetrics(
@@ -727,14 +781,22 @@ def _fetch_prior_yoy_metrics(
     if not prior_start:
         return None, None
 
+    # Operator-supplied ads for the prior-year event fill the YoY ads metrics
+    # (Spend / PPC Sales / ACoS) when Amazon Ads can no longer serve that
+    # history (its reporting API only retains ~95 days). Orders/Total Sales
+    # still come from BigQuery (SP-API retains ~2 years).
+    manual_ads = prior_event.get("manual_ads") or None
+
     now = datetime.now(timezone.utc)
     prior_date = _report_date_for_event_day(prior_start, recap_day, client_tz)
     prior_single = _query_metrics(
         client_id, marketplaces, now, report_date=prior_date, full_day=True,
+        manual_ads=manual_ads,
     )
     prior_cumulative = (
         _query_cumulative_metrics(
             client_id, marketplaces, prior_start, recap_day, client_tz,
+            manual_ads=manual_ads,
         )
         if recap_day >= 2
         else None

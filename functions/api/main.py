@@ -1357,7 +1357,19 @@ def oauth_sp_api_authorize():
         "application_id": application_id,
         "state": state,
     }
-    if app_creds.get("draft", True):
+    # Draft (unpublished) apps MUST add version=beta or Amazon rejects consent
+    # with error MD5100 ("...add the version=beta parameter..."). A single SP-API
+    # app publishes its Seller and Vendor surfaces independently: this app is
+    # published in the Seller appstore (draft=false) but its Vendor authorization
+    # is still in draft, so vendor consent needs version=beta even though seller
+    # consent does not. Track the vendor draft state separately (defaulting to
+    # draft) instead of inheriting the seller `draft` flag — otherwise vendors
+    # silently get no version=beta and every Vendor Central connect fails.
+    if account_type == "vendor":
+        is_draft = app_creds.get("vendor_draft", True)
+    else:
+        is_draft = app_creds.get("draft", True)
+    if is_draft:
         params["version"] = "beta"
 
     auth_url = f"{central}/apps/authorize/consent?{urlencode(params)}"
@@ -1366,6 +1378,7 @@ def oauth_sp_api_authorize():
         "requested_client_id": requested_client_id,
         "application_id": application_id,
         "account_type": account_type,
+        "draft": is_draft,
         "central": central,
         "auth_url": auth_url,
     })
@@ -1594,6 +1607,46 @@ def get_event_route(event_id: str):
     return flask.jsonify(_serialize(event)), 200
 
 
+def _normalize_manual_ads(raw: Any) -> dict[str, dict[str, dict[str, float]]]:
+    """Validate and coerce operator-supplied prior-year ads.
+
+    Expected shape: ``{marketplace: {"YYYY-MM-DD": {"spend": num, "ppc_sales": num}}}``.
+    These figures back-fill the midnight recap's year-over-year ads metrics when
+    Amazon Ads can no longer serve that history (its API retains only ~95 days).
+    Raises ``ValueError`` with an operator-readable message on malformed input.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("manual_ads must be an object keyed by marketplace")
+
+    cleaned: dict[str, dict[str, dict[str, float]]] = {}
+    for marketplace, by_date in raw.items():
+        if not isinstance(by_date, dict):
+            raise ValueError(f"manual_ads['{marketplace}'] must be an object keyed by date")
+        cleaned_dates: dict[str, dict[str, float]] = {}
+        for day, figures in by_date.items():
+            try:
+                date.fromisoformat(day)
+            except (ValueError, TypeError):
+                raise ValueError(f"manual_ads['{marketplace}'] date '{day}' must be YYYY-MM-DD")
+            if not isinstance(figures, dict):
+                raise ValueError(f"manual_ads['{marketplace}']['{day}'] must be an object")
+            try:
+                spend = float(figures.get("spend", 0) or 0)
+                ppc_sales = float(figures.get("ppc_sales", 0) or 0)
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"manual_ads['{marketplace}']['{day}'] spend/ppc_sales must be numbers"
+                )
+            if spend < 0 or ppc_sales < 0:
+                raise ValueError(
+                    f"manual_ads['{marketplace}']['{day}'] spend/ppc_sales must be non-negative"
+                )
+            cleaned_dates[day] = {"spend": spend, "ppc_sales": ppc_sales}
+        if cleaned_dates:
+            cleaned[marketplace] = cleaned_dates
+    return cleaned
+
+
 @app.route("/events", methods=["POST"])
 def create_event_route():
     data = flask.request.get_json(silent=True) or {}
@@ -1612,6 +1665,12 @@ def create_event_route():
     if sd > ed:
         return flask.jsonify({"error": "start_date must be on or before end_date", "code": "INVALID_REQUEST"}), 400
 
+    if "manual_ads" in data:
+        try:
+            data["manual_ads"] = _normalize_manual_ads(data["manual_ads"])
+        except ValueError as exc:
+            return flask.jsonify({"error": str(exc), "code": "INVALID_REQUEST"}), 400
+
     event_id = create_event(data)
     return flask.jsonify({"id": event_id, "status": "created"}), 201
 
@@ -1622,6 +1681,11 @@ def update_event_route(event_id: str):
         return flask.jsonify({"error": "Event not found", "code": "NOT_FOUND"}), 404
     data = flask.request.get_json(silent=True) or {}
     data.pop("id", None)
+    if "manual_ads" in data:
+        try:
+            data["manual_ads"] = _normalize_manual_ads(data["manual_ads"])
+        except ValueError as exc:
+            return flask.jsonify({"error": str(exc), "code": "INVALID_REQUEST"}), 400
     update_event(event_id, data)
     return flask.jsonify({"id": event_id, "status": "updated"}), 200
 

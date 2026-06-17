@@ -20,8 +20,17 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
+import requests
+from ad_api.base.exceptions import (
+    AdvertisingApiForbiddenException,
+    AdvertisingApiTemporarilyUnavailableException,
+    AdvertisingApiTooManyRequestsException,
+)
+
 from shared import ads_sb_legacy
 from shared.ads_sb_legacy import (
+    _call_with_retry,
+    _is_retryable,
     augment_sb_campaigns_content,
     date_range,
     map_v2_campaign_row,
@@ -347,3 +356,163 @@ class TestAugmentSbCampaignsContent:
             sleep_fn=lambda _s: None,
         )
         assert content is raw
+
+
+# ----------------------------------------------------------------------------
+# Retry-on-transient-failure (the deployed regression: the v2 calls were reset
+# during the scheduler's concurrent fan-out and the whole augmentation aborted,
+# dropping legacy campaigns so the export under-counted the console).
+# ----------------------------------------------------------------------------
+
+class TestRetryClassification:
+    def test_connection_reset_is_retryable(self):
+        # The exact error seen in production (wrapped by requests).
+        wrapped = requests.exceptions.ConnectionError(
+            ConnectionResetError(104, "Connection reset by peer")
+        )
+        assert _is_retryable(wrapped)
+        # ...and the bare builtin form.
+        assert _is_retryable(ConnectionResetError(104, "Connection reset by peer"))
+
+    def test_timeout_is_retryable(self):
+        assert _is_retryable(requests.exceptions.Timeout("slow"))
+
+    def test_429_and_5xx_are_retryable(self):
+        assert _is_retryable(AdvertisingApiTooManyRequestsException(429, {}))
+        assert _is_retryable(AdvertisingApiTemporarilyUnavailableException(503, {}))
+
+    def test_403_is_not_retryable(self):
+        assert not _is_retryable(AdvertisingApiForbiddenException(403, {}))
+
+    def test_value_error_is_not_retryable(self):
+        assert not _is_retryable(ValueError("bad config"))
+
+
+class TestCallWithRetry:
+    def test_retries_then_succeeds(self):
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise requests.exceptions.ConnectionError("reset")
+            return "ok"
+
+        result = _call_with_retry(flaky, description="t", sleep_fn=lambda _s: None)
+        assert result == "ok"
+        assert calls["n"] == 3
+
+    def test_non_retryable_raises_immediately(self):
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise AdvertisingApiForbiddenException(403, {})
+
+        with pytest.raises(AdvertisingApiForbiddenException):
+            _call_with_retry(boom, description="t", sleep_fn=lambda _s: None)
+        assert calls["n"] == 1
+
+    def test_exhausts_attempts_then_raises_last_error(self):
+        with pytest.raises(requests.exceptions.ConnectionError):
+            _call_with_retry(
+                lambda: (_ for _ in ()).throw(requests.exceptions.ConnectionError("reset")),
+                description="t",
+                sleep_fn=lambda _s: None,
+                max_attempts=3,
+            )
+
+
+def _make_v2_reports_mock_with_failures(records_by_date, *, get_report_failures=0):
+    """Like _make_v2_reports_mock but the first *get_report_failures* status
+    polls raise the production connection-reset error before succeeding."""
+    instance = MagicMock()
+    state = {"report_dates": [], "get_report_calls": 0}
+
+    def post_report(recordType, body):  # noqa: N803
+        state["report_dates"].append(body["reportDate"])
+        return _api_response({"reportId": f"report-{body['reportDate']}", "status": "IN_PROGRESS"})
+
+    def get_report(reportId):  # noqa: N803
+        state["get_report_calls"] += 1
+        if state["get_report_calls"] <= get_report_failures:
+            raise requests.exceptions.ConnectionError(
+                ConnectionResetError(104, "Connection reset by peer")
+            )
+        report_date = reportId.replace("report-", "")
+        return _api_response({"status": "SUCCESS", "location": f"https://dl/{report_date}"})
+
+    def download_report(url, format):  # noqa: A002
+        report_date = url.rsplit("/", 1)[-1]
+        return _api_response(gzip.compress(json.dumps(records_by_date.get(report_date, [])).encode()))
+
+    instance.post_report.side_effect = post_report
+    instance.get_report.side_effect = get_report
+    instance.download_report.side_effect = download_report
+    return MagicMock(return_value=instance), instance, state
+
+
+class TestAugmentRetriesTransientErrors:
+    def test_transient_get_report_reset_recovers_and_matches_console(self):
+        """The bug: a single connection reset aborted the whole augmentation,
+        leaving the v3-only under-count. With retries the legacy rows are still
+        fetched and the merged total matches the console."""
+        v4_cls, _ = _make_campaigns_v4_mock(_V4_CAMPAIGN_PAGES)
+        v2_cls, _, state = _make_v2_reports_mock_with_failures(
+            _V2_RECORDS_BY_DATE, get_report_failures=2
+        )
+        with patch.object(ads_sb_legacy, "CampaignsV4", v4_cls), \
+             patch.object(ads_sb_legacy, "SbV2Reports", v2_cls):
+            content = augment_sb_campaigns_content(
+                json.dumps(_V3_ROWS).encode(),
+                credentials={"profile_id": "1"},
+                marketplace="US",
+                start_date=date(2026, 5, 21),
+                end_date=date(2026, 5, 22),
+                sleep_fn=lambda _s: None,
+            )
+        rows = json.loads(content)
+        total = sum(float(r.get("cost", 0)) for r in rows)
+        assert pytest.approx(_CONSOLE_TOTAL, abs=0.005) == total
+        assert state["get_report_calls"] > 2  # proves a retry occurred
+
+    def test_transient_list_campaigns_reset_recovers(self):
+        instance = MagicMock()
+        instance.list_campaigns.side_effect = [
+            requests.exceptions.ConnectionError("reset"),
+            _api_response(_V4_CAMPAIGN_PAGES[0]),
+            _api_response(_V4_CAMPAIGN_PAGES[1]),
+        ]
+        v4_cls = MagicMock(return_value=instance)
+        v2_cls, _, _ = _make_v2_reports_mock_with_failures(_V2_RECORDS_BY_DATE)
+        with patch.object(ads_sb_legacy, "CampaignsV4", v4_cls), \
+             patch.object(ads_sb_legacy, "SbV2Reports", v2_cls):
+            content = augment_sb_campaigns_content(
+                json.dumps(_V3_ROWS).encode(),
+                credentials={"profile_id": "1"},
+                marketplace="US",
+                start_date=date(2026, 5, 21),
+                end_date=date(2026, 5, 22),
+                sleep_fn=lambda _s: None,
+            )
+        total = sum(float(r.get("cost", 0)) for r in json.loads(content))
+        assert pytest.approx(_CONSOLE_TOTAL, abs=0.005) == total
+
+    def test_persistent_reset_falls_back_to_v3_only(self):
+        """If the resets never clear, degrade to the v3-only export (best-effort)
+        rather than failing the job."""
+        v4_cls, _ = _make_campaigns_v4_mock(_V4_CAMPAIGN_PAGES)
+        v2_cls, _, _ = _make_v2_reports_mock_with_failures(
+            _V2_RECORDS_BY_DATE, get_report_failures=10_000
+        )
+        with patch.object(ads_sb_legacy, "CampaignsV4", v4_cls), \
+             patch.object(ads_sb_legacy, "SbV2Reports", v2_cls):
+            content = augment_sb_campaigns_content(
+                json.dumps(_V3_ROWS).encode(),
+                credentials={"profile_id": "1"},
+                marketplace="US",
+                start_date=date(2026, 5, 21),
+                end_date=date(2026, 5, 22),
+                sleep_fn=lambda _s: None,
+            )
+        assert json.loads(content) == _V3_ROWS

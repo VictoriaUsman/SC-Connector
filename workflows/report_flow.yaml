@@ -26,6 +26,15 @@ main:
                     next: raise_final
                   - condition: true
                     steps:
+                      - build_user_message:
+                          # Surface a clean, human-readable message (the Cloud
+                          # Function's {"error": ...} body when present) instead
+                          # of dumping the whole HTTP error object — status code,
+                          # headers and all — into the user-facing job error.
+                          call: clean_error
+                          args:
+                            e: ${e}
+                          result: user_message
                       - patch_job_failed:
                           call: http.patch
                           args:
@@ -42,7 +51,7 @@ main:
                                   mapValue:
                                     fields:
                                       message:
-                                        stringValue: ${text.decode(json.encode(e))}
+                                        stringValue: ${user_message}
                                       phase:
                                         stringValue: "workflow_error"
                       - continue_to_raise:
@@ -411,6 +420,37 @@ report_pipeline:
           drive_file_id: ${fetch_response.body.drive_file_id}
           drive_path: ${fetch_response.body.drive_path}
 
+clean_error:
+  # Reduce a raised error to one human-readable line for the user-facing job
+  # error_details.message. A raised error can be a plain string, an HTTP error
+  # map ({code, body, headers, ...}) from a failed http.post, or a custom map.
+  # Our Cloud Functions return {"error": ..., "code": ...} bodies, so prefer the
+  # body's "error" field and never serialize the whole HTTP object (which would
+  # leak the status code and response headers into the UI as a raw JSON blob).
+  params: [e]
+  steps:
+    - check_string:
+        switch:
+          - condition: ${get_type(e) == "string"}
+            return: ${e}
+    - read_body:
+        assign:
+          - err_body: ${map.get(e, "body")}
+    - prefer_body_message:
+        switch:
+          - condition: ${err_body != null and get_type(err_body) == "map" and map.get(err_body, "error") != null}
+            return: ${map.get(err_body, "error")}
+          - condition: ${err_body != null and get_type(err_body) == "map" and map.get(err_body, "message") != null}
+            return: ${map.get(err_body, "message")}
+          - condition: ${err_body != null and get_type(err_body) == "string" and err_body != ""}
+            return: ${err_body}
+    - prefer_top_message:
+        switch:
+          - condition: ${map.get(e, "message") != null}
+            return: ${map.get(e, "message")}
+    - fallback_encode:
+        return: ${text.decode(json.encode(e))}
+
 non_throttle_retry:
   params: [e]
   steps:
@@ -421,7 +461,7 @@ non_throttle_retry:
           - condition: ${e.code == 401}
             return: false
           - condition: ${e.code == 403}
-            return: true
+            return: false
           - condition: ${e.code >= 500}
             return: true
     - default_no_retry:
