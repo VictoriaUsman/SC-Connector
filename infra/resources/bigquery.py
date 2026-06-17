@@ -138,6 +138,9 @@ TABLE_DEFS: list[dict] = [
         "partition_field": "report_date",
         "clustering": ["client_id", "marketplace"],
         "description": "All Orders by Last Update — individual order line items",
+        # orders_latest keeps one row per order line (latest update wins),
+        # mirroring the old MERGE on (amazon_order_id, sku).
+        "latest_keys": ("amazon_order_id", "sku"),
     },
     {
         "name": "sp_campaigns",
@@ -183,6 +186,53 @@ def _build_schema(columns: list[dict]) -> str:
     return json.dumps(_META_COLUMNS + columns)
 
 
+def _latest_view_query(
+    project: str,
+    dataset_id: str,
+    table_name: str,
+    row_dedup_keys: tuple[str, ...] | None = None,
+) -> str:
+    """Build a read-side de-dup view query for an append-only base table.
+
+    Ingestion is append-only (no DML, no table lock — this is what removed the
+    "concurrent update" alert storm), so a table accumulates rows from every
+    pull. The view restores the de-duplicated read semantics the old MERGE /
+    DELETE+INSERT loaders provided, with one of two strategies:
+
+    * ``row_dedup_keys`` set (orders): keep one row per
+      (client_id, marketplace, *keys) — the latest by ``last_updated_date`` then
+      ``ingested_at``. This mirrors the old MERGE on (amazon_order_id, sku) and
+      is correct even when the same order line is re-pulled under several
+      ``report_date`` partitions (multi-day timeframes).
+
+    * ``row_dedup_keys`` is None (ads / SnS snapshots): keep every row of the
+      most-recent pull per (client_id, marketplace, report_date) — DENSE_RANK
+      ties all rows sharing the latest ``ingested_at`` at rank 1. This mirrors
+      the old DELETE+INSERT "latest cumulative pull wins" behaviour.
+    """
+    fq = f"`{project}.{dataset_id}.{table_name}`"
+    if row_dedup_keys:
+        partition = ", ".join(("client_id", "marketplace", *row_dedup_keys))
+        return (
+            "SELECT * EXCEPT(_row_rank) FROM (\n"
+            "  SELECT t.*, ROW_NUMBER() OVER (\n"
+            f"    PARTITION BY {partition}\n"
+            "    ORDER BY last_updated_date DESC, ingested_at DESC\n"
+            "  ) AS _row_rank\n"
+            f"  FROM {fq} AS t\n"
+            ")\nWHERE _row_rank = 1"
+        )
+    return (
+        "SELECT * EXCEPT(_pull_rank) FROM (\n"
+        "  SELECT t.*, DENSE_RANK() OVER (\n"
+        "    PARTITION BY client_id, marketplace, report_date\n"
+        "    ORDER BY ingested_at DESC\n"
+        "  ) AS _pull_rank\n"
+        f"  FROM {fq} AS t\n"
+        ")\nWHERE _pull_rank = 1"
+    )
+
+
 def create(
     env: str,
     project: str,
@@ -225,6 +275,32 @@ def create(
             opts=pulumi.ResourceOptions(depends_on=[dataset]),
         )
         tables[table_name] = table
+
+    # ----------------------------------------------------------------------
+    # De-dup views — reads should target these, not the append-only base tables
+    # ----------------------------------------------------------------------
+    for table_def in TABLE_DEFS:
+        table_name = table_def["name"]
+        view_name = f"{table_name}_latest"
+        base_table = tables[table_name]
+
+        gcp.bigquery.Table(
+            f"kalilos-{env}-bq-{view_name}",
+            dataset_id=dataset.dataset_id,
+            table_id=view_name,
+            project=project,
+            view=gcp.bigquery.TableViewArgs(
+                query=_latest_view_query(
+                    project, dataset_id, table_name, table_def.get("latest_keys"),
+                ),
+                use_legacy_sql=False,
+            ),
+            description=(
+                f"Latest pull per (client, marketplace, report_date) from {table_name}"
+            ),
+            deletion_protection=False,
+            opts=pulumi.ResourceOptions(depends_on=[base_table]),
+        )
 
     pulumi.export("bq_dataset", dataset_id)
     return tables

@@ -267,9 +267,10 @@ def _query_account_totals(
     Because the same data date can be re-pulled under several overlapping ranges
     (each ingested under a different ``report_date``), the ads query keeps only the
     most-recently-ingested row per campaign bucket before summing, giving
-    post-restatement totals without double counting. Orders are already deduped at
-    ingestion (MERGE on order id + sku), so a plain sum over the purchase-date
-    window is correct.
+    post-restatement totals without double counting. Orders are read from the
+    ``orders_latest`` view (one row per (order id, sku), latest update wins), so a
+    plain sum over the purchase-date window is correct even though ingestion is
+    append-only.
 
     The recap day is bounded by midnight-to-midnight in the client's configured
     timezone, converted to UTC for the ``purchase_date`` (TIMESTAMP) comparison.
@@ -315,7 +316,7 @@ def _query_orders_total(
 ) -> dict[str, Any]:
     query = f"""
         SELECT COALESCE(SUM(item_price), 0) AS total_sales
-        FROM `{project}.{dataset}.orders`
+        FROM `{project}.{dataset}.orders_latest`
         WHERE client_id = @client_id
           AND purchase_date >= @day_start
           AND purchase_date < @day_end

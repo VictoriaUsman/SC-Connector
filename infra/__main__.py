@@ -77,7 +77,10 @@ mcp_service = mcp_server.create(env, project, region, fns["api"], enabled_apis)
 # ---------------------------------------------------------------------------
 # 9. Cloud Monitoring (log-based error metric + alerts + /health uptime check)
 # ---------------------------------------------------------------------------
-monitoring_resources = monitoring.create(env, project, fns["api"], kalilos_config, enabled_apis)
+monitoring_resources = monitoring.create(
+    env, project, region, source_bucket, sas["functions"], fns["api"], kalilos_config,
+    enabled_apis,
+)
 
 # ---------------------------------------------------------------------------
 # Exports

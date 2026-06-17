@@ -307,7 +307,7 @@ class TestQueryConstruction:
     def test_orders_query_uses_purchase_date_window_not_report_partition(self):
         from daily_recap.main import _query_orders_total
 
-        fake = _FakeBQ([("`proj.ds.orders`", [{"total_sales": 1604.29}])])
+        fake = _FakeBQ([("`proj.ds.orders_latest`", [{"total_sales": 1604.29}])])
         result = _query_orders_total(
             fake, "proj", "ds", "c1", ["US"],
             "2026-06-04T07:00:00Z", "2026-06-05T07:00:00Z",
@@ -348,7 +348,7 @@ class TestQueryConstruction:
         from daily_recap.main import _query_account_totals
 
         fake = _FakeBQ([
-            ("`proj.ds.orders`", [{"total_sales": 1604.29}]),
+            ("`proj.ds.orders_latest`", [{"total_sales": 1604.29}]),
             ("UNION ALL", [{"spend": 100.18, "ppc_sales": 347.68}]),
         ])
         with (
@@ -363,7 +363,7 @@ class TestQueryConstruction:
         assert abs(totals.spend - 100.18) < 0.01
         assert abs(totals.ppc_sales - 347.68) < 0.01
 
-        orders_sql = next(c[0] for c in fake.calls if "`proj.ds.orders`" in c[0])
+        orders_sql = next(c[0] for c in fake.calls if "`proj.ds.orders_latest`" in c[0])
         ads_sql = next(c[0] for c in fake.calls if "UNION ALL" in c[0])
         assert "purchase_date" in orders_sql
         assert "ROW_NUMBER()" in ads_sql

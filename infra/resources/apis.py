@@ -16,6 +16,8 @@ REQUIRED_APIS = [
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
     "monitoring.googleapis.com",
+    "pubsub.googleapis.com",
+    "eventarc.googleapis.com",
 ]
 
 

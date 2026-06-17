@@ -123,6 +123,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
     sent = 0
     errors: list[str] = []
+    invariant_skips: list[str] = []
 
     for config in enabled:
         client_id = config["client_id"]
@@ -226,8 +227,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             sent += 1
 
         except TotalSalesInvariantError as exc:
-            logger.error(
-                "Total Sales invariant violated — skipping hourly post",
+            # Expected transient: this hour's orders pull has not ingested yet,
+            # so Total Sales lags PPC Sales. The append-only ingest + *_latest
+            # views make this self-heal on the next pull, so it is a WARNING
+            # (skip this post) rather than an ERROR that pages on-call.
+            logger.warning(
+                "Total Sales invariant violated — skipping hourly post (orders not yet ingested)",
                 extra={
                     "client_id": client_id,
                     "phase": "total_sales_invariant",
@@ -235,7 +240,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     "detail": str(exc),
                 },
             )
-            errors.append(f"{client_id}: invariant: {str(exc)[:100]}")
+            invariant_skips.append(f"{client_id}: invariant: {str(exc)[:100]}")
             log_bot_activity({
                 "client_id": client_id,
                 "event_id": live_event["id"],
@@ -256,11 +261,31 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     if errors:
         logger.error(
             "Hourly bot run completed with errors",
-            extra={"sent": sent, "errors": len(errors), "error_code": "PARTIAL_FAILURE", "failures": errors[:20]},
+            extra={
+                "sent": sent,
+                "errors": len(errors),
+                "invariant_skips": len(invariant_skips),
+                "error_code": "PARTIAL_FAILURE",
+                "failures": errors[:20],
+            },
+        )
+    elif invariant_skips:
+        logger.warning(
+            "Hourly bot run completed with invariant skips (orders not yet ingested)",
+            extra={
+                "sent": sent,
+                "invariant_skips": len(invariant_skips),
+                "skipped": invariant_skips[:20],
+            },
         )
     else:
         logger.info("Hourly bot run complete", extra={"sent": sent, "errors": 0})
-    return {"status": "ok", "messages_sent": sent, "errors": len(errors)}, 200
+    return {
+        "status": "ok",
+        "messages_sent": sent,
+        "errors": len(errors),
+        "invariant_skips": len(invariant_skips),
+    }, 200
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +372,7 @@ def _query_orders(
             SELECT
                 COALESCE(SUM(item_price), 0) AS total_sales,
                 COALESCE(SUM(quantity), 0) AS units
-            FROM `{project}.{dataset}.orders`
+            FROM `{project}.{dataset}.orders_latest`
             WHERE client_id = @client_id
               AND purchase_date >= @day_start
               AND purchase_date < @day_end
@@ -373,7 +398,7 @@ def _query_orders(
             SELECT
                 COALESCE(SUM(item_price), 0) AS total_sales,
                 COALESCE(SUM(quantity), 0) AS units
-            FROM `{project}.{dataset}.orders`
+            FROM `{project}.{dataset}.orders_latest`
             WHERE client_id = @client_id
               AND purchase_date >= @mkt_midnight
               AND purchase_date < @mkt_next_midnight
@@ -427,7 +452,7 @@ def _query_ads(
         sales_col = sales_cols[table]
         unions.append(f"""
             SELECT cost, {sales_col} AS ppc_sales
-            FROM `{project}.{dataset}.{table}`
+            FROM `{project}.{dataset}.{table}_latest`
             WHERE client_id = @client_id
               AND report_date = @today
               AND marketplace = @marketplace

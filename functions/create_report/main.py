@@ -174,7 +174,11 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         return {"error": str(exc), "code": "FORBIDDEN"}, 403
 
     except AdsProfileUnauthorizedError as exc:
-        logger.error(
+        # Expected, non-retryable per-client condition: the advertiser revoked
+        # the Kalilos Ads app's access to this 3P profile. It needs an account
+        # manager to coordinate re-authorization, not on-call paging — so this
+        # is a WARNING (the job is still marked failed with an actionable message).
+        logger.warning(
             "Ads API unauthorized 3P profile at create_report",
             extra=exc.log_context(),
         )

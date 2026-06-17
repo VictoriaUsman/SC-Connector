@@ -13,7 +13,10 @@ import csv
 import io
 import logging
 import os
+import random
+import time
 from datetime import datetime, timezone
+from typing import Callable, TypeVar
 
 import flask
 from google.cloud import bigquery
@@ -26,6 +29,50 @@ logger = logging.getLogger(__name__)
 init_logging("ingest-bigquery")
 
 _bq_client: bigquery.Client | None = None
+
+_T = TypeVar("_T")
+
+# Substrings that mark a transient BigQuery failure worth retrying. Append-only
+# load jobs take no table DML lock, so "concurrent update" should no longer
+# occur — but we retry defensively against rate limiting / backend blips.
+_TRANSIENT_ERROR_MARKERS = (
+    "could not serialize access",
+    "concurrent update",
+    "ratelimitexceeded",
+    "rate limit exceeded",
+    "backenderror",
+    "internalerror",
+    "service unavailable",
+    "try again later",
+)
+
+
+def _run_with_retry(
+    fn: Callable[[], _T],
+    *,
+    attempts: int = 5,
+    base_delay: float = 2.0,
+) -> _T:
+    """Run ``fn``, retrying transient BigQuery errors with exponential backoff."""
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — re-raised below if non-transient
+            message = str(exc).lower()
+            if not any(marker in message for marker in _TRANSIENT_ERROR_MARKERS):
+                raise
+            last_exc = exc
+            if attempt == attempts - 1:
+                break
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+            logger.warning(
+                "Transient BigQuery error, retrying",
+                extra={"attempt": attempt + 1, "delay": round(delay, 2)},
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _get_bq_client() -> bigquery.Client:
@@ -87,10 +134,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
         table_ref = f"{_get_bq_client().project}.{dataset}.{schema.table_name}"
 
-        if schema.dedup_key:
-            _load_with_merge(table_ref, schema, rows, client_id, marketplace, report_date)
-        else:
-            _load_with_replace(table_ref, rows, client_id, marketplace, report_date)
+        _load_append(table_ref, schema, rows)
 
         logger.info(
             "BQ ingestion complete",
@@ -201,101 +245,32 @@ def _dedupe_merge_rows(rows: list[dict], schema: TableSchema) -> list[dict]:
     return list(best.values())
 
 
-def _load_with_merge(
-    table_ref: str,
-    schema: TableSchema,
-    rows: list[dict],
-    client_id: str,
-    marketplace: str,
-    report_date: str,
-) -> None:
-    """Orders dedup: MERGE on dedup_key columns — update existing, insert new."""
-    client = _get_bq_client()
+def _load_append(table_ref: str, schema: TableSchema, rows: list[dict]) -> None:
+    """Append a pull's rows to the target table (no DML, no table lock).
 
-    # The staging source must be unique on the MERGE key; otherwise BigQuery
-    # raises "UPDATE/MERGE must match at most one source row for each target row".
-    rows = _dedupe_merge_rows(rows, schema)
+    Ingestion is append-only: every pull writes a fresh batch tagged with the
+    same ``ingested_at`` timestamp. Append load jobs take no table-level DML
+    lock, so concurrent ingestions from many workflows never collide — this
+    replaced the MERGE/DELETE strategy that raised "Could not serialize access
+    ... due to concurrent update" during high-fan-out events.
 
-    suffix = f"_staging_{client_id}_{marketplace}".replace("-", "_")
-    staging_table = f"{table_ref}{suffix}"
-
-    job_config = bigquery.LoadJobConfig(
-        schema=[
-            bigquery.SchemaField(name=f["bq_name"], field_type=f["bq_type"])
-            for f in [{"bq_name": "client_id", "bq_type": "STRING"},
-                      {"bq_name": "marketplace", "bq_type": "STRING"},
-                      {"bq_name": "report_date", "bq_type": "DATE"},
-                      {"bq_name": "ingested_at", "bq_type": "TIMESTAMP"},
-                      {"bq_name": "job_id", "bq_type": "STRING"}]
-            + [{"bq_name": c.bq_name, "bq_type": c.bq_type} for c in schema.columns]
-        ],
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-    )
-    load_job = client.load_table_from_json(rows, staging_table, job_config=job_config)
-    load_job.result()
-
-    all_columns = (
-        ["client_id", "marketplace", "report_date", "ingested_at", "job_id"]
-        + [c.bq_name for c in schema.columns]
-    )
-
-    on_clause = " AND ".join(
-        f"T.{k} = S.{k}" for k in schema.dedup_key
-    )
-    on_clause += f" AND T.client_id = S.client_id AND T.marketplace = S.marketplace"
-
-    update_cols = ", ".join(f"T.{c} = S.{c}" for c in all_columns if c not in schema.dedup_key)
-    insert_cols = ", ".join(all_columns)
-    insert_vals = ", ".join(f"S.{c}" for c in all_columns)
-
-    merge_sql = f"""
-    MERGE `{table_ref}` T
-    USING `{staging_table}` S
-    ON {on_clause}
-    WHEN MATCHED THEN
-      UPDATE SET {update_cols}
-    WHEN NOT MATCHED THEN
-      INSERT ({insert_cols})
-      VALUES ({insert_vals})
+    For schemas with a ``dedup_key`` (orders), the batch is still collapsed to
+    one row per key (latest update wins) so a single pull never re-counts a
+    re-emitted ``(amazon_order_id, sku)`` line. Cross-pull de-duplication then
+    happens at read time via the ``*_latest`` views, which keep only the most
+    recent pull per (client, marketplace, report_date).
     """
-
-    query_job = client.query(merge_sql)
-    query_job.result()
-
-    client.delete_table(staging_table, not_found_ok=True)
-    logger.info("MERGE complete for %s (%d rows)", table_ref, len(rows))
-
-
-def _load_with_replace(
-    table_ref: str,
-    rows: list[dict],
-    client_id: str,
-    marketplace: str,
-    report_date: str,
-) -> None:
-    """Ads dedup: delete existing rows for the same (client, marketplace, date), then insert."""
     client = _get_bq_client()
 
-    if report_date:
-        delete_sql = f"""
-        DELETE FROM `{table_ref}`
-        WHERE client_id = @client_id
-          AND marketplace = @marketplace
-          AND report_date = @report_date
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-                bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
-                bigquery.ScalarQueryParameter("report_date", "DATE", report_date),
-            ]
-        )
-        delete_job = client.query(delete_sql, job_config=job_config)
-        delete_job.result()
+    if schema.dedup_key:
+        rows = _dedupe_merge_rows(rows, schema)
 
     load_config = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
     )
-    load_job = client.load_table_from_json(rows, table_ref, job_config=load_config)
-    load_job.result()
-    logger.info("Replace-load complete for %s (%d rows)", table_ref, len(rows))
+
+    def _do_load() -> None:
+        client.load_table_from_json(rows, table_ref, job_config=load_config).result()
+
+    _run_with_retry(_do_load)
+    logger.info("Append-load complete for %s (%d rows)", table_ref, len(rows))

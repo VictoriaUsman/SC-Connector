@@ -1,10 +1,16 @@
-"""Tests for the BigQuery ingestion function — MERGE source dedup in particular.
+"""Tests for the BigQuery ingestion function — append-only load + source dedup.
 
-Regression coverage for the orders MERGE failure that froze Total Sales in the
-hourly Slack bot: Amazon's by-last-update All Orders flat file re-emits the same
-``(amazon_order_id, sku)`` line, so the staging table held duplicate dedup keys
-and BigQuery rejected the MERGE ("UPDATE/MERGE must match at most one source row
-for each target row") on every run after the first.
+Regression coverage for two issues:
+
+1. Orders Total Sales freeze: Amazon's by-last-update All Orders flat file
+   re-emits the same ``(amazon_order_id, sku)`` line, so a pull can hold
+   duplicate dedup keys. The batch is collapsed to one row per key (latest
+   update wins) before loading.
+
+2. Alert storm from BQ concurrent-update: per-report MERGE/DELETE DML serialized
+   under high event fan-out, raising "Could not serialize access ... due to
+   concurrent update". Ingestion is now append-only (load jobs take no DML
+   lock); cross-pull dedup happens at read time via the ``*_latest`` views.
 """
 
 from __future__ import annotations
@@ -110,11 +116,16 @@ class TestDedupeMergeRows:
         assert len(keys) == len(set(keys))
 
 
-class TestLoadWithMergeDedup:
-    def test_staging_load_receives_deduped_rows(self):
-        """The duplicate-key batch that crashed the production MERGE must reach
-        the staging table already deduplicated."""
-        from ingest_bigquery.main import _load_with_merge
+class TestLoadAppend:
+    def test_append_load_uses_write_append_and_dedupes_orders(self):
+        """Orders are collapsed to one row per key, then appended (WRITE_APPEND).
+
+        No MERGE/DELETE DML — append load jobs take no table lock, which is what
+        eliminates the "concurrent update" alert storm under event fan-out.
+        """
+        from google.cloud import bigquery
+
+        from ingest_bigquery.main import _load_append
 
         rows = [
             _order_row("111", "SKU-A", 10.0, "2026-06-09T10:00:00+00:00"),
@@ -125,12 +136,71 @@ class TestLoadWithMergeDedup:
         fake_client = MagicMock()
 
         with patch("ingest_bigquery.main._get_bq_client", return_value=fake_client):
-            _load_with_merge(
-                "proj.ds.orders", _ORDERS_SCHEMA, rows,
-                "brook-whittle", "US", "2026-06-09",
-            )
+            _load_append("proj.ds.orders", _ORDERS_SCHEMA, rows)
 
-        loaded_rows = fake_client.load_table_from_json.call_args[0][0]
+        call = fake_client.load_table_from_json.call_args
+        loaded_rows = call[0][0]
         keys = [(r["amazon_order_id"], r["sku"]) for r in loaded_rows]
         assert len(keys) == len(set(keys))
         assert sorted(keys) == [("111", "SKU-A"), ("222", "SKU-B")]
+        assert (
+            call.kwargs["job_config"].write_disposition
+            == bigquery.WriteDisposition.WRITE_APPEND
+        )
+
+    def test_ads_append_load_keeps_all_rows(self):
+        """Ads schemas have no dedup key — every row is appended verbatim."""
+        from ingest_bigquery.main import _load_append
+
+        rows = [
+            {"client_id": "c1", "marketplace": "US", "campaign_id": "x", "cost": 1.0},
+            {"client_id": "c1", "marketplace": "US", "campaign_id": "x", "cost": 2.0},
+        ]
+        fake_client = MagicMock()
+
+        with patch("ingest_bigquery.main._get_bq_client", return_value=fake_client):
+            _load_append("proj.ds.sp_campaigns", _ADS_SCHEMA, rows)
+
+        loaded_rows = fake_client.load_table_from_json.call_args[0][0]
+        assert len(loaded_rows) == 2
+
+
+class TestTransientRetry:
+    def test_concurrent_update_is_retried_then_succeeds(self):
+        from ingest_bigquery import main as ingest
+
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError(
+                    "400 Could not serialize access to table orders due to "
+                    "concurrent update"
+                )
+            return "ok"
+
+        with patch.object(ingest.time, "sleep"):
+            result = ingest._run_with_retry(flaky, attempts=5, base_delay=0.0)
+
+        assert result == "ok"
+        assert calls["n"] == 3
+
+    def test_non_transient_error_is_not_retried(self):
+        from ingest_bigquery import main as ingest
+
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise ValueError("schema mismatch")
+
+        with patch.object(ingest.time, "sleep"):
+            try:
+                ingest._run_with_retry(boom, attempts=5, base_delay=0.0)
+                raised = False
+            except ValueError:
+                raised = True
+
+        assert raised
+        assert calls["n"] == 1

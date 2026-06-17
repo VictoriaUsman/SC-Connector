@@ -527,9 +527,10 @@ class TestHandlerIntegration:
         assert "Day 1 Recap" in blocks[0]["text"]["text"]
         assert mock_post.call_args.kwargs.get("thread_ts") == "999.000"
 
-    def test_invariant_violation_alerts_and_does_not_post(self):
-        """When Total Sales < PPC Sales, the run must alert (failed activity +
-        ERROR log) instead of posting a misleading update."""
+    def test_invariant_violation_skips_post_as_warning(self):
+        """When Total Sales < PPC Sales, the row's orders pull has not ingested
+        yet — skip the post (recorded as an invariant skip / WARNING, not a
+        paging ERROR) instead of posting a misleading update."""
         from slack_bot.main import handler, MarketplaceMetrics
 
         bad_metrics = [
@@ -553,7 +554,9 @@ class TestHandlerIntegration:
 
         assert status == 200
         assert body["messages_sent"] == 0
-        assert body["errors"] == 1
+        # Invariant violations are skips, not genuine errors (no ERROR/page).
+        assert body["errors"] == 0
+        assert body["invariant_skips"] == 1
         mock_post.assert_not_called()
         log_data = mock_log.call_args[0][0]
         assert log_data["status"] == "failed"
