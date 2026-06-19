@@ -247,7 +247,7 @@ def _download_ads_report(
     if not download_url:
         raise ValueError("Missing download_url in download_info")
 
-    creds = get_ads_credentials(client_id)
+    creds = get_ads_credentials(client_id, marketplace)
     content = ads_api_client.download_report(
         creds,
         marketplace,

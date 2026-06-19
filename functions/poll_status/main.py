@@ -61,7 +61,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 report_type=report_type,
             )
         elif api_source == "ads_api":
-            creds = get_ads_credentials(client_id)
+            creds = get_ads_credentials(client_id, marketplace)
             result = ads_api_client.get_report(
                 creds,
                 marketplace,

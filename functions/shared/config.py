@@ -71,6 +71,41 @@ MARKETPLACE_IDS: dict[str, str] = {
     "AU": "A39IBJ37TRP1C6",
 }
 
+# Amazon "sales-channel" value (the storefront domain) carried on every line of
+# the All Orders flat file (GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL).
+# That report is account-wide: Amazon returns every order for the seller's
+# region regardless of the marketplaceId requested, and the connector stamps
+# all of those rows with the single marketplace it pulled under. Filtering only
+# on that stamped marketplace therefore leaks other marketplaces' orders into a
+# per-marketplace Total Sales total. The sales-channel column is the only
+# per-row signal of the order's true marketplace, so order queries that must be
+# scoped to one marketplace filter on it. Compared case-insensitively.
+MARKETPLACE_SALES_CHANNELS: dict[str, str] = {
+    "US": "Amazon.com",
+    "CA": "Amazon.ca",
+    "MX": "Amazon.com.mx",
+    "UK": "Amazon.co.uk",
+    "DE": "Amazon.de",
+    "FR": "Amazon.fr",
+    "IT": "Amazon.it",
+    "ES": "Amazon.es",
+    "NL": "Amazon.nl",
+    "SE": "Amazon.se",
+    "PL": "Amazon.pl",
+    "TR": "Amazon.com.tr",
+    "AU": "Amazon.com.au",
+    "SG": "Amazon.sg",
+}
+
+
+def get_marketplace_sales_channel(marketplace: str) -> str | None:
+    """Return the Amazon storefront domain (``sales-channel``) for a marketplace.
+
+    Returns ``None`` for unknown marketplaces so callers can fall back to their
+    prior, unscoped behaviour rather than filtering everything out.
+    """
+    return MARKETPLACE_SALES_CHANNELS.get(marketplace)
+
 
 def get_sp_api_endpoint(marketplace: str) -> str:
     region = MARKETPLACE_TO_REGION.get(marketplace, "na")
