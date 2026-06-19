@@ -4,6 +4,13 @@ Covers reviewer feedback on CU-868jxen7m:
   * A 403 must NOT be auto-retried (it is a permissions error, not transient).
   * The global error handler must surface a clean message, not a raw dump of
     the whole HTTP error object (status code + headers) via json.encode(e).
+
+Covers CU-868k0buex:
+  * Every error-handling expression must read the HTTP status via
+    ``map.get(..., "code")`` (not a bare ``${err.code}``) so a code-less
+    transport error (Connection reset / timeout, as surfaced by the SB
+    campaigns legacy v2 augmentation) does not raise
+    "KeyError: key not found: code".
 """
 
 from __future__ import annotations
@@ -74,3 +81,56 @@ class TestCleanErrorMessage:
         )
         assert "user_message" in msg_field
         assert "json.encode" not in msg_field
+
+
+class TestCodeAccessIsNullSafe:
+    """CU-868k0buex: a code-less transport error (Connection reset / timeout)
+    must not raise "KeyError: key not found: code". Every place that inspects an
+    error's HTTP status must do so via map.get(..., "code")."""
+
+    def _non_throttle_retry_cases(self) -> dict:
+        doc = _load()
+        steps = _steps_to_map(doc["non_throttle_retry"]["steps"])
+        switch = steps["check_code"]["switch"]
+        return {c["condition"]: c.get("return") for c in switch}
+
+    def test_non_throttle_retry_never_uses_bare_e_dot_code(self):
+        cases = self._non_throttle_retry_cases()
+        for cond in cases:
+            assert "e.code" not in cond, (
+                f"bare ${{e.code}} access can crash on a code-less error: {cond}"
+            )
+            # Every status comparison must go through map.get(e, "code").
+            if "code" in cond:
+                assert 'map.get(e, "code")' in cond, cond
+
+    def test_non_throttle_retry_retries_codeless_transient_error(self):
+        cases = self._non_throttle_retry_cases()
+        # The branch that matches a missing/null code must retry (return True),
+        # treating Connection resets / timeouts as transient.
+        null_branch = [v for cond, v in cases.items() if "null" in cond]
+        assert null_branch == [True], (
+            f"expected code==null -> retry (True), got {cases}"
+        )
+
+    def test_non_throttle_retry_still_blocks_403_and_retries_5xx(self):
+        # The CU-868jxen7m guarantees must survive the null-safe refactor.
+        cases = self._non_throttle_retry_cases()
+        assert [v for cond, v in cases.items() if "403" in cond] == [False]
+        assert [v for cond, v in cases.items() if "500" in cond] == [True]
+
+    def test_poll_status_throttle_check_is_null_safe(self):
+        doc = _load()
+        pipeline_steps = _steps_to_map(doc["report_pipeline"]["steps"])
+        poll_except = _steps_to_map(pipeline_steps["poll_status"]["except"]["steps"])
+        cond = poll_except["check_poll_throttle"]["switch"][0]["condition"]
+        assert "poll_error.code" not in cond, cond
+        assert 'map.get(poll_error, "code")' in cond, cond
+
+    def test_throttle_retry_call_check_is_null_safe(self):
+        doc = _load()
+        throttle_steps = _steps_to_map(doc["throttle_retry_call"]["steps"])
+        call_except = _steps_to_map(throttle_steps["attempt_call"]["except"]["steps"])
+        cond = call_except["check_throttle"]["switch"][0]["condition"]
+        assert "call_err.code" not in cond, cond
+        assert 'map.get(call_err, "code")' in cond, cond

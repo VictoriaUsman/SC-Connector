@@ -163,7 +163,10 @@ report_pipeline:
           steps:
             - check_poll_throttle:
                 switch:
-                  - condition: ${poll_error.code == 429 and poll_count < max_polls}
+                  # Use map.get(...) so a transient, code-less transport error
+                  # (e.g. a Connection reset between the workflow and the
+                  # function) does not raise "KeyError: key not found: code".
+                  - condition: ${default(map.get(poll_error, "code"), 0) == 429 and poll_count < max_polls}
                     next: increment_poll
                   - condition: true
                     raise: ${poll_error}
@@ -455,14 +458,25 @@ non_throttle_retry:
   params: [e]
   steps:
     - check_code:
+        # Read the HTTP status via map.get(...) with a 0 default. A raised
+        # error is only guaranteed to carry a "code" field when it is an HTTP
+        # error *response*; a transient transport failure (Connection reset,
+        # timeout) is a code-less map, and a direct ${e.code} access on it
+        # raises "KeyError: key not found: code". The SB campaigns pull surfaces
+        # exactly these resets (its legacy v2 augmentation hammers the Ads host),
+        # which is what crashed the workflow before this guard.
         switch:
-          - condition: ${e.code == 429}
+          - condition: ${default(map.get(e, "code"), 0) == 429}
             return: false
-          - condition: ${e.code == 401}
+          - condition: ${default(map.get(e, "code"), 0) == 401}
             return: false
-          - condition: ${e.code == 403}
+          - condition: ${default(map.get(e, "code"), 0) == 403}
             return: false
-          - condition: ${e.code >= 500}
+          - condition: ${default(map.get(e, "code"), 0) >= 500}
+            return: true
+          - condition: ${map.get(e, "code") == null}
+            # Code-less transport error (Connection reset / timeout): treat as
+            # transient and retry rather than crashing on a missing "code".
             return: true
     - default_no_retry:
         return: false
@@ -495,7 +509,10 @@ throttle_retry_call:
           steps:
             - check_throttle:
                 switch:
-                  - condition: ${call_err.code == 429 and throttle_count < max_throttle_retries}
+                  # map.get(...) guards against a code-less transport error
+                  # (Connection reset / timeout) that would otherwise raise
+                  # "KeyError: key not found: code" on a direct ${call_err.code}.
+                  - condition: ${default(map.get(call_err, "code"), 0) == 429 and throttle_count < max_throttle_retries}
                     next: throttle_backoff
                   - condition: true
                     raise: ${call_err}
