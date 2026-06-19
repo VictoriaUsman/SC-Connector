@@ -441,7 +441,24 @@ def connect_client_manual(client_id: str):
             profile_id = data.get("profile_id", "").strip()
             if not profile_id:
                 return flask.jsonify({"error": "Missing profile_id", "code": "INVALID_REQUEST"}), 400
-            upsert_client(client_id, {"ads_profile_id": profile_id})
+            # An optional marketplace records this profile in the per-marketplace
+            # ``ads_profile_ids`` map so multi-marketplace accounts can pull each
+            # marketplace under its own Ads profile (a single account/region has
+            # one profile per country). The default ``ads_profile_id`` is still
+            # set/kept so single-marketplace flows and credential checks are
+            # unaffected.
+            marketplace = (data.get("marketplace") or "").strip()
+            updates: dict = {}
+            existing = get_client(client_id) or {}
+            if marketplace:
+                profile_map = dict(existing.get("ads_profile_ids") or {})
+                profile_map[marketplace] = profile_id
+                updates["ads_profile_ids"] = profile_map
+                if not existing.get("ads_profile_id"):
+                    updates["ads_profile_id"] = profile_id
+            else:
+                updates["ads_profile_id"] = profile_id
+            upsert_client(client_id, updates)
 
         logger.info("Manual connect completed", extra={"client_id": client_id, "api_source": api_source})
         return flask.jsonify({"id": client_id, "api_source": api_source, "status": "connected"}), 200

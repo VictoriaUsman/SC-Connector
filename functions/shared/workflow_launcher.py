@@ -171,12 +171,17 @@ def client_has_credentials(client: dict[str, Any], api_source: str) -> bool:
     credentials.  Per-report-type credential filtering happens inside
     ``launch_for_marketplace`` via ``infer_api_source``.
     """
+    def _has_ads(c: dict[str, Any]) -> bool:
+        # Either a single default profile or a per-marketplace profile map
+        # (multi-marketplace accounts may only carry the map).
+        return bool(c.get("ads_profile_id")) or bool(c.get("ads_profile_ids"))
+
     if api_source == "sp_api":
         return bool(client.get("sp_api_secret_name"))
     if api_source == "ads_api":
-        return bool(client.get("ads_profile_id"))
+        return _has_ads(client)
     if api_source == "both":
-        return bool(client.get("sp_api_secret_name")) or bool(client.get("ads_profile_id"))
+        return bool(client.get("sp_api_secret_name")) or _has_ads(client)
     return False
 
 

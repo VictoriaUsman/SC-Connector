@@ -56,7 +56,7 @@ def ads_api_request(
     a versioned vendor ``content_type``/``accept`` media type — pass those in.
     Transient errors (429, 5xx, network) are retried with exponential backoff.
     """
-    creds = get_ads_credentials(client_id)
+    creds = get_ads_credentials(client_id, marketplace)
     url = get_ads_api_endpoint(marketplace) + path
     method = method.upper()
 

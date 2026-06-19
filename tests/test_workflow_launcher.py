@@ -33,6 +33,38 @@ def mock_exec_client():
 
 
 # ---------------------------------------------------------------------------
+# client_has_credentials
+# ---------------------------------------------------------------------------
+
+class TestClientHasCredentials:
+    def test_sp_api_requires_secret(self):
+        from shared.workflow_launcher import client_has_credentials
+
+        assert client_has_credentials({"sp_api_secret_name": "s"}, "sp_api")
+        assert not client_has_credentials({}, "sp_api")
+
+    def test_ads_api_accepts_single_profile(self):
+        from shared.workflow_launcher import client_has_credentials
+
+        assert client_has_credentials({"ads_profile_id": "111"}, "ads_api")
+        assert not client_has_credentials({}, "ads_api")
+
+    def test_ads_api_accepts_per_marketplace_map_only(self):
+        """Multi-marketplace accounts may carry only the per-marketplace map."""
+        from shared.workflow_launcher import client_has_credentials
+
+        assert client_has_credentials({"ads_profile_ids": {"US": "111"}}, "ads_api")
+        assert not client_has_credentials({"ads_profile_ids": {}}, "ads_api")
+
+    def test_both_accepts_either_source(self):
+        from shared.workflow_launcher import client_has_credentials
+
+        assert client_has_credentials({"sp_api_secret_name": "s"}, "both")
+        assert client_has_credentials({"ads_profile_ids": {"US": "1"}}, "both")
+        assert not client_has_credentials({}, "both")
+
+
+# ---------------------------------------------------------------------------
 # get_workflow_parent
 # ---------------------------------------------------------------------------
 

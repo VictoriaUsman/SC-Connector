@@ -118,7 +118,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 client_id=client_id,
             )
         elif api_source == "ads_api":
-            creds = get_ads_credentials(client_id)
+            creds = get_ads_credentials(client_id, marketplace)
             if "startDate" not in report_params or "endDate" not in report_params:
                 yesterday = marketplace_yesterday(marketplace).isoformat()
                 report_params.setdefault("startDate", yesterday)

@@ -15,6 +15,12 @@ export interface Client {
   sp_api_secret_name?: string;
   ads_api_secret_name?: string;
   ads_profile_id?: string;
+  /**
+   * Per-marketplace Ads profile ids ({ US: "111", CA: "222" }). Amazon Ads
+   * profiles are scoped to a single marketplace, so multi-marketplace accounts
+   * map each marketplace to its own profile. Falls back to `ads_profile_id`.
+   */
+  ads_profile_ids?: Record<string, string>;
   created_at?: string;
   updated_at?: string;
 }
