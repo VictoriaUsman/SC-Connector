@@ -394,6 +394,83 @@ class TestQueryOrders:
         assert params["mkt_next_midnight"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
 
 
+class TestQueryOrdersMarketplaceScoping:
+    """Total Sales cross-marketplace leakage bug: the All Orders report is
+    account-wide (Amazon returns every order for the seller's region regardless
+    of the marketplaceId requested) and ingestion stamps all of those rows with
+    the single marketplace it pulled under. Filtering only on the stamped
+    ``marketplace`` therefore leaked other marketplaces' orders into a
+    per-marketplace Total Sales. The fix additionally scopes orders to the
+    marketplace's own storefront via the ``sales_channel`` column."""
+
+    @staticmethod
+    def _fake_bq(captured: dict) -> MagicMock:
+        def fake_query(query, job_config=None):
+            captured["query"] = query
+            captured["params"] = {
+                p.name: p.value for p in job_config.query_parameters
+            }
+            return iter([{"total_sales": 1234.56, "units": 12}])
+
+        bq = MagicMock()
+        bq.query.side_effect = fake_query
+        return bq
+
+    def test_hourly_scopes_orders_by_sales_channel(self):
+        from slack_bot.main import _query_orders
+
+        captured: dict = {}
+        bq = self._fake_bq(captured)
+
+        _query_orders(
+            bq, "proj", "ds", "c1", "UK", "2026-07-13",
+            datetime(2026, 7, 13, 23, 45, tzinfo=timezone.utc),
+            full_day=False,
+        )
+
+        query = captured["query"]
+        # The marketplace partition filter stays (it de-dupes orders_latest)...
+        assert "marketplace = @marketplace" in query
+        # ...and orders are additionally restricted to this marketplace's
+        # storefront so a EU account's DE/FR/IT orders don't inflate the UK total.
+        assert "LOWER(sales_channel) = @sales_channel" in query
+        assert captured["params"]["sales_channel"] == "amazon.co.uk"
+
+    def test_full_day_scopes_orders_by_sales_channel(self):
+        from slack_bot.main import _query_orders
+
+        captured: dict = {}
+        bq = self._fake_bq(captured)
+
+        _query_orders(
+            bq, "proj", "ds", "c1", "US", "2026-07-13",
+            datetime(2026, 7, 14, 7, 45, tzinfo=timezone.utc),
+            full_day=True,
+        )
+
+        query = captured["query"]
+        assert "LOWER(sales_channel) = @sales_channel" in query
+        assert captured["params"]["sales_channel"] == "amazon.com"
+
+    def test_unknown_marketplace_falls_back_to_unscoped(self):
+        """An unmapped marketplace must not silently zero out Total Sales — it
+        falls back to the prior, sales-channel-unscoped behaviour."""
+        from slack_bot.main import _query_orders
+
+        captured: dict = {}
+        bq = self._fake_bq(captured)
+
+        _query_orders(
+            bq, "proj", "ds", "c1", "ZZ", "2026-07-13",
+            datetime(2026, 7, 13, 23, 45, tzinfo=timezone.utc),
+            full_day=False,
+        )
+
+        query = captured["query"]
+        assert "sales_channel" not in query
+        assert "sales_channel" not in captured["params"]
+
+
 class TestQueryAds:
     """Recap/hourly ads must key off each campaign row's actual performance
     ``date``, not the ingestion ``report_date`` partition. The linked prior-year

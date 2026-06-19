@@ -365,10 +365,29 @@ def _query_orders(
     kept refreshing — letting PPC Sales exceed Total Sales. Orders are deduped
     at ingestion (MERGE on order id + sku), so summing ``item_price`` over the
     purchase-date window is correct and does not double count.
+
+    Total Sales is additionally scoped to the marketplace's own storefront via
+    the ``sales_channel`` column. The All Orders report is account-wide — Amazon
+    returns every order for the seller's region regardless of the marketplaceId
+    requested — and ingestion stamps all of those rows with the single
+    marketplace it pulled under. Filtering only on that stamped ``marketplace``
+    therefore leaked other marketplaces' orders into a per-marketplace Total
+    Sales (e.g. a EU account's DE/FR/IT orders inflating the UK figure). The
+    ``sales_channel`` is the only per-row signal of an order's true marketplace,
+    so we keep the ``marketplace`` partition filter (it de-dupes the
+    ``orders_latest`` view, which is keyed by marketplace) *and* restrict to the
+    rows whose storefront matches this marketplace. Unknown marketplaces fall
+    back to the unscoped behaviour so we never zero out a real total.
     """
-    from shared.config import MARKETPLACE_TIMEZONES
+    from shared.config import MARKETPLACE_TIMEZONES, get_marketplace_sales_channel
 
     mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
+    sales_channel = get_marketplace_sales_channel(marketplace)
+    sales_channel_clause = (
+        "\n              AND LOWER(sales_channel) = @sales_channel"
+        if sales_channel
+        else ""
+    )
 
     if full_day:
         day = date_type.fromisoformat(report_date)
@@ -386,7 +405,7 @@ def _query_orders(
               AND purchase_date >= @day_start
               AND purchase_date < @day_end
               AND order_status != 'Cancelled'
-              AND marketplace = @marketplace
+              AND marketplace = @marketplace{sales_channel_clause}
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -394,6 +413,11 @@ def _query_orders(
                 bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", day_start_utc),
                 bigquery.ScalarQueryParameter("day_end", "TIMESTAMP", day_end_utc),
                 bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+                *(
+                    [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
+                    if sales_channel
+                    else []
+                ),
             ]
         )
     else:
@@ -412,7 +436,7 @@ def _query_orders(
               AND purchase_date >= @mkt_midnight
               AND purchase_date < @mkt_next_midnight
               AND order_status != 'Cancelled'
-              AND marketplace = @marketplace
+              AND marketplace = @marketplace{sales_channel_clause}
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -426,6 +450,11 @@ def _query_orders(
                     mkt_next_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 ),
                 bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+                *(
+                    [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
+                    if sales_channel
+                    else []
+                ),
             ]
         )
     for row in bq.query(query, job_config=job_config):
