@@ -22,6 +22,36 @@ _sm: secretmanager.SecretManagerServiceClient | None = None
 
 SLACK_API_BASE = "https://slack.com/api"
 
+# Slack error codes that mean "the message can never be delivered to this
+# channel until a human fixes the channel config" (the Kalilos app is not a
+# member, the channel was deleted, or it is archived). These are operational
+# misconfigurations, not bot defects, so callers should surface them as
+# actionable WARNINGs (with a re-invite hint) rather than paging ERRORs.
+CHANNEL_CONFIG_ERRORS = frozenset({
+    "not_in_channel",
+    "channel_not_found",
+    "is_archived",
+})
+
+
+class SlackApiError(RuntimeError):
+    """Raised when the Slack API returns ``ok: false``.
+
+    Subclasses ``RuntimeError`` so existing broad ``except Exception`` handlers
+    keep working, while ``code`` lets callers branch on the specific Slack error
+    (e.g. ``not_in_channel``). ``is_channel_config_error`` flags the subset that
+    a human must fix by inviting the app / unarchiving the channel.
+    """
+
+    def __init__(self, code: str, channel_id: str | None = None) -> None:
+        super().__init__(f"Slack API error: {code}")
+        self.code = code
+        self.channel_id = channel_id
+
+    @property
+    def is_channel_config_error(self) -> bool:
+        return self.code in CHANNEL_CONFIG_ERRORS
+
 # ---------------------------------------------------------------------------
 # Currency formatting
 # ---------------------------------------------------------------------------
@@ -169,8 +199,12 @@ def post_message(
     data = resp.json()
     if not data.get("ok"):
         error = data.get("error", "unknown_error")
-        logger.error("Slack API error: %s", error, extra={"channel": channel_id})
-        raise RuntimeError(f"Slack API error: {error}")
+        # Channel-config errors are logged by the caller as actionable WARNINGs
+        # (with the client/channel context it has); avoid double-logging them as
+        # ERRORs here. Genuine API errors still get an ERROR line.
+        if error not in CHANNEL_CONFIG_ERRORS:
+            logger.error("Slack API error: %s", error, extra={"channel": channel_id})
+        raise SlackApiError(error, channel_id=channel_id)
 
     logger.info(
         "Slack message posted",

@@ -701,6 +701,119 @@ class TestHandlerIntegration:
         log_data = mock_log.call_args[0][0]
         assert log_data["status"] == "failed"
 
+    def test_not_in_channel_is_channel_skip_not_error(self):
+        """A `not_in_channel` Slack error means the app was never invited to the
+        channel (e.g. someone changed the config's channel). It is operator-
+        fixable, so it is tracked as a channel-config skip — never a paging
+        error — and recorded with an error_code + the channel to fix."""
+        from slack_bot.main import handler, MarketplaceMetrics
+        from shared.slack_client import SlackApiError
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message",
+                  side_effect=SlackApiError("not_in_channel", channel_id="C123")),
+            patch("slack_bot.main.log_bot_activity") as mock_log,
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 0
+        assert body["errors"] == 0
+        assert body["channel_skips"] == 1
+        log_data = mock_log.call_args[0][0]
+        assert log_data["status"] == "failed"
+        assert log_data["error_code"] == "not_in_channel"
+        assert log_data["channel_id"] == "C123"
+
+    def test_generic_slack_error_is_real_error(self):
+        """A non-channel-config Slack error (e.g. rate limit) is a genuine
+        error, not a channel skip."""
+        from slack_bot.main import handler, MarketplaceMetrics
+        from shared.slack_client import SlackApiError
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message",
+                  side_effect=SlackApiError("ratelimited", channel_id="C123")),
+            patch("slack_bot.main.log_bot_activity") as mock_log,
+        ):
+            body, status = handler(_make_request())
+
+        assert body["errors"] == 1
+        assert body["channel_skips"] == 0
+        log_data = mock_log.call_args[0][0]
+        assert log_data["error_code"] == "ratelimited"
+
+
+class TestGetLiveEvent:
+    """get_live_event must be deterministic when several events are live."""
+
+    def _fake_doc(self, doc_id: str, data: dict):
+        doc = MagicMock()
+        doc.id = doc_id
+        doc.to_dict.return_value = data
+        return doc
+
+    def _patch_db(self, docs: list):
+        fake_db = MagicMock()
+        fake_db.collection.return_value.where.return_value.stream.return_value = iter(docs)
+        return patch("shared.firestore_utils.get_db", return_value=fake_db)
+
+    def test_none_when_no_live_event(self):
+        from shared.firestore_utils import get_live_event
+
+        with self._patch_db([]):
+            assert get_live_event() is None
+
+    def test_single_live_event(self):
+        from shared.firestore_utils import get_live_event
+
+        docs = [self._fake_doc("e1", {"name": "PD", "start_date": "2026-06-21"})]
+        with self._patch_db(docs):
+            ev = get_live_event()
+        assert ev["id"] == "e1"
+
+    def test_multiple_live_events_picks_earliest_start_deterministically(self):
+        from shared.firestore_utils import get_live_event
+
+        # Intentionally out of order; earliest start_date (then id) must win.
+        docs = [
+            self._fake_doc("zeta", {"name": "B", "start_date": "2026-06-22"}),
+            self._fake_doc("alpha", {"name": "A", "start_date": "2026-06-21"}),
+        ]
+        with self._patch_db(docs):
+            ev = get_live_event()
+        assert ev["id"] == "alpha"
+
 
 # ---------------------------------------------------------------------------
 # Per-day thread anchor (daily parent message + threaded hourly replies)
@@ -759,8 +872,12 @@ class TestEnsureDayAnchor:
         # Parent posted top-level (no thread_ts).
         mock_post.assert_called_once()
         assert "thread_ts" not in mock_post.call_args.kwargs
-        # Stored keyed on (event, client, channel, local date).
-        mock_set.assert_called_once_with("e1", "c1", "C1", "2026-06-21", "PARENT.1")
+        # Stored keyed on (event, channel, local date) — NOT per client, so all
+        # accounts in the channel share one daily anchor. The creating account
+        # is recorded for debugging only.
+        mock_set.assert_called_once_with(
+            "e1", "C1", "2026-06-21", "PARENT.1", created_by_client_id="c1",
+        )
 
     def test_reuses_existing_parent_without_posting(self):
         from datetime import date
@@ -859,6 +976,68 @@ class TestThreadedHourlyDelivery:
         assert mock_post.call_args.kwargs.get("thread_ts") == "PARENT.EXISTING"
         mock_set.assert_not_called()
 
+    def test_multiple_accounts_one_channel_share_single_daily_anchor(self):
+        """Several accounts/marketplaces posting to the SAME channel (e.g.
+        Skylight's per-marketplace accounts) must thread under ONE daily parent,
+        not one anchor each."""
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(
+                marketplace="US", currency="USD",
+                total_sales=1000, units=10, spend=100, ppc_sales=500,
+            ),
+        ]
+        # Two distinct accounts, same Slack channel ("C123" via _make_bot_config).
+        configs = [
+            _make_bot_config(client_id="skylight-frame-de"),
+            _make_bot_config(client_id="skylight-frame-uk"),
+        ]
+
+        # Stateful anchor store keyed on (event, channel, date) — mirrors prod.
+        store: dict = {}
+
+        def fake_get(event_id, channel_id, event_date):
+            return store.get((event_id, channel_id, event_date))
+
+        def fake_set(event_id, channel_id, event_date, parent_ts, *, created_by_client_id=None):
+            key = (event_id, channel_id, event_date)
+            if key in store:
+                raise RuntimeError("already exists")  # create() semantics
+            store[key] = parent_ts
+
+        posts: list = []
+
+        def fake_post(channel_id, blocks, fallback, thread_ts=None):
+            posts.append({"thread_ts": thread_ts})
+            # Anchor posts (no thread_ts) get a stable parent ts.
+            return {"ok": True, "ts": "PARENT" if thread_ts is None else "REPLY"}
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "niv tes", "start_date": "2026-06-21",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=configs),
+            patch("slack_bot.main.get_client",
+                  side_effect=lambda cid: {"id": cid, "name": cid, "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main.get_thread_anchor_ts", side_effect=fake_get),
+            patch("slack_bot.main.set_thread_anchor_ts", side_effect=fake_set),
+            patch("slack_bot.main.post_message", side_effect=fake_post),
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 2
+        # Exactly ONE top-level anchor for the shared channel/day.
+        top_level = [p for p in posts if p["thread_ts"] is None]
+        threaded = [p for p in posts if p["thread_ts"] == "PARENT"]
+        assert len(top_level) == 1
+        # Both accounts' updates threaded under that single parent.
+        assert len(threaded) == 2
+        assert len(store) == 1
+
     def test_day_rollover_keys_anchor_on_new_local_date(self):
         """When the local date rolls over, the anchor lookup uses the new date,
         so a new parent thread is created for the new event-day."""
@@ -876,7 +1055,7 @@ class TestThreadedHourlyDelivery:
         day2_morning = real_datetime(2026, 6, 22, 17, 45, tzinfo=timezone.utc)
         captured: dict = {}
 
-        def fake_get_anchor(event_id, client_id, channel_id, event_date):
+        def fake_get_anchor(event_id, channel_id, event_date):
             captured["event_date"] = event_date
             return None
 
