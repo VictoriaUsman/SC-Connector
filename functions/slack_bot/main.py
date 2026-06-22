@@ -72,9 +72,35 @@ class MarketplaceMetrics:
         return (self.spend / self.total_sales * 100) if self.total_sales else 0.0
 
 
+@dataclass
+class SkuMetrics:
+    """Cumulative day-to-date units and total sales for a single SKU."""
+
+    sku: str
+    units: int
+    total_sales: float
+
+
 # Half-cent tolerance so currency rounding noise (e.g. total == ppc within a
 # fraction of a cent) does not trip the invariant; only real violations fail.
 _INVARIANT_TOLERANCE = 0.005
+
+# Accounts that get a per-SKU breakdown appended to their hourly drop. Gated by
+# the same identifier the bot config already uses (client_id). Skylight and
+# Ritual run several regional accounts (e.g. skylight-frame-uk), so a family
+# match (exact id or "{family}-..." suffix) covers every marketplace account
+# without listing each one. Overridable via the SKU_BREAKDOWN_CLIENT_IDS env var
+# (comma-separated families) so the allowlist can change without a code deploy.
+_DEFAULT_SKU_BREAKDOWN_CLIENTS = ("skylight-frame", "ritual")
+
+# Cent-level tolerance for the SKU↔account reconciliation: per-SKU sales are
+# summed in a different grouping than the account total, so floating-point
+# accumulation can differ by a fraction of a cent. Units must match exactly.
+_SKU_RECONCILE_TOLERANCE = 0.01
+
+# Slack hard-caps a section block's text at 3000 chars; keep a margin so a long
+# SKU list is split across several blocks instead of being rejected/truncated.
+_SKU_BLOCK_CHAR_BUDGET = 2800
 
 
 class TotalSalesInvariantError(Exception):
@@ -102,6 +128,29 @@ def _check_total_sales_invariant(metrics: list[MarketplaceMetrics]) -> None:
             for m in violations
         )
         raise TotalSalesInvariantError(detail)
+
+
+def _sku_breakdown_families() -> tuple[str, ...]:
+    """Return the account families that get a per-SKU breakdown appended.
+
+    Reads ``SKU_BREAKDOWN_CLIENT_IDS`` (comma-separated) when set, otherwise the
+    built-in default (Skylight + Ritual).
+    """
+    raw = os.environ.get("SKU_BREAKDOWN_CLIENT_IDS", "")
+    families = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return families or _DEFAULT_SKU_BREAKDOWN_CLIENTS
+
+
+def _sku_breakdown_enabled(client_id: str) -> bool:
+    """True if ``client_id`` belongs to an allowlisted account family.
+
+    Matches the exact id or any regional variant (``"{family}-..."``), so e.g.
+    ``skylight-frame-uk`` is covered by the ``skylight-frame`` family.
+    """
+    return any(
+        client_id == family or client_id.startswith(f"{family}-")
+        for family in _sku_breakdown_families()
+    )
 
 
 def handler(request: flask.Request) -> tuple[dict, int]:
@@ -199,6 +248,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     metrics=metrics,
                     base_currency=config.get("base_currency", "USD"),
                 )
+                # Skylight/Ritual only: append a cumulative per-SKU breakdown.
+                # Purely additive — leaves the account-level blocks untouched.
+                if _sku_breakdown_enabled(client_id):
+                    _append_sku_breakdown(blocks, client_id, marketplaces, now, metrics)
                 text_fallback = f"Hourly Update — {client_name} | {event_name}"
 
             # One thin parent message per event-day acts as the thread anchor;
@@ -533,6 +586,127 @@ def _manual_ads_lookup(
 
 
 # ---------------------------------------------------------------------------
+# Per-SKU breakdown (cumulative day-to-date)
+# ---------------------------------------------------------------------------
+
+def _query_sku_orders(
+    bq: bigquery.Client,
+    project: str,
+    dataset: str,
+    client_id: str,
+    marketplace: str,
+    now: datetime,
+) -> list[SkuMetrics]:
+    """Per-SKU cumulative units and total sales for the current marketplace day.
+
+    This is the account-level hourly orders sum decomposed by SKU: it reads the
+    SAME table (``orders_latest``), the SAME purchase-date window
+    (marketplace-local midnight → next midnight), and the SAME filters
+    (non-cancelled, this client + marketplace) as the hourly branch of
+    ``_query_orders`` — only adding ``GROUP BY sku``. Because the row set is
+    identical, ``SUM`` over the SKU groups equals the ungrouped account total by
+    construction, so the breakdown reconciles to the figure already shown in the
+    drop without a second independent pull.
+    """
+    from shared.config import MARKETPLACE_TIMEZONES
+
+    mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
+    mkt_now = now.astimezone(mkt_tz)
+    mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    mkt_next_midnight = mkt_midnight + timedelta(days=1)
+    mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))
+    mkt_next_midnight_utc = mkt_next_midnight.astimezone(ZoneInfo("UTC"))
+
+    query = f"""
+        SELECT
+            COALESCE(sku, '(unknown)') AS sku,
+            COALESCE(SUM(item_price), 0) AS total_sales,
+            COALESCE(SUM(quantity), 0) AS units
+        FROM `{project}.{dataset}.orders_latest`
+        WHERE client_id = @client_id
+          AND purchase_date >= @mkt_midnight
+          AND purchase_date < @mkt_next_midnight
+          AND order_status != 'Cancelled'
+          AND marketplace = @marketplace
+        GROUP BY sku
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
+            bigquery.ScalarQueryParameter(
+                "mkt_midnight", "TIMESTAMP",
+                mkt_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            bigquery.ScalarQueryParameter(
+                "mkt_next_midnight", "TIMESTAMP",
+                mkt_next_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+        ]
+    )
+    rows: list[SkuMetrics] = []
+    for row in bq.query(query, job_config=job_config):
+        rows.append(SkuMetrics(
+            sku=str(row["sku"]),
+            units=int(row["units"]),
+            total_sales=float(row["total_sales"]),
+        ))
+    return rows
+
+
+def _query_sku_breakdown(
+    client_id: str,
+    marketplaces: list[str],
+    now: datetime,
+) -> list[SkuMetrics]:
+    """Account-level per-SKU rollup, aggregated across ``marketplaces``.
+
+    Mirrors how the drop's account total sums each marketplace, so the SKU rows
+    sum to that same total. Sorted by sales descending; every SKU with activity
+    is returned (no top-N cap).
+    """
+    dataset = os.environ.get("BQ_DATASET", "")
+    project = os.environ.get("GCP_PROJECT", "")
+    bq = _get_bq()
+
+    by_sku: dict[str, SkuMetrics] = {}
+    for mkt in marketplaces:
+        for row in _query_sku_orders(bq, project, dataset, client_id, mkt, now):
+            agg = by_sku.get(row.sku)
+            if agg is None:
+                by_sku[row.sku] = SkuMetrics(
+                    sku=row.sku, units=row.units, total_sales=row.total_sales,
+                )
+            else:
+                agg.units += row.units
+                agg.total_sales += row.total_sales
+    return sorted(
+        by_sku.values(), key=lambda s: (s.total_sales, s.units), reverse=True,
+    )
+
+
+def _sku_breakdown_reconciles(
+    sku_rows: list[SkuMetrics],
+    metrics: list[MarketplaceMetrics],
+) -> bool:
+    """True when SKU rows sum exactly to the account total shown in the drop.
+
+    Units must match exactly; sales may differ by at most one cent (float
+    accumulation across a different grouping). A mismatch means the two derived
+    from different data, so the breakdown is suppressed rather than posting
+    numbers that contradict the account line.
+    """
+    sku_units = sum(s.units for s in sku_rows)
+    sku_sales = sum(s.total_sales for s in sku_rows)
+    acct_units = sum(m.units for m in metrics)
+    acct_sales = sum(m.total_sales for m in metrics)
+    return (
+        sku_units == acct_units
+        and abs(sku_sales - acct_sales) <= _SKU_RECONCILE_TOLERANCE
+    )
+
+
+# ---------------------------------------------------------------------------
 # Per-day thread anchor
 # ---------------------------------------------------------------------------
 
@@ -714,6 +888,96 @@ def _maybe_add_total_row(
         "type": "section",
         "text": {"type": "mrkdwn", "text": "\n".join(lines)},
     })
+
+
+def _build_sku_breakdown_blocks(
+    sku_rows: list[SkuMetrics],
+    currency: str,
+) -> list[dict]:
+    """Build the appended per-SKU breakdown blocks (header + chunked rows).
+
+    Lists every SKU (no top-N cap). Rows are split across multiple section
+    blocks so a long catalog never exceeds Slack's per-block character limit.
+    """
+    header = "*Per-SKU Breakdown — Day to Date (cumulative)*"
+    line_strs = [
+        f"`{s.sku}` — {s.units:,} units · {format_currency(s.total_sales, currency)}"
+        for s in sku_rows
+    ]
+
+    blocks: list[dict] = [
+        {"type": "divider"},
+        {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+    ]
+
+    chunk: list[str] = []
+    chunk_len = 0
+    for line in line_strs:
+        # +1 accounts for the joining newline.
+        if chunk and chunk_len + len(line) + 1 > _SKU_BLOCK_CHAR_BUDGET:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(chunk)},
+            })
+            chunk = []
+            chunk_len = 0
+        chunk.append(line)
+        chunk_len += len(line) + 1
+    if chunk:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(chunk)},
+        })
+    return blocks
+
+
+def _append_sku_breakdown(
+    blocks: list[dict],
+    client_id: str,
+    marketplaces: list[str],
+    now: datetime,
+    metrics: list[MarketplaceMetrics],
+) -> None:
+    """Append a cumulative per-SKU breakdown to an hourly drop (in place).
+
+    Strictly additive: the existing account-level blocks are never touched. The
+    breakdown is appended only when (a) the drop reports a single currency — so
+    summed per-SKU sales have one unit and reconcile to the Total row — and
+    (b) the SKU rows reconcile to that account total. Any miss (no SKUs, mixed
+    currency, reconciliation failure, or query error) leaves the drop unchanged.
+    """
+    currencies = {m.currency for m in metrics}
+    if len(currencies) != 1:
+        # Multi-currency drops show no single account total to reconcile to.
+        return
+    currency = currencies.pop()
+
+    try:
+        sku_rows = _query_sku_breakdown(client_id, marketplaces, now)
+    except Exception:
+        logger.exception(
+            "Per-SKU breakdown query failed — posting hourly drop without it",
+            extra={"client_id": client_id, "phase": "sku_breakdown"},
+        )
+        return
+
+    if not sku_rows:
+        return
+
+    if not _sku_breakdown_reconciles(sku_rows, metrics):
+        logger.warning(
+            "Per-SKU breakdown does not reconcile to account total — suppressing",
+            extra={
+                "client_id": client_id,
+                "phase": "sku_breakdown",
+                "error_code": "SKU_RECONCILE_MISMATCH",
+                "sku_units": sum(s.units for s in sku_rows),
+                "account_units": sum(m.units for m in metrics),
+            },
+        )
+        return
+
+    blocks.extend(_build_sku_breakdown_blocks(sku_rows, currency))
 
 
 # ---------------------------------------------------------------------------
