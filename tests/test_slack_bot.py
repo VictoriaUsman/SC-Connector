@@ -1005,3 +1005,299 @@ class TestManualPriorAds:
         assert prior_cumulative is not None
         assert prior_cumulative[0].spend == 250.0
         assert prior_cumulative[0].ppc_sales == 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Per-SKU breakdown (CU-868k3546u) — cumulative day-to-date SKU rows appended
+# to Skylight/Ritual hourly drops, reconciling to the account total.
+# ---------------------------------------------------------------------------
+
+class TestSkuBreakdownGating:
+    """Only the allowlisted account families (Skylight, Ritual) get the
+    breakdown; every other account is untouched."""
+
+    def test_default_families_match_skylight_and_ritual(self):
+        from slack_bot.main import _sku_breakdown_enabled
+
+        assert _sku_breakdown_enabled("skylight-frame") is True
+        assert _sku_breakdown_enabled("ritual") is True
+        # Regional variants belong to the same family.
+        assert _sku_breakdown_enabled("skylight-frame-uk") is True
+        assert _sku_breakdown_enabled("skylight-frame-ca") is True
+
+    def test_other_accounts_excluded(self):
+        from slack_bot.main import _sku_breakdown_enabled
+
+        assert _sku_breakdown_enabled("c1") is False
+        assert _sku_breakdown_enabled("brook-whittle") is False
+        # A name that merely contains "ritual" as a substring must not match;
+        # only exact id or "ritual-" prefix counts.
+        assert _sku_breakdown_enabled("spiritual-goods") is False
+
+    def test_env_override_replaces_default_allowlist(self):
+        import slack_bot.main as mod
+
+        with patch.dict(os.environ, {"SKU_BREAKDOWN_CLIENT_IDS": "foo, bar-baz"}):
+            assert mod._sku_breakdown_enabled("foo") is True
+            assert mod._sku_breakdown_enabled("bar-baz-uk") is True
+            # Defaults are replaced, not merged.
+            assert mod._sku_breakdown_enabled("ritual") is False
+
+
+class TestSkuQueryReconcilesByConstruction:
+    """The SKU query must read the SAME source/window/filters as the hourly
+    account-orders query, only adding GROUP BY sku — so the rows reconcile to
+    the account total by construction (no second independent pull)."""
+
+    @staticmethod
+    def _capture_bq(rows: list[dict]) -> tuple[MagicMock, dict]:
+        captured: dict = {}
+
+        def fake_query(query, job_config=None):
+            captured["query"] = query
+            captured["params"] = {p.name: p.value for p in job_config.query_parameters}
+            return iter(rows)
+
+        bq = MagicMock()
+        bq.query.side_effect = fake_query
+        return bq, captured
+
+    def test_sku_window_matches_hourly_account_window_exactly(self):
+        from slack_bot.main import _query_orders, _query_sku_orders
+
+        now = datetime(2026, 7, 13, 23, 45, tzinfo=timezone.utc)
+
+        acct_bq, acct_cap = self._capture_bq([{"total_sales": 100.0, "units": 5}])
+        _query_orders(acct_bq, "proj", "ds", "ritual", "US", "2026-07-13", now, full_day=False)
+
+        sku_bq, sku_cap = self._capture_bq([{"sku": "A", "total_sales": 100.0, "units": 5}])
+        _query_sku_orders(sku_bq, "proj", "ds", "ritual", "US", now)
+
+        # Identical day-to-date window and filters → identical row set.
+        assert sku_cap["params"]["mkt_midnight"] == acct_cap["params"]["mkt_midnight"]
+        assert sku_cap["params"]["mkt_next_midnight"] == acct_cap["params"]["mkt_next_midnight"]
+        assert sku_cap["params"]["client_id"] == acct_cap["params"]["client_id"]
+        assert sku_cap["params"]["marketplace"] == acct_cap["params"]["marketplace"]
+
+        q = sku_cap["query"]
+        assert "purchase_date >= @mkt_midnight" in q
+        assert "purchase_date < @mkt_next_midnight" in q
+        assert "order_status != 'Cancelled'" in q
+        assert "GROUP BY sku" in q
+        # Never key off the ingestion report_date partition (the freeze bug).
+        assert "report_date" not in q
+
+    def test_aggregates_across_marketplaces_and_sorts_desc(self):
+        import slack_bot.main as mod
+
+        per_mkt = {
+            "US": [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)],
+            "CA": [mod.SkuMetrics("A", 5, 150.0)],
+        }
+
+        def fake_sku_orders(bq, project, dataset, client_id, marketplace, now):
+            return per_mkt[marketplace]
+
+        with (
+            patch.object(mod, "_get_bq", return_value=MagicMock()),
+            patch.object(mod, "_query_sku_orders", side_effect=fake_sku_orders),
+        ):
+            rows = mod._query_sku_breakdown(
+                "ritual", ["US", "CA"], datetime(2026, 7, 13, 20, 0, tzinfo=timezone.utc),
+            )
+
+        by_sku = {r.sku: r for r in rows}
+        # A is summed across marketplaces.
+        assert by_sku["A"].units == 15
+        assert by_sku["A"].total_sales == 450.0
+        # Sorted by sales desc (A before B), and no SKU dropped (no top-N cap).
+        assert [r.sku for r in rows] == ["A", "B"]
+
+
+class TestSkuReconciliation:
+    def test_reconciles_when_sums_match(self):
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics, _sku_breakdown_reconciles
+
+        metrics = [MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=0, ppc_sales=0)]
+        skus = [SkuMetrics("A", 10, 300.0), SkuMetrics("B", 2, 50.0)]
+        assert _sku_breakdown_reconciles(skus, metrics) is True
+
+    def test_sub_cent_sales_drift_tolerated(self):
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics, _sku_breakdown_reconciles
+
+        metrics = [MarketplaceMetrics("US", "USD", total_sales=100.0, units=3, spend=0, ppc_sales=0)]
+        skus = [SkuMetrics("A", 2, 66.667), SkuMetrics("B", 1, 33.337)]  # 100.004
+        assert _sku_breakdown_reconciles(skus, metrics) is True
+
+    def test_unit_mismatch_fails(self):
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics, _sku_breakdown_reconciles
+
+        metrics = [MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=0, ppc_sales=0)]
+        skus = [SkuMetrics("A", 9, 300.0), SkuMetrics("B", 2, 50.0)]  # 11 != 12
+        assert _sku_breakdown_reconciles(skus, metrics) is False
+
+    def test_sales_mismatch_beyond_tolerance_fails(self):
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics, _sku_breakdown_reconciles
+
+        metrics = [MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=0, ppc_sales=0)]
+        skus = [SkuMetrics("A", 10, 290.0), SkuMetrics("B", 2, 50.0)]  # 340 != 350
+        assert _sku_breakdown_reconciles(skus, metrics) is False
+
+
+class TestSkuBreakdownBlocks:
+    def test_lists_every_sku_no_cap_and_chunks(self):
+        from slack_bot.main import SkuMetrics, _build_sku_breakdown_blocks
+
+        skus = [SkuMetrics(f"SKU-{i:04d}", i + 1, float(i) + 0.5) for i in range(120)]
+        blocks = _build_sku_breakdown_blocks(skus, "USD")
+
+        all_text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "Per-SKU Breakdown" in all_text
+        # All 120 SKUs present (no top-N truncation).
+        for i in range(120):
+            assert f"SKU-{i:04d}" in all_text
+        # Long lists split across multiple section blocks under Slack's limit.
+        section_blocks = [b for b in blocks if b.get("type") == "section"]
+        assert len(section_blocks) >= 2
+        for b in section_blocks:
+            assert len(b["text"]["text"]) <= 3000
+
+
+class TestAppendSkuBreakdown:
+    _now = datetime(2026, 7, 13, 20, 45, tzinfo=timezone.utc)
+
+    def _metrics(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        return [MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=10, ppc_sales=100)]
+
+    def test_appends_when_reconciles_and_is_additive(self):
+        import slack_bot.main as mod
+
+        existing = [{"type": "section", "text": {"type": "mrkdwn", "text": "ACCOUNT LINE"}}]
+        blocks = list(existing)
+        skus = [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)]
+
+        with patch.object(mod, "_query_sku_breakdown", return_value=skus):
+            mod._append_sku_breakdown(blocks, "ritual", ["US"], self._now, self._metrics())
+
+        # Strictly additive: the original block is untouched and still first.
+        assert blocks[0] == existing[0]
+        all_text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "ACCOUNT LINE" in all_text
+        assert "Per-SKU Breakdown" in all_text
+        assert "`A`" in all_text and "`B`" in all_text
+
+    def test_suppressed_when_reconciliation_fails(self):
+        import slack_bot.main as mod
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "ACCOUNT LINE"}}]
+        before = list(blocks)
+        # Units sum to 11, account says 12 → mismatch.
+        skus = [mod.SkuMetrics("A", 9, 300.0), mod.SkuMetrics("B", 2, 50.0)]
+
+        with patch.object(mod, "_query_sku_breakdown", return_value=skus):
+            mod._append_sku_breakdown(blocks, "ritual", ["US"], self._now, self._metrics())
+
+        assert blocks == before  # unchanged
+
+    def test_suppressed_on_multi_currency(self):
+        import slack_bot.main as mod
+        from slack_bot.main import MarketplaceMetrics
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "ACCOUNT LINE"}}]
+        before = list(blocks)
+        multi = [
+            MarketplaceMetrics("US", "USD", total_sales=100, units=2, spend=0, ppc_sales=0),
+            MarketplaceMetrics("UK", "GBP", total_sales=80, units=1, spend=0, ppc_sales=0),
+        ]
+
+        with patch.object(mod, "_query_sku_breakdown") as mock_q:
+            mod._append_sku_breakdown(blocks, "ritual", ["US", "UK"], self._now, multi)
+
+        assert blocks == before
+        mock_q.assert_not_called()  # no query when there's no single total to match
+
+    def test_suppressed_on_query_error(self):
+        import slack_bot.main as mod
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "ACCOUNT LINE"}}]
+        before = list(blocks)
+
+        with patch.object(mod, "_query_sku_breakdown", side_effect=RuntimeError("BQ down")):
+            mod._append_sku_breakdown(blocks, "ritual", ["US"], self._now, self._metrics())
+
+        assert blocks == before  # error never breaks the existing drop
+
+
+class TestSkuBreakdownCumulative:
+    """Day-to-date window means each hour's rows are cumulative: hour 2 >=
+    hour 1 for every SKU, and new SKUs appear as they get activity."""
+
+    def test_hour2_ge_hour1_per_sku_and_new_skus_appear(self):
+        from slack_bot.main import SkuMetrics
+
+        hour1 = {"A": SkuMetrics("A", 5, 150.0)}
+        hour2 = {
+            "A": SkuMetrics("A", 8, 240.0),  # grew
+            "B": SkuMetrics("B", 1, 20.0),   # new SKU mid-day
+        }
+        for sku, later in hour2.items():
+            earlier = hour1.get(sku)
+            if earlier is not None:
+                assert later.units >= earlier.units
+                assert later.total_sales >= earlier.total_sales
+        assert "B" in hour2 and "B" not in hour1
+
+
+class TestHandlerSkuBreakdownIntegration:
+    def _metrics(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        return [MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=10, ppc_sales=100)]
+
+    def _run_handler(self, client_id: str, sku_rows):
+        from slack_bot.main import handler
+
+        cfg = _make_bot_config(client_id=client_id)
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[cfg]),
+            patch("slack_bot.main.get_client", return_value={"id": client_id, "name": client_id, "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=self._metrics()),
+            patch("slack_bot.main._query_sku_breakdown", return_value=sku_rows),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            body, status = handler(_make_request())
+        return body, status, mock_post
+
+    def test_gated_client_gets_breakdown(self):
+        import slack_bot.main as mod
+
+        skus = [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)]
+        body, status, mock_post = self._run_handler("ritual", skus)
+
+        assert status == 200 and body["messages_sent"] == 1
+        posted_blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in posted_blocks)
+        assert "Per-SKU Breakdown" in text
+
+    def test_non_gated_client_unaffected(self):
+        import slack_bot.main as mod
+
+        skus = [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)]
+        body, status, mock_post = self._run_handler("c1", skus)
+
+        assert status == 200 and body["messages_sent"] == 1
+        posted_blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in posted_blocks)
+        assert "Per-SKU Breakdown" not in text
