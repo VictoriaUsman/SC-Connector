@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import flask
 from google.cloud import bigquery
 
+from shared.currency import convert, get_rates
 from shared.firestore_utils import (
     get_client,
     get_event,
@@ -154,6 +155,73 @@ def _sku_breakdown_enabled(client_id: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Automatic multi-marketplace account grouping
+# ---------------------------------------------------------------------------
+# Several accounts split one brand across marketplaces using a trailing
+# marketplace-code suffix on the client_id (e.g. ``moxe`` + ``moxe-ca``,
+# ``skylight-frame`` + ``skylight-frame-uk``). We group those back into one
+# "account family" so a single combined Slack message can span every
+# marketplace. Only a *known marketplace* suffix is stripped — ``-vc`` (vendor
+# central) and any other suffix (e.g. ``leonisa-pr``) stay their own account.
+
+_MARKETPLACE_SUFFIXES = frozenset({
+    "us", "ca", "mx", "uk", "de", "fr", "it", "es", "nl", "se", "pl", "tr", "au", "sg",
+})
+
+
+def account_family(client_id: str) -> str:
+    """Derive the account family by stripping a trailing ``-{marketplace}``.
+
+    The suffix is only stripped when it is a known marketplace code, so
+    ``moxe-ca`` -> ``moxe`` but ``candy-kittens-vc`` and ``leonisa-pr`` are left
+    intact (they are distinct accounts, not marketplace splits of a family).
+    """
+    head, sep, tail = client_id.rpartition("-")
+    if sep and head and tail.lower() in _MARKETPLACE_SUFFIXES:
+        return head
+    return client_id
+
+
+def _group_enabled_by_family(configs: list[dict]) -> dict[str, list[dict]]:
+    """Group enabled bot configs by derived account family, preserving order."""
+    families: dict[str, list[dict]] = {}
+    for config in configs:
+        families.setdefault(account_family(config["client_id"]), []).append(config)
+    return families
+
+
+def _family_marketplaces(members: list[dict]) -> set[str]:
+    """Union of marketplaces across every member of a family."""
+    mkts: set[str] = set()
+    for member in members:
+        mkts.update(member.get("marketplaces", []))
+    return mkts
+
+
+def _representative_member(members: list[dict]) -> dict:
+    """Pick the family's representative config (drives base_currency + anchor).
+
+    Prefers a member covering the US marketplace; ties (and US-less families)
+    break on the smallest client_id so the choice is deterministic.
+    """
+    us_members = [m for m in members if "US" in m.get("marketplaces", [])]
+    pool = us_members or members
+    return min(pool, key=lambda m: m["client_id"])
+
+
+def _load_currency_rates() -> dict[str, float]:
+    """Fetch FX rates for combined Totals, never raising into the run loop."""
+    try:
+        return get_rates()
+    except Exception:
+        logger.warning(
+            "FX rate load failed — combined Totals will be skipped this run",
+            extra={"phase": "currency", "error_code": "FX_UNAVAILABLE"},
+        )
+        return {}
+
+
 def handler(request: flask.Request) -> tuple[dict, int]:
     now = datetime.now(timezone.utc)
 
@@ -170,6 +238,19 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
     event_name = live_event.get("name", "Event")
     event_start = live_event.get("start_date", "")
+
+    # Multi-marketplace accounts (e.g. moxe + moxe-ca) are grouped by family so
+    # one combined message can span every marketplace. A family is posted once;
+    # ``handled_families`` guards against re-posting on later members.
+    families = _group_enabled_by_family(enabled)
+    handled_families: set[str] = set()
+
+    # FX rates (USD-based, cached) are only needed to convert combined
+    # multi-currency Totals — load them once, and only when a multi-marketplace
+    # family actually exists this run. An empty mapping just skips those Totals.
+    rates: dict[str, float] = {}
+    if any(len(_family_marketplaces(members)) > 1 for members in families.values()):
+        rates = _load_currency_rates()
 
     sent = 0
     errors: list[str] = []
@@ -201,8 +282,46 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         recap_day = day_index - 1 if day_index >= 2 else 0
         is_midnight_recap = _is_midnight_recap_slot(now, client_tz) and recap_day >= 1
 
+        # Combine a multi-marketplace family into one hourly message. The
+        # midnight recap stays strictly per-config (one recap per account), so
+        # combining only applies to the regular hourly slot. The family is
+        # posted exactly once per run; later members short-circuit here.
+        family_id = account_family(client_id)
+        members = families.get(family_id, [config])
+        combined = (not is_midnight_recap) and len(_family_marketplaces(members)) > 1
+        if combined:
+            if family_id in handled_families:
+                continue
+            handled_families.add(family_id)
+
         try:
-            if is_midnight_recap:
+            marketplaces_reported = marketplaces
+            anchor_client_id = client_id
+            if combined:
+                rep = _representative_member(members)
+                rep_client = get_client(rep["client_id"])
+                rep_name = rep_client.get("name", rep["client_id"]) if rep_client else rep["client_id"]
+                base_currency = rep.get("base_currency", config.get("base_currency", "USD"))
+                metrics = _combined_metrics(members, now)
+                _check_total_sales_invariant(metrics)
+                anchor_date = now.astimezone(client_tz).date()
+                anchor_day = day_index
+                blocks = _build_message_blocks(
+                    client_name=rep_name,
+                    event_name=event_name,
+                    day_index=day_index,
+                    now=now,
+                    client_tz=client_tz,
+                    metrics=metrics,
+                    base_currency=base_currency,
+                    rates=rates,
+                )
+                # Skylight/Ritual only: append a US-only per-SKU breakdown.
+                _maybe_append_combined_sku_breakdown(blocks, members, now, metrics)
+                text_fallback = f"Hourly Update — {rep_name} | {event_name}"
+                marketplaces_reported = sorted(_family_marketplaces(members))
+                anchor_client_id = rep["client_id"]
+            elif is_midnight_recap:
                 recap_date = _report_date_for_event_day(event_start, recap_day, client_tz)
                 # The recap reports the just-completed day, so it threads under
                 # that day's anchor (not the new day that just rolled over).
@@ -269,7 +388,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             parent_ts = _ensure_day_anchor(
                 channel_id=channel_id,
                 event_id=live_event["id"],
-                client_id=client_id,
+                client_id=anchor_client_id,
                 event_name=event_name,
                 event_date=anchor_date,
                 day_index=anchor_day,
@@ -277,13 +396,13 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             result = post_message(channel_id, blocks, text_fallback, thread_ts=parent_ts)
 
             log_bot_activity({
-                "client_id": client_id,
+                "client_id": anchor_client_id,
                 "event_id": live_event["id"],
                 "status": "sent",
                 "channel_id": channel_id,
                 "message_ts": result.get("ts"),
                 "parent_ts": parent_ts,
-                "marketplaces_reported": marketplaces,
+                "marketplaces_reported": marketplaces_reported,
             })
             sent += 1
 
@@ -961,6 +1080,7 @@ def _build_message_blocks(
     client_tz: ZoneInfo,
     metrics: list[MarketplaceMetrics],
     base_currency: str,
+    rates: dict[str, float] | None = None,
 ) -> list[dict]:
     """Build Slack Block Kit blocks for the hourly update."""
     time_str = _format_local_time(now, client_tz)
@@ -1001,7 +1121,7 @@ def _build_message_blocks(
             "text": {"type": "mrkdwn", "text": "\n".join(lines)},
         })
 
-    _maybe_add_total_row(blocks, metrics, base_currency)
+    _maybe_add_total_row(blocks, metrics, base_currency, rates)
 
     return blocks
 
@@ -1010,19 +1130,42 @@ def _maybe_add_total_row(
     blocks: list[dict],
     metrics: list[MarketplaceMetrics],
     base_currency: str,
+    rates: dict[str, float] | None = None,
 ) -> None:
-    """Add a Total row if all marketplaces share the same currency."""
+    """Append a Total row, converting to ``base_currency`` when needed.
+
+    Single-currency families keep the native Total (today's behaviour). A
+    multi-currency family converts each marketplace's spend/ppc/sales into the
+    representative ``base_currency`` using live FX rates, sums, and recomputes
+    ACoS/TACoS — showing only the converted number (no rate annotation). If any
+    required FX pair is unavailable the Total is skipped (logged
+    ``MISSING_FX_RATE``) rather than mixing currencies or assuming 1:1.
+    """
     if not metrics:
         return
 
     currencies = {m.currency for m in metrics}
-    if len(currencies) != 1:
-        return
+    if len(currencies) == 1:
+        currency = currencies.pop()
+        total_spend = sum(m.spend for m in metrics)
+        total_ppc = sum(m.ppc_sales for m in metrics)
+        total_sales = sum(m.total_sales for m in metrics)
+    else:
+        converted = _convert_totals(metrics, base_currency, rates or {})
+        if converted is None:
+            logger.warning(
+                "Skipping combined Total — missing FX rate for one or more marketplaces",
+                extra={
+                    "phase": "currency",
+                    "error_code": "MISSING_FX_RATE",
+                    "base_currency": base_currency,
+                    "currencies": sorted(currencies),
+                },
+            )
+            return
+        currency = base_currency
+        total_spend, total_ppc, total_sales = converted
 
-    currency = currencies.pop()
-    total_spend = sum(m.spend for m in metrics)
-    total_ppc = sum(m.ppc_sales for m in metrics)
-    total_sales = sum(m.total_sales for m in metrics)
     acos = (total_spend / total_ppc * 100) if total_ppc else 0.0
     tacos = (total_spend / total_sales * 100) if total_sales else 0.0
 
@@ -1040,6 +1183,31 @@ def _maybe_add_total_row(
         "type": "section",
         "text": {"type": "mrkdwn", "text": "\n".join(lines)},
     })
+
+
+def _convert_totals(
+    metrics: list[MarketplaceMetrics],
+    base_currency: str,
+    rates: dict[str, float],
+) -> tuple[float, float, float] | None:
+    """Sum spend/ppc/total_sales converted into ``base_currency``.
+
+    Returns ``None`` if any marketplace's currency can't be converted (missing
+    rate), so the caller skips the Total entirely instead of under-counting.
+    """
+    if not rates:
+        return None
+    total_spend = total_ppc = total_sales = 0.0
+    for m in metrics:
+        spend = convert(m.spend, m.currency, base_currency, rates)
+        ppc = convert(m.ppc_sales, m.currency, base_currency, rates)
+        sales = convert(m.total_sales, m.currency, base_currency, rates)
+        if spend is None or ppc is None or sales is None:
+            return None
+        total_spend += spend
+        total_ppc += ppc
+        total_sales += sales
+    return total_spend, total_ppc, total_sales
 
 
 def _build_sku_breakdown_blocks(
@@ -1130,6 +1298,50 @@ def _append_sku_breakdown(
         return
 
     blocks.extend(_build_sku_breakdown_blocks(sku_rows, currency))
+
+
+# ---------------------------------------------------------------------------
+# Combined multi-marketplace message
+# ---------------------------------------------------------------------------
+
+def _combined_metrics(members: list[dict], now: datetime) -> list[MarketplaceMetrics]:
+    """Concatenate each active family member's per-marketplace metrics.
+
+    Each member owns its own client_id and BigQuery data, so metrics are queried
+    per member (with that member's marketplaces) and concatenated into one list.
+    Inactive clients and members without marketplaces contribute nothing.
+    """
+    metrics: list[MarketplaceMetrics] = []
+    for member in members:
+        client = get_client(member["client_id"])
+        if not client or not client.get("is_active", True):
+            continue
+        member_marketplaces = member.get("marketplaces", [])
+        if not member_marketplaces:
+            continue
+        metrics.extend(_query_metrics(member["client_id"], member_marketplaces, now))
+    return metrics
+
+
+def _maybe_append_combined_sku_breakdown(
+    blocks: list[dict],
+    members: list[dict],
+    now: datetime,
+    metrics: list[MarketplaceMetrics],
+) -> None:
+    """Append a US-only per-SKU breakdown for an allowlisted combined family.
+
+    Skylight's per-SKU detail is US-only, so the breakdown reconciles to just the
+    US marketplace line (single currency, USD). Non-allowlisted families, or
+    families without a US member/row, are left untouched.
+    """
+    us_member = next((m for m in members if "US" in m.get("marketplaces", [])), None)
+    if not us_member or not _sku_breakdown_enabled(us_member["client_id"]):
+        return
+    us_row = next((m for m in metrics if m.marketplace == "US"), None)
+    if us_row is None:
+        return
+    _append_sku_breakdown(blocks, us_member["client_id"], ["US"], now, [us_row])
 
 
 # ---------------------------------------------------------------------------

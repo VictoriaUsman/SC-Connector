@@ -330,6 +330,21 @@ JSON-to-TSV conversion for spreadsheet-friendly output:
 - Called by `download_upload` before uploading to Drive; files are saved as `.tsv` for Google Sheets compatibility
 - `rows_to_tsv(rows, output_columns=None)` is used by `fetch_api` for already-parsed synchronous API JSON rows
 
+### `functions/shared/currency.py`
+
+Live USD-based FX rates for converting per-marketplace metrics into one display currency (used by the hourly Slack bot's combined Total):
+- `get_rates()` — returns USD-based rates, refreshing lazily when stale. Resolution order: fresh in-process cache -> fresh Firestore cache (`app_config/currency_rates`, holding `{rates, base, fetched_at}`) -> live fetch from `open.er-api.com` (free, no key). On a failed fetch it reuses the last stale cache (logged WARNING); with no cache at all it returns `{}` so callers skip the Total rather than assuming 1:1. TTL ~24h
+- `convert(amount, from_ccy, to_ccy, rates) -> float | None` — identity when currencies match; otherwise cross-converts via the USD base. Returns `None` when either currency is missing (or non-positive), so a missing rate never silently assumes parity
+- `app_config/currency_rates` is an auto-managed cache (API-only; the existing catch-all Firestore deny rule covers it — no new infra)
+
+### `functions/slack_bot/main.py` — hourly event bot
+
+Posts day-to-date Prime-Day metrics to Slack each hour during a live event.
+- **Automatic multi-marketplace combining**: `account_family(client_id)` strips a trailing `-{marketplace}` suffix (only known marketplace codes; `-vc` and other suffixes like `leonisa-pr` stay separate accounts) to group configs like `moxe` + `moxe-ca` into one family. In the regular hourly slot a family spanning >1 marketplace is posted as a single message (per-marketplace native lines), under the shared per-channel/day thread anchor. The representative member (US member if present, else smallest `client_id`) supplies the display name + `base_currency`. This is automatic for ALL multi-marketplace accounts — no opt-in field
+- **Converted Total**: `_maybe_add_total_row` keeps the native Total for single-currency families; for multi-currency it converts each marketplace's spend/ppc/sales into the representative `base_currency` via `currency.convert`, sums, recomputes ACoS/TACoS, and shows the number only. If any FX pair is unavailable it skips the Total and logs `MISSING_FX_RATE` (never assumes 1:1)
+- **Per-SKU breakdown** stays Skylight/Ritual-only and US-only: a combined allowlisted family appends `_query_sku_breakdown(us_client_id, ["US"], now)`, reconciled to the US marketplace line
+- **Out of scope / unchanged**: the midnight recap branch stays strictly per-config (one recap per account, single-currency), and the year-round `daily_recap` bot is untouched
+
 ## Common Agent Tasks
 
 ### Add a new Cloud Function

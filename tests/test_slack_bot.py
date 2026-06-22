@@ -1486,3 +1486,228 @@ class TestHandlerSkuBreakdownIntegration:
         posted_blocks = mock_post.call_args[0][1]
         text = " ".join(b.get("text", {}).get("text", "") for b in posted_blocks)
         assert "Per-SKU Breakdown" not in text
+
+
+# ---------------------------------------------------------------------------
+# Combined multi-marketplace message (CU-868jzmub7) — multi-marketplace accounts
+# post one hourly message spanning every marketplace, with an FX-converted Total.
+# ---------------------------------------------------------------------------
+
+class TestAccountFamily:
+    def test_strips_known_marketplace_suffix_only(self):
+        from slack_bot.main import account_family
+
+        assert account_family("moxe-ca") == "moxe"
+        assert account_family("skylight-frame-uk") == "skylight-frame"
+        assert account_family("moxe-us") == "moxe"
+
+    def test_no_suffix_returns_id_unchanged(self):
+        from slack_bot.main import account_family
+
+        assert account_family("moxe") == "moxe"
+        assert account_family("skylight-frame") == "skylight-frame"
+
+    def test_vc_and_non_marketplace_suffixes_stay_separate(self):
+        from slack_bot.main import account_family
+
+        # -vc (vendor central) and other non-marketplace suffixes are NOT a
+        # marketplace split, so they remain their own account family.
+        assert account_family("candy-kittens-vc") == "candy-kittens-vc"
+        assert account_family("truestartcoffee-vc") == "truestartcoffee-vc"
+        assert account_family("jacknjill-au-vc") == "jacknjill-au-vc"
+        assert account_family("leonisa-pr") == "leonisa-pr"
+
+
+class TestConvertTotals:
+    def test_converts_each_marketplace_into_base_currency(self):
+        from slack_bot.main import MarketplaceMetrics, _convert_totals
+
+        metrics = [
+            MarketplaceMetrics("US", "USD", total_sales=1000, units=10, spend=100, ppc_sales=500),
+            MarketplaceMetrics("CA", "CAD", total_sales=500, units=5, spend=50, ppc_sales=200),
+        ]
+        rates = {"USD": 1.0, "CAD": 1.25}  # 1 USD = 1.25 CAD
+        spend, ppc, sales = _convert_totals(metrics, "USD", rates)
+
+        # CAD converted to USD: spend 50/1.25=40, ppc 200/1.25=160, sales 500/1.25=400.
+        assert spend == pytest.approx(140.0)
+        assert ppc == pytest.approx(660.0)
+        assert sales == pytest.approx(1400.0)
+
+    def test_missing_rate_returns_none(self):
+        from slack_bot.main import MarketplaceMetrics, _convert_totals
+
+        metrics = [
+            MarketplaceMetrics("US", "USD", total_sales=1000, units=10, spend=100, ppc_sales=500),
+            MarketplaceMetrics("CA", "CAD", total_sales=500, units=5, spend=50, ppc_sales=200),
+        ]
+        assert _convert_totals(metrics, "USD", {"USD": 1.0}) is None
+
+    def test_empty_rates_returns_none(self):
+        from slack_bot.main import MarketplaceMetrics, _convert_totals
+
+        metrics = [MarketplaceMetrics("US", "USD", 1000, 10, 100, 500)]
+        assert _convert_totals(metrics, "USD", {}) is None
+
+
+class TestBuildMessageBlocksConvertedTotal:
+    _now = datetime(2026, 7, 13, 18, 45, tzinfo=timezone.utc)
+
+    def _metrics(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        return [
+            MarketplaceMetrics("US", "USD", total_sales=1000, units=10, spend=100, ppc_sales=500),
+            MarketplaceMetrics("CA", "CAD", total_sales=500, units=5, spend=50, ppc_sales=200),
+        ]
+
+    def test_multi_currency_total_uses_converted_base_currency(self):
+        from slack_bot.main import _build_message_blocks
+
+        blocks = _build_message_blocks(
+            client_name="Moxe", event_name="Prime Day", day_index=1, now=self._now,
+            client_tz=ZoneInfo("America/Los_Angeles"), metrics=self._metrics(),
+            base_currency="USD", rates={"USD": 1.0, "CAD": 1.25},
+        )
+        text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
+        assert "*US*" in text and "*CA*" in text
+        assert "*Total*" in text
+        # Native per-marketplace lines keep their own currency...
+        assert "CA$" in text
+        # ...and the converted Total is shown in the base currency (number only).
+        assert "Total Sales: $1,400.00" in text
+
+    def test_total_skipped_when_rate_missing(self):
+        from slack_bot.main import _build_message_blocks
+
+        blocks = _build_message_blocks(
+            client_name="Moxe", event_name="Prime Day", day_index=1, now=self._now,
+            client_tz=ZoneInfo("America/Los_Angeles"), metrics=self._metrics(),
+            base_currency="USD", rates={"USD": 1.0},  # CAD missing
+        )
+        text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
+        # Per-marketplace lines still post; only the Total is suppressed.
+        assert "*US*" in text and "*CA*" in text
+        assert "*Total*" not in text
+
+
+class TestCombinedHandlerIntegration:
+    @staticmethod
+    def _fake_query(per_member):
+        def _q(client_id, marketplaces, now, **kwargs):
+            return per_member.get(client_id, [])
+        return _q
+
+    def _run(self, configs, per_member, rates, *, sku_rows=None):
+        from slack_bot.main import handler
+
+        patches = [
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=configs),
+            patch("slack_bot.main.get_client",
+                  side_effect=lambda cid: {"id": cid, "name": cid, "is_active": True}),
+            patch("slack_bot.main._query_metrics", side_effect=self._fake_query(per_member)),
+            patch("slack_bot.main._load_currency_rates", return_value=rates),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123"}),
+            patch("slack_bot.main.log_bot_activity"),
+        ]
+        if sku_rows is not None:
+            patches.append(patch("slack_bot.main._query_sku_breakdown", return_value=sku_rows))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in patches]
+            body, status = handler(_make_request())
+        mock_post = mocks[7]
+        return body, status, mock_post
+
+    def test_two_configs_combine_into_one_message_with_converted_total(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        configs = [
+            _make_bot_config(client_id="moxe", marketplaces=["US"]),
+            _make_bot_config(client_id="moxe-ca", marketplaces=["CA"]),
+        ]
+        per_member = {
+            "moxe": [MarketplaceMetrics("US", "USD", 1000, 10, 100, 500)],
+            "moxe-ca": [MarketplaceMetrics("CA", "CAD", 500, 5, 50, 200)],
+        }
+        body, status, mock_post = self._run(configs, per_member, {"USD": 1.0, "CAD": 1.25})
+
+        assert status == 200
+        # One combined unit -> one message (the second member is short-circuited).
+        assert body["messages_sent"] == 1
+        mock_post.assert_called_once()
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
+        assert "*US*" in text and "*CA*" in text
+        assert "*Total*" in text
+
+    def test_single_multi_marketplace_config_gets_converted_total(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        configs = [_make_bot_config(client_id="acme", marketplaces=["US", "CA"])]
+        per_member = {
+            "acme": [
+                MarketplaceMetrics("US", "USD", 1000, 10, 100, 500),
+                MarketplaceMetrics("CA", "CAD", 500, 5, 50, 200),
+            ],
+        }
+        body, status, mock_post = self._run(configs, per_member, {"USD": 1.0, "CAD": 1.25})
+
+        assert status == 200 and body["messages_sent"] == 1
+        mock_post.assert_called_once()
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
+        assert "*Total*" in text
+
+    def test_missing_rate_skips_total_but_still_posts_lines(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        configs = [
+            _make_bot_config(client_id="moxe", marketplaces=["US"]),
+            _make_bot_config(client_id="moxe-ca", marketplaces=["CA"]),
+        ]
+        per_member = {
+            "moxe": [MarketplaceMetrics("US", "USD", 1000, 10, 100, 500)],
+            "moxe-ca": [MarketplaceMetrics("CA", "CAD", 500, 5, 50, 200)],
+        }
+        body, status, mock_post = self._run(configs, per_member, {"USD": 1.0})  # CAD missing
+
+        assert status == 200 and body["messages_sent"] == 1
+        mock_post.assert_called_once()
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
+        assert "*US*" in text and "*CA*" in text
+        assert "*Total*" not in text
+
+    def test_skylight_combined_appends_us_only_sku_breakdown(self):
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics
+
+        configs = [
+            _make_bot_config(client_id="skylight-frame", marketplaces=["US"]),
+            _make_bot_config(client_id="skylight-frame-uk", marketplaces=["UK"]),
+        ]
+        per_member = {
+            "skylight-frame": [MarketplaceMetrics("US", "USD", 350.0, 12, 10, 100)],
+            "skylight-frame-uk": [MarketplaceMetrics("UK", "GBP", 200.0, 5, 20, 80)],
+        }
+        # SKU rows reconcile to the US row (units 12, sales 350).
+        sku_rows = [SkuMetrics("A", 10, 300.0), SkuMetrics("B", 2, 50.0)]
+        body, status, mock_post = self._run(
+            configs, per_member, {"USD": 1.0, "GBP": 0.8}, sku_rows=sku_rows,
+        )
+
+        assert status == 200 and body["messages_sent"] == 1
+        mock_post.assert_called_once()
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
+        assert "*US*" in text and "*UK*" in text
+        assert "*Total*" in text
+        # US-only per-SKU detail appended for the allowlisted family.
+        assert "Per-SKU Breakdown" in text
+        assert "`A`" in text and "`B`" in text
