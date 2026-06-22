@@ -699,16 +699,26 @@ def _query_sku_orders(
 
     This is the account-level hourly orders sum decomposed by SKU: it reads the
     SAME table (``orders_latest``), the SAME purchase-date window
-    (marketplace-local midnight → next midnight), and the SAME filters
-    (non-cancelled, this client + marketplace) as the hourly branch of
-    ``_query_orders`` — only adding ``GROUP BY sku``. Because the row set is
-    identical, ``SUM`` over the SKU groups equals the ungrouped account total by
-    construction, so the breakdown reconciles to the figure already shown in the
-    drop without a second independent pull.
+    (marketplace-local midnight → next midnight), and the SAME filters as the
+    hourly branch of ``_query_orders`` — non-cancelled, this client +
+    marketplace, AND the same ``sales_channel`` storefront scoping — only adding
+    ``GROUP BY sku``. The ``sales_channel`` clause must mirror ``_query_orders``
+    exactly: the All Orders report is account-wide, so without it the SKU rollup
+    would include other-storefront lines the account total excludes, breaking
+    reconciliation (e.g. a non-amazon.com $0 line adding a phantom unit). Because
+    the row set is identical, ``SUM`` over the SKU groups equals the ungrouped
+    account total by construction, so the breakdown reconciles to the figure
+    already shown in the drop without a second independent pull.
     """
-    from shared.config import MARKETPLACE_TIMEZONES
+    from shared.config import MARKETPLACE_TIMEZONES, get_marketplace_sales_channel
 
     mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
+    sales_channel = get_marketplace_sales_channel(marketplace)
+    sales_channel_clause = (
+        "\n          AND LOWER(sales_channel) = @sales_channel"
+        if sales_channel
+        else ""
+    )
     mkt_now = now.astimezone(mkt_tz)
     mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
     mkt_next_midnight = mkt_midnight + timedelta(days=1)
@@ -725,7 +735,7 @@ def _query_sku_orders(
           AND purchase_date >= @mkt_midnight
           AND purchase_date < @mkt_next_midnight
           AND order_status != 'Cancelled'
-          AND marketplace = @marketplace
+          AND marketplace = @marketplace{sales_channel_clause}
         GROUP BY sku
     """
     job_config = bigquery.QueryJobConfig(
@@ -740,6 +750,11 @@ def _query_sku_orders(
                 mkt_next_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             ),
             bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+            *(
+                [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
+                if sales_channel
+                else []
+            ),
         ]
     )
     rows: list[SkuMetrics] = []

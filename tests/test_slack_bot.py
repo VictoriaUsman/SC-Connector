@@ -1257,11 +1257,17 @@ class TestSkuQueryReconcilesByConstruction:
         assert sku_cap["params"]["mkt_next_midnight"] == acct_cap["params"]["mkt_next_midnight"]
         assert sku_cap["params"]["client_id"] == acct_cap["params"]["client_id"]
         assert sku_cap["params"]["marketplace"] == acct_cap["params"]["marketplace"]
+        # The sales_channel storefront scoping MUST match the account query, or
+        # the SKU rollup over-counts other-storefront lines and fails to
+        # reconcile (the Skylight regression: a non-amazon.com $0 line added a
+        # phantom unit, suppressing the breakdown).
+        assert sku_cap["params"].get("sales_channel") == acct_cap["params"].get("sales_channel")
 
         q = sku_cap["query"]
         assert "purchase_date >= @mkt_midnight" in q
         assert "purchase_date < @mkt_next_midnight" in q
         assert "order_status != 'Cancelled'" in q
+        assert "LOWER(sales_channel) = @sales_channel" in q
         assert "GROUP BY sku" in q
         # Never key off the ingestion report_date partition (the freeze bug).
         assert "report_date" not in q
