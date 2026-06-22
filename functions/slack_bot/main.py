@@ -34,6 +34,7 @@ from shared.logging_setup import init_logging
 from shared.schedule_compute import marketplace_today
 from shared.slack_client import (
     MARKETPLACE_CURRENCIES,
+    SlackApiError,
     format_currency,
     format_delta,
     format_delta_bps,
@@ -173,6 +174,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
     sent = 0
     errors: list[str] = []
     invariant_skips: list[str] = []
+    # Channel-config failures (the Kalilos app isn't in the channel, or it was
+    # deleted/archived). These are operator-fixable misconfigurations, not bot
+    # defects, so they're tracked apart from real errors and don't page.
+    channel_skips: list[str] = []
 
     for config in enabled:
         client_id = config["client_id"]
@@ -254,11 +259,13 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     _append_sku_breakdown(blocks, client_id, marketplaces, now, metrics)
                 text_fallback = f"Hourly Update — {client_name} | {event_name}"
 
-            # One thin parent message per event-day acts as the thread anchor;
-            # every update for that day (hourly + the next-morning recap) lands
-            # as a threaded reply under it. The anchor is created lazily on the
-            # first update of the day and reused thereafter, so a mid-day
-            # restart never spawns a duplicate parent.
+            # One thin parent message per channel per event-day acts as the
+            # thread anchor; every update for that day (hourly + the next-morning
+            # recap), from every account/marketplace posting to this channel,
+            # lands as a threaded reply under it. The anchor is created lazily on
+            # the first update of the day and reused thereafter, so neither a
+            # mid-day restart nor sibling accounts in the same channel ever spawn
+            # a duplicate parent.
             parent_ts = _ensure_day_anchor(
                 channel_id=channel_id,
                 event_id=live_event["id"],
@@ -273,6 +280,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "client_id": client_id,
                 "event_id": live_event["id"],
                 "status": "sent",
+                "channel_id": channel_id,
                 "message_ts": result.get("ts"),
                 "parent_ts": parent_ts,
                 "marketplaces_reported": marketplaces,
@@ -298,8 +306,54 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "client_id": client_id,
                 "event_id": live_event["id"],
                 "status": "failed",
+                "channel_id": channel_id,
                 "error": f"Total Sales invariant violated: {str(exc)[:500]}",
             })
+
+        except SlackApiError as exc:
+            if exc.is_channel_config_error:
+                # The Kalilos app isn't a member of this channel (or it was
+                # deleted/archived) — usually because someone switched the
+                # config's channel (e.g. toggled use_test_channel) to one the
+                # app was never invited to. Nothing the bot can self-heal; the
+                # operator must re-invite the app. Surface it as an actionable
+                # WARNING (not a paging ERROR) with the exact channel to fix.
+                logger.warning(
+                    "Slack channel not postable — invite the Kalilos app to the channel",
+                    extra={
+                        "client_id": client_id,
+                        "channel_id": channel_id,
+                        "phase": "slack_post",
+                        "error_code": exc.code.upper(),
+                        "remedy": f"Invite the Kalilos app to channel {channel_id} "
+                                  f"(/invite @Kalilos), or fix the channel in the bot config.",
+                    },
+                )
+                channel_skips.append(f"{client_id}: {exc.code} ({channel_id})")
+                log_bot_activity({
+                    "client_id": client_id,
+                    "event_id": live_event["id"],
+                    "status": "failed",
+                    "channel_id": channel_id,
+                    "error_code": exc.code,
+                    "error": f"Slack channel not joined: {exc.code} ({channel_id}). "
+                             f"Invite the Kalilos app to the channel.",
+                })
+            else:
+                logger.exception(
+                    "Slack API error sending hourly bot message",
+                    extra={"client_id": client_id, "channel_id": channel_id,
+                           "phase": "slack_post", "error_code": exc.code.upper()},
+                )
+                errors.append(f"{client_id}: {exc.code}")
+                log_bot_activity({
+                    "client_id": client_id,
+                    "event_id": live_event["id"],
+                    "status": "failed",
+                    "channel_id": channel_id,
+                    "error_code": exc.code,
+                    "error": str(exc)[:500],
+                })
 
         except Exception as exc:
             logger.exception("Failed to send hourly bot message", extra={"client_id": client_id})
@@ -308,6 +362,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "client_id": client_id,
                 "event_id": live_event["id"],
                 "status": "failed",
+                "channel_id": channel_id,
                 "error": str(exc)[:500],
             })
 
@@ -318,8 +373,21 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "sent": sent,
                 "errors": len(errors),
                 "invariant_skips": len(invariant_skips),
+                "channel_skips": len(channel_skips),
                 "error_code": "PARTIAL_FAILURE",
                 "failures": errors[:20],
+                "channel_config_failures": channel_skips[:20],
+            },
+        )
+    elif channel_skips:
+        logger.warning(
+            "Hourly bot run completed with channel-config skips (app not in channel)",
+            extra={
+                "sent": sent,
+                "channel_skips": len(channel_skips),
+                "invariant_skips": len(invariant_skips),
+                "error_code": "CHANNEL_NOT_JOINED",
+                "channel_config_failures": channel_skips[:20],
             },
         )
     elif invariant_skips:
@@ -338,6 +406,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         "messages_sent": sent,
         "errors": len(errors),
         "invariant_skips": len(invariant_skips),
+        "channel_skips": len(channel_skips),
     }, 200
 
 
@@ -764,28 +833,67 @@ def _ensure_day_anchor(
     event_date: date_type,
     day_index: int,
 ) -> str | None:
-    """Return the parent ts for ``event_date``, creating the anchor if absent.
+    """Return the parent ts for ``(channel, event_date)``, creating it if absent.
 
-    Looks up the stored parent ts first (so a mid-day restart reuses it). Only
-    when none exists does it post a fresh top-level anchor and persist its ts.
+    The anchor is shared per channel per day (not per client), so every account/
+    marketplace posting to the same channel threads under one daily parent.
+    Looks up the stored parent ts first (so a mid-day restart, or a later
+    account in the same channel, reuses it). Only when none exists does it post a
+    fresh top-level anchor and persist its ts. ``client_id`` is used only for
+    logging / recording which account first created the day's anchor.
     """
     date_iso = event_date.isoformat()
-    existing = get_thread_anchor_ts(event_id, client_id, channel_id, date_iso)
+    # Stable correlation fields so a single grep proves "one parent per
+    # event-day, reused on every later run/restart" from the logs alone.
+    log_ctx = {
+        "phase": "thread_anchor",
+        "event_id": event_id,
+        "client_id": client_id,
+        "channel_id": channel_id,
+        "event_date": date_iso,
+        "day_index": day_index,
+    }
+    existing = get_thread_anchor_ts(event_id, channel_id, date_iso)
     if existing:
+        logger.info(
+            "Reusing existing day anchor (no new parent posted)",
+            extra={**log_ctx, "anchor_action": "reuse", "parent_ts": existing},
+        )
         return existing
 
     blocks, fallback = _build_day_anchor_blocks(event_name, day_index, event_date)
     result = post_message(channel_id, blocks, fallback)
     parent_ts = result.get("ts")
     if not parent_ts:
+        logger.warning(
+            "Day anchor post returned no ts — update will post top-level",
+            extra={**log_ctx, "anchor_action": "create_no_ts"},
+        )
         return None
 
     try:
-        set_thread_anchor_ts(event_id, client_id, channel_id, date_iso, parent_ts)
+        set_thread_anchor_ts(
+            event_id, channel_id, date_iso, parent_ts,
+            created_by_client_id=client_id,
+        )
+        logger.info(
+            "Created day anchor (new parent message)",
+            extra={**log_ctx, "anchor_action": "create", "parent_ts": parent_ts},
+        )
     except Exception:
-        # Lost a create race with a concurrent run; thread under the winner's
+        # Lost a create race with a concurrent run (another account in the same
+        # channel, or a concurrent function instance); thread under the winner's
         # anchor instead of our now-orphaned one.
-        winner = get_thread_anchor_ts(event_id, client_id, channel_id, date_iso)
+        winner = get_thread_anchor_ts(event_id, channel_id, date_iso)
+        logger.warning(
+            "Lost day-anchor create race — threading under the winner's parent",
+            extra={
+                **log_ctx,
+                "anchor_action": "create_race_lost",
+                "orphaned_ts": parent_ts,
+                "winner_ts": winner,
+            },
+        )
         if winner:
             return winner
     return parent_ts

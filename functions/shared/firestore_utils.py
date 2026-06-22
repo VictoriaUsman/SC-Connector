@@ -299,17 +299,38 @@ def delete_event(event_id: str) -> None:
 
 
 def get_live_event() -> dict[str, Any] | None:
-    """Return the first event with status == 'live', or None."""
-    docs = list(
-        get_db()
-        .collection("events")
-        .where("status", "==", "live")
-        .limit(1)
-        .stream()
-    )
-    if not docs:
+    """Return the single live event, or None.
+
+    Only one event is expected to be ``status == 'live'`` at a time. If several
+    are live simultaneously (e.g. overlapping test events, or a new event
+    activated before the prior one auto-completed), the bots that consume this —
+    the hourly Slack bot and the event report scheduler — would otherwise pick a
+    nondeterministic one and can stamp anchors/reports for the wrong event. We
+    therefore pick deterministically (earliest start_date, then event id) and
+    log a WARNING listing every live event so the overlap is visible in logs.
+    """
+    events = [
+        {"id": doc.id, **doc.to_dict()}
+        for doc in get_db().collection("events").where("status", "==", "live").stream()
+    ]
+    if not events:
         return None
-    return {"id": docs[0].id, **docs[0].to_dict()}
+
+    events.sort(key=lambda e: (str(e.get("start_date") or ""), e["id"]))
+    if len(events) > 1:
+        logger.warning(
+            "Multiple live events found — picking deterministically; only one "
+            "event should be live at a time",
+            extra={
+                "phase": "live_event_resolution",
+                "error_code": "MULTIPLE_LIVE_EVENTS",
+                "live_event_count": len(events),
+                "selected_event_id": events[0]["id"],
+                "live_event_ids": [e["id"] for e in events],
+                "live_event_names": [e.get("name") for e in events],
+            },
+        )
+    return events[0]
 
 
 # ---------------------------------------------------------------------------
@@ -354,34 +375,37 @@ def log_bot_activity(data: dict[str, Any]) -> str:
 # Slack Thread Anchors
 # ---------------------------------------------------------------------------
 # Per-event-day parent ("anchor") message that the hourly event bot threads its
-# updates under. Keyed deterministically on (event, client, channel, local date)
-# so a mid-day restart reuses the stored parent ts instead of creating a
-# duplicate top-level message.
+# updates under. Keyed deterministically on (event, channel, local date) — one
+# anchor per channel per day. Crucially the key does NOT include the client, so
+# when several accounts/marketplaces post to the SAME channel (e.g. Skylight's
+# per-marketplace accounts, or a shared test channel) they all thread under one
+# daily parent instead of each spawning its own look-alike anchor. Each reply
+# already names its own account/marketplace. Keying on the channel also means a
+# mid-day restart — or a config switch between test and production channels —
+# reuses the right parent ts instead of creating a duplicate.
 
 _THREAD_ANCHORS_COLLECTION = "slack_thread_anchors"
 
 
 def _thread_anchor_doc_id(
-    event_id: str, client_id: str, channel_id: str, event_date: str
+    event_id: str, channel_id: str, event_date: str
 ) -> str:
-    """Deterministic document id for a per-day thread anchor.
+    """Deterministic document id for a per-channel, per-day thread anchor.
 
-    Includes the channel so switching between a test and production channel
-    never reuses a parent ts that belongs to the other channel. Slashes are
-    replaced because Firestore document ids cannot contain them.
+    Slashes are replaced because Firestore document ids cannot contain them.
     """
-    raw = f"{event_id}__{client_id}__{channel_id}__{event_date}"
+    raw = f"{event_id}__{channel_id}__{event_date}"
     return raw.replace("/", "_")
 
 
 def get_thread_anchor_ts(
-    event_id: str, client_id: str, channel_id: str, event_date: str
+    event_id: str, channel_id: str, event_date: str
 ) -> str | None:
-    """Return the stored parent message ts for an event-day, or None."""
+    """Return the stored parent message ts for an (event, channel, day), or None."""
     doc = (
         get_db()
         .collection(_THREAD_ANCHORS_COLLECTION)
-        .document(_thread_anchor_doc_id(event_id, client_id, channel_id, event_date))
+        .document(_thread_anchor_doc_id(event_id, channel_id, event_date))
         .get()
     )
     if not doc.exists:
@@ -391,27 +415,31 @@ def get_thread_anchor_ts(
 
 def set_thread_anchor_ts(
     event_id: str,
-    client_id: str,
     channel_id: str,
     event_date: str,
     parent_ts: str,
+    *,
+    created_by_client_id: str | None = None,
 ) -> None:
-    """Persist the parent message ts for an event-day (create-if-absent).
+    """Persist the parent message ts for an (event, channel, day) (create-if-absent).
 
     Uses ``create()`` so a concurrent run that already wrote the anchor wins and
     a second writer fails loudly rather than silently overwriting the ts.
+    ``created_by_client_id`` records which account first posted the day's anchor
+    (purely for debugging — the anchor itself is shared across all accounts in
+    the channel).
     """
     doc_ref = (
         get_db()
         .collection(_THREAD_ANCHORS_COLLECTION)
-        .document(_thread_anchor_doc_id(event_id, client_id, channel_id, event_date))
+        .document(_thread_anchor_doc_id(event_id, channel_id, event_date))
     )
     doc_ref.create({
         "event_id": event_id,
-        "client_id": client_id,
         "channel_id": channel_id,
         "event_date": event_date,
         "parent_ts": parent_ts,
+        "created_by_client_id": created_by_client_id,
         "created_at": datetime.now(timezone.utc),
     })
 
