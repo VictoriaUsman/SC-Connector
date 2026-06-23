@@ -155,6 +155,25 @@ def _sku_breakdown_enabled(client_id: str) -> bool:
     )
 
 
+# Marketplaces that get their own per-SKU breakdown in a combined drop, in
+# display order (US first, then CA, UK below it). Each marketplace's section
+# reconciles to its own single-currency account line. Overridable via the
+# SKU_BREAKDOWN_MARKETPLACES env var (comma-separated) so the set can change
+# mid-event without a code deploy.
+_DEFAULT_SKU_BREAKDOWN_MARKETPLACES = ("US", "CA", "UK")
+
+
+def _sku_breakdown_marketplaces() -> tuple[str, ...]:
+    """Return the ordered marketplaces that get a per-SKU breakdown.
+
+    Reads ``SKU_BREAKDOWN_MARKETPLACES`` (comma-separated) when set, otherwise
+    the built-in default (US, CA, UK).
+    """
+    raw = os.environ.get("SKU_BREAKDOWN_MARKETPLACES", "")
+    mkts = tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    return mkts or _DEFAULT_SKU_BREAKDOWN_MARKETPLACES
+
+
 # ---------------------------------------------------------------------------
 # Automatic multi-marketplace account grouping
 # ---------------------------------------------------------------------------
@@ -316,7 +335,8 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     base_currency=base_currency,
                     rates=rates,
                 )
-                # Skylight/Ritual only: append a US-only per-SKU breakdown.
+                # Skylight/Ritual only: append per-marketplace SKU breakdowns
+                # (US, then CA, then UK), each reconciled to its own line.
                 _maybe_append_combined_sku_breakdown(blocks, members, now, metrics)
                 text_fallback = f"Hourly Update — {rep_name} | {event_name}"
                 marketplaces_reported = sorted(_family_marketplaces(members))
@@ -1211,13 +1231,17 @@ def _convert_totals(
 def _build_sku_breakdown_blocks(
     sku_rows: list[SkuMetrics],
     currency: str,
+    label: str | None = None,
 ) -> list[dict]:
     """Build the appended per-SKU breakdown blocks (header + chunked rows).
 
     Lists every SKU (no top-N cap). Rows are split across multiple section
     blocks so a long catalog never exceeds Slack's per-block character limit.
+    When ``label`` is set (e.g. a marketplace code) it is shown in the header so
+    several stacked breakdowns in one drop are distinguishable.
     """
-    header = "*Per-SKU Breakdown — Day to Date (cumulative)*"
+    suffix = f" ({label})" if label else ""
+    header = f"*Per-SKU Breakdown{suffix} — Day to Date (cumulative)*"
     line_strs = [
         f"`{s.sku}` — {s.units:,} units · {format_currency(s.total_sales, currency)}"
         for s in sku_rows
@@ -1249,6 +1273,7 @@ def _append_sku_breakdown(
     marketplaces: list[str],
     now: datetime,
     metrics: list[MarketplaceMetrics],
+    label: str | None = None,
 ) -> None:
     """Append a cumulative per-SKU breakdown to an hourly drop (in place).
 
@@ -1257,6 +1282,9 @@ def _append_sku_breakdown(
     summed per-SKU sales have one unit and reconcile to the Total row — and
     (b) the SKU rows reconcile to that account total. Any miss (no SKUs, mixed
     currency, reconciliation failure, or query error) leaves the drop unchanged.
+
+    ``label`` is forwarded to the header so stacked per-marketplace breakdowns
+    in one combined drop are distinguishable.
     """
     currencies = {m.currency for m in metrics}
     if len(currencies) != 1:
@@ -1289,7 +1317,7 @@ def _append_sku_breakdown(
         )
         return
 
-    blocks.extend(_build_sku_breakdown_blocks(sku_rows, currency))
+    blocks.extend(_build_sku_breakdown_blocks(sku_rows, currency, label=label))
 
 
 # ---------------------------------------------------------------------------
@@ -1321,19 +1349,26 @@ def _maybe_append_combined_sku_breakdown(
     now: datetime,
     metrics: list[MarketplaceMetrics],
 ) -> None:
-    """Append a US-only per-SKU breakdown for an allowlisted combined family.
+    """Append per-marketplace SKU breakdowns for an allowlisted combined family.
 
-    Skylight's per-SKU detail is US-only, so the breakdown reconciles to just the
-    US marketplace line (single currency, USD). Non-allowlisted families, or
-    families without a US member/row, are left untouched.
+    For each marketplace in ``_sku_breakdown_marketplaces()`` (US, CA, UK by
+    default, in display order) that the family covers, append a breakdown
+    reconciled to that marketplace's own single-currency account line (USD for
+    US, CAD for CA, GBP for UK). Each marketplace is owned by its own regional
+    member account (e.g. ``skylight-frame-ca`` for CA), so the SKU rows for that
+    member reconcile to the matching row in the combined drop. Non-allowlisted
+    members, marketplaces the family doesn't cover, and any reconciliation miss
+    are silently skipped — every section is strictly additive and independent.
     """
-    us_member = next((m for m in members if "US" in m.get("marketplaces", [])), None)
-    if not us_member or not _sku_breakdown_enabled(us_member["client_id"]):
-        return
-    us_row = next((m for m in metrics if m.marketplace == "US"), None)
-    if us_row is None:
-        return
-    _append_sku_breakdown(blocks, us_member["client_id"], ["US"], now, [us_row])
+    metrics_by_mkt = {m.marketplace: m for m in metrics}
+    for mkt in _sku_breakdown_marketplaces():
+        member = next((m for m in members if mkt in m.get("marketplaces", [])), None)
+        if not member or not _sku_breakdown_enabled(member["client_id"]):
+            continue
+        row = metrics_by_mkt.get(mkt)
+        if row is None:
+            continue
+        _append_sku_breakdown(blocks, member["client_id"], [mkt], now, [row], label=mkt)
 
 
 # ---------------------------------------------------------------------------

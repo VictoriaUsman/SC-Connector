@@ -1419,6 +1419,192 @@ class TestAppendSkuBreakdown:
         assert blocks == before  # error never breaks the existing drop
 
 
+class TestSkuBreakdownMarketplaces:
+    """The combined drop breaks down US, then CA, then UK by default, and the
+    set is env-overridable so it can change mid-event without a deploy."""
+
+    def test_default_is_us_ca_uk_in_order(self):
+        from slack_bot.main import _sku_breakdown_marketplaces
+
+        assert _sku_breakdown_marketplaces() == ("US", "CA", "UK")
+
+    def test_env_override_replaces_default(self):
+        import slack_bot.main as mod
+
+        with patch.dict(os.environ, {"SKU_BREAKDOWN_MARKETPLACES": "us, de , fr"}):
+            # Normalized to upper-case, whitespace-trimmed, empties dropped.
+            assert mod._sku_breakdown_marketplaces() == ("US", "DE", "FR")
+
+    def test_label_appears_in_breakdown_header(self):
+        from slack_bot.main import SkuMetrics, _build_sku_breakdown_blocks
+
+        skus = [SkuMetrics("A", 1, 10.0)]
+        for mkt in ("US", "CA", "UK"):
+            blocks = _build_sku_breakdown_blocks(skus, "USD", label=mkt)
+            text = " ".join(
+                b.get("text", {}).get("text", "")
+                for b in blocks
+                if b.get("type") == "section"
+            )
+            assert f"Per-SKU Breakdown ({mkt})" in text
+
+    def test_no_label_keeps_unlabeled_header(self):
+        from slack_bot.main import SkuMetrics, _build_sku_breakdown_blocks
+
+        blocks = _build_sku_breakdown_blocks([SkuMetrics("A", 1, 10.0)], "USD")
+        text = " ".join(
+            b.get("text", {}).get("text", "")
+            for b in blocks
+            if b.get("type") == "section"
+        )
+        assert "Per-SKU Breakdown — Day to Date" in text
+        assert "Per-SKU Breakdown (" not in text
+
+
+class TestCombinedSkuBreakdown:
+    """The combined Skylight drop appends a per-marketplace SKU breakdown for
+    US, CA, and UK — each reconciled to its own single-currency account line."""
+
+    _now = datetime(2026, 7, 13, 20, 45, tzinfo=timezone.utc)
+
+    def _members(self):
+        return [
+            {"client_id": "skylight-frame", "marketplaces": ["US"]},
+            {"client_id": "skylight-frame-ca", "marketplaces": ["CA"]},
+            {"client_id": "skylight-frame-uk", "marketplaces": ["UK"]},
+        ]
+
+    def _metrics(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        return [
+            MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=10, ppc_sales=100),
+            MarketplaceMetrics("CA", "CAD", total_sales=200.0, units=4, spend=5, ppc_sales=50),
+            MarketplaceMetrics("UK", "GBP", total_sales=80.0, units=2, spend=2, ppc_sales=20),
+        ]
+
+    @staticmethod
+    def _sku_rows_by_client():
+        from slack_bot.main import SkuMetrics
+
+        return {
+            "skylight-frame": [SkuMetrics("US-A", 10, 300.0), SkuMetrics("US-B", 2, 50.0)],
+            "skylight-frame-ca": [SkuMetrics("CA-A", 4, 200.0)],
+            "skylight-frame-uk": [SkuMetrics("UK-A", 2, 80.0)],
+        }
+
+    def _section_texts(self, blocks):
+        return [
+            b["text"]["text"] for b in blocks if b.get("type") == "section"
+        ]
+
+    def test_appends_us_ca_uk_in_order_each_reconciled(self):
+        import slack_bot.main as mod
+
+        rows = self._sku_rows_by_client()
+
+        def fake_query(client_id, marketplaces, now):
+            return rows[client_id]
+
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", side_effect=fake_query):
+            mod._maybe_append_combined_sku_breakdown(
+                blocks, self._members(), self._now, self._metrics(),
+            )
+
+        texts = self._section_texts(blocks)
+        joined = " ".join(texts)
+        # All three labeled breakdowns present.
+        assert "Per-SKU Breakdown (US)" in joined
+        assert "Per-SKU Breakdown (CA)" in joined
+        assert "Per-SKU Breakdown (UK)" in joined
+        # Stacked in display order: US header before CA header before UK header.
+        us_i = next(i for i, t in enumerate(texts) if "Per-SKU Breakdown (US)" in t)
+        ca_i = next(i for i, t in enumerate(texts) if "Per-SKU Breakdown (CA)" in t)
+        uk_i = next(i for i, t in enumerate(texts) if "Per-SKU Breakdown (UK)" in t)
+        assert us_i < ca_i < uk_i
+        # Each marketplace's SKUs landed under it.
+        assert "`US-A`" in joined and "`CA-A`" in joined and "`UK-A`" in joined
+
+    def test_per_marketplace_currency_formatting(self):
+        import slack_bot.main as mod
+
+        rows = self._sku_rows_by_client()
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n: rows[c]):
+            mod._maybe_append_combined_sku_breakdown(
+                blocks, self._members(), self._now, self._metrics(),
+            )
+
+        joined = " ".join(self._section_texts(blocks))
+        # CA line uses CAD, UK line uses GBP — reconciles to those currency rows.
+        assert "CA$200.00" in joined
+        assert "£80.00" in joined
+
+    def test_non_allowlisted_family_untouched(self):
+        import slack_bot.main as mod
+        from slack_bot.main import MarketplaceMetrics
+
+        members = [
+            {"client_id": "moxe", "marketplaces": ["US"]},
+            {"client_id": "moxe-ca", "marketplaces": ["CA"]},
+        ]
+        metrics = [
+            MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=10, ppc_sales=100),
+            MarketplaceMetrics("CA", "CAD", total_sales=200.0, units=4, spend=5, ppc_sales=50),
+        ]
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown") as mock_q:
+            mod._maybe_append_combined_sku_breakdown(blocks, members, self._now, metrics)
+
+        assert blocks == []
+        mock_q.assert_not_called()
+
+    def test_missing_marketplace_is_skipped_others_still_append(self):
+        import slack_bot.main as mod
+
+        # No CA member at all → CA skipped; US and UK still append.
+        members = [
+            {"client_id": "skylight-frame", "marketplaces": ["US"]},
+            {"client_id": "skylight-frame-uk", "marketplaces": ["UK"]},
+        ]
+        metrics = [m for m in self._metrics() if m.marketplace != "CA"]
+        rows = self._sku_rows_by_client()
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n: rows[c]):
+            mod._maybe_append_combined_sku_breakdown(blocks, members, self._now, metrics)
+
+        joined = " ".join(self._section_texts(blocks))
+        assert "Per-SKU Breakdown (US)" in joined
+        assert "Per-SKU Breakdown (UK)" in joined
+        assert "Per-SKU Breakdown (CA)" not in joined
+
+    def test_missing_metric_row_skips_that_marketplace(self):
+        import slack_bot.main as mod
+
+        # CA member exists but its account row didn't make it into metrics
+        # (e.g. inactive/empty) → CA breakdown skipped, no query for it.
+        metrics = [m for m in self._metrics() if m.marketplace != "CA"]
+        rows = self._sku_rows_by_client()
+        queried: list[str] = []
+
+        def fake_query(client_id, marketplaces, now):
+            queried.append(client_id)
+            return rows[client_id]
+
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", side_effect=fake_query):
+            mod._maybe_append_combined_sku_breakdown(
+                blocks, self._members(), self._now, metrics,
+            )
+
+        assert "skylight-frame-ca" not in queried
+        joined = " ".join(self._section_texts(blocks))
+        assert "Per-SKU Breakdown (CA)" not in joined
+        assert "Per-SKU Breakdown (US)" in joined
+        assert "Per-SKU Breakdown (UK)" in joined
+
+
 class TestSkuBreakdownCumulative:
     """Day-to-date window means each hour's rows are cumulative: hour 2 >=
     hour 1 for every SKU, and new SKUs appear as they get activity."""
