@@ -47,7 +47,13 @@ def create(
             event_report_scheduler = gcp.cloudscheduler.Job(
                 f"kalilos-{env}-event-report-scheduler",
                 name=f"kalilos-{env}-event-report-scheduler",
-                schedule="*/30 * * * *",
+                # Aligned to the :05 hourly Slack send: pull at :20 and :50 so a
+                # fresh sync lands before the next :05 post. Orders run on both
+                # slots (every 30 min); the heavier ads pull runs on the :20 slot
+                # only (~45 min lead before :05). Mirrors the old 15 min (orders)
+                # / 45 min (ads) buffers that the previous :30/:00-sync, :45-send
+                # arrangement relied on.
+                schedule="20,50 * * * *",
                 time_zone="UTC",
                 region=region,
                 project=project,
@@ -67,7 +73,10 @@ def create(
             hourly_bot = gcp.cloudscheduler.Job(
                 f"kalilos-{env}-hourly-bot",
                 name=f"kalilos-{env}-hourly-bot",
-                schedule="45 * * * *",
+                # 5 minutes past the hour (PM request). The event data sync runs
+                # at :00/:30, so :05 posts shortly after the top-of-hour pull
+                # kicks off — numbers reflect the most recent completed ingest.
+                schedule="5 * * * *",
                 time_zone="UTC",
                 region=region,
                 project=project,

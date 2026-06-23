@@ -110,10 +110,10 @@ class TestLaunchReports:
         report_types = [p["report_type"] for p in launched_payloads]
         assert ORDERS_REPORT in report_types
 
-    def test_launches_ads_reports_on_the_hour(self):
+    def test_launches_ads_reports_on_ads_slot(self):
         from event_report_scheduler.main import handler, ADS_REPORTS
 
-        fixed_now = datetime(2026, 7, 13, 14, 0, 0, tzinfo=timezone.utc)  # on the hour
+        fixed_now = datetime(2026, 7, 13, 14, 20, 0, tzinfo=timezone.utc)  # :20 ads slot
 
         with (
             patch("event_report_scheduler.main.datetime") as mock_dt,
@@ -138,10 +138,10 @@ class TestLaunchReports:
         for ads_rt in ADS_REPORTS:
             assert ads_rt in report_types
 
-    def test_skips_ads_off_the_hour(self):
+    def test_skips_ads_off_ads_slot(self):
         from event_report_scheduler.main import handler, ADS_REPORTS
 
-        fixed_now = datetime(2026, 7, 13, 14, 30, 0, tzinfo=timezone.utc)  # half past
+        fixed_now = datetime(2026, 7, 13, 14, 50, 0, tzinfo=timezone.utc)  # :50 orders-only slot
 
         with (
             patch("event_report_scheduler.main.datetime") as mock_dt,

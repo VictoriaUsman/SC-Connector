@@ -1,9 +1,12 @@
 """Event Report Scheduler — triggers report pulls during active events.
 
-Invoked every 30 minutes by Cloud Scheduler. When no event is live, returns
+Invoked at :20 and :50 past the hour by Cloud Scheduler — timed so a fresh sync
+lands before the hourly Slack bot posts at :05. When no event is live, returns
 immediately (no-op).  During an active event:
-  - Every 30 min: launch All Orders report workflows for each enabled client-marketplace
-  - Every 60 min (on the hour): launch Ads campaign report workflows
+  - Both slots (:20 and :50): launch All Orders report workflows for each enabled
+    client-marketplace (orders refresh every 30 min)
+  - The :20 slot only: also launch Ads campaign report workflows (ads refresh
+    hourly with ~45 min lead, since the ads workflow is heavier/slower to ingest)
 """
 
 from __future__ import annotations
@@ -72,7 +75,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         logger.info("No active event — skipping")
         return {"status": "ok", "launched": 0}, 200
 
-    is_on_the_hour = now.minute < 30
+    # Ads pull once per hour on the earlier (:20) slot, giving the heavier ads
+    # workflow ~45 min to ingest before the :05 Slack send; orders pull on both
+    # the :20 and :50 slots. The minute<30 split keeps ads on :20, not :50.
+    is_ads_slot = now.minute < 30
     configs = list_bot_configs()
     enabled_configs = [c for c in configs if c.get("hourly_bot", {}).get("enabled")]
 
@@ -108,7 +114,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     })
                     errors.append({"client_id": client_id, "error": str(exc)[:200]})
 
-            if is_on_the_hour and client_has_credentials(client, "ads_api"):
+            if is_ads_slot and client_has_credentials(client, "ads_api"):
                 for report_type in ADS_REPORTS:
                     try:
                         job_id = _launch_report(

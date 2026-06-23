@@ -1493,6 +1493,34 @@ class TestHandlerSkuBreakdownIntegration:
 # post one hourly message spanning every marketplace, with an FX-converted Total.
 # ---------------------------------------------------------------------------
 
+class TestSectionExpand:
+    """Every section block must set expand=True so Slack never collapses a tall
+    drop behind a 'Show more'/'Show less' toggle (PM request)."""
+
+    def test_section_helper_sets_expand(self):
+        from slack_bot.main import _section
+
+        block = _section("hello")
+        assert block["type"] == "section"
+        assert block["expand"] is True
+        assert block["text"]["text"] == "hello"
+
+    def test_message_blocks_all_sections_expand(self):
+        from slack_bot.main import _build_message_blocks, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics("US", "USD", 1000, 10, 100, 500),
+            MarketplaceMetrics("CA", "USD", 500, 5, 50, 200),
+        ]
+        blocks = _build_message_blocks(
+            client_name="Acme", event_name="Test", day_index=1,
+            now=datetime(2026, 7, 13, 18, 45, tzinfo=timezone.utc),
+            client_tz=ZoneInfo("America/Los_Angeles"), metrics=metrics, base_currency="USD",
+        )
+        sections = [b for b in blocks if b.get("type") == "section"]
+        assert sections and all(b.get("expand") is True for b in sections)
+
+
 class TestAccountFamily:
     def test_strips_known_marketplace_suffix_only(self):
         from slack_bot.main import account_family

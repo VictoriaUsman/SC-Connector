@@ -955,7 +955,7 @@ def _build_day_anchor_blocks(
     suffix = f"{day_label}, {date_label}" if day_label else date_label
     text = f":bar_chart: *{event_name} — {suffix}*"
     fallback = f"{event_name} — {suffix}"
-    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}], fallback
+    return [_section(text)], fallback
 
 
 def _ensure_day_anchor(
@@ -1071,6 +1071,16 @@ def _format_local_time(now: datetime, tz: ZoneInfo) -> str:
     return f"{hour} {tz_name}"
 
 
+def _section(text: str) -> dict:
+    """A mrkdwn section block that always renders fully.
+
+    ``expand: True`` disables Slack's per-block truncation, so a tall block (e.g.
+    a per-marketplace line group or a combined drop) is never collapsed behind a
+    "Show more"/"Show less" toggle.
+    """
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}, "expand": True}
+
+
 def _build_message_blocks(
     *,
     client_name: str,
@@ -1090,13 +1100,7 @@ def _build_message_blocks(
         subtitle += f" — {day_str}"
 
     blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f":zap: *Hourly Update — {client_name}*\n{subtitle}",
-            },
-        },
+        _section(f":zap: *Hourly Update — {client_name}*\n{subtitle}"),
     ]
 
     for m in metrics:
@@ -1116,10 +1120,7 @@ def _build_message_blocks(
             f"TACoS: {format_percentage(m.tacos)}",
         ]
 
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-        })
+        blocks.append(_section("\n".join(lines)))
 
     _maybe_add_total_row(blocks, metrics, base_currency, rates)
 
@@ -1179,10 +1180,7 @@ def _maybe_add_total_row(
     ]
 
     blocks.append({"type": "divider"})
-    blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-    })
+    blocks.append(_section("\n".join(lines)))
 
 
 def _convert_totals(
@@ -1227,7 +1225,7 @@ def _build_sku_breakdown_blocks(
 
     blocks: list[dict] = [
         {"type": "divider"},
-        {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+        _section(header),
     ]
 
     chunk: list[str] = []
@@ -1235,19 +1233,13 @@ def _build_sku_breakdown_blocks(
     for line in line_strs:
         # +1 accounts for the joining newline.
         if chunk and chunk_len + len(line) + 1 > _SKU_BLOCK_CHAR_BUDGET:
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(chunk)},
-            })
+            blocks.append(_section("\n".join(chunk)))
             chunk = []
             chunk_len = 0
         chunk.append(line)
         chunk_len += len(line) + 1
     if chunk:
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(chunk)},
-        })
+        blocks.append(_section("\n".join(chunk)))
     return blocks
 
 
@@ -1484,13 +1476,7 @@ def _build_recap_blocks(
     subtitle = f"{time_str} | {event_name} — Day {recap_day} Recap"
 
     blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f":bar_chart: *Day {recap_day} Recap — {client_name}*\n{subtitle}",
-            },
-        },
+        _section(f":bar_chart: *Day {recap_day} Recap — {client_name}*\n{subtitle}"),
     ]
 
     prior_map = _metrics_by_marketplace(prior_single)
@@ -1502,31 +1488,19 @@ def _build_recap_blocks(
             mkt_header += f" ({_format_local_time(now, mkt_tz)})"
 
         lines = [mkt_header, *_format_marketplace_recap_lines(m, prior_map.get(m.marketplace))]
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-        })
+        blocks.append(_section("\n".join(lines)))
 
     _maybe_add_recap_total_row(blocks, metrics, prior_single, base_currency)
 
     if recap_day >= 2 and current_cumulative:
         blocks.append({"type": "divider"})
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Cumulative (Days 1–{recap_day})*",
-            },
-        })
+        blocks.append(_section(f"*Cumulative (Days 1–{recap_day})*"))
         prior_cum_map = _metrics_by_marketplace(prior_cumulative)
         for m in current_cumulative:
             lines = [f"*{m.marketplace}*", *_format_marketplace_recap_lines(
                 m, prior_cum_map.get(m.marketplace),
             )]
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-            })
+            blocks.append(_section("\n".join(lines)))
         _maybe_add_recap_total_row(blocks, current_cumulative, prior_cumulative, base_currency)
 
     return blocks
@@ -1573,10 +1547,7 @@ def _maybe_add_recap_total_row(
     ]
 
     blocks.append({"type": "divider"})
-    blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-    })
+    blocks.append(_section("\n".join(lines)))
 
 
 # ---------------------------------------------------------------------------
