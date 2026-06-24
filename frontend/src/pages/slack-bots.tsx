@@ -527,6 +527,9 @@ function BotConfigDialog({
   const [dailyRecapEnabled, setDailyRecapEnabled] = useState(
     initial?.daily_recap_enabled ?? false,
   );
+  const [skuBreakdownEnabled, setSkuBreakdownEnabled] = useState(
+    initial?.sku_breakdown_enabled ?? false,
+  );
   const [testChannelId, setTestChannelId] = useState(initial?.test_channel_id ?? "");
   const [useTest, setUseTest] = useState(initial?.use_test_channel ?? false);
 
@@ -559,6 +562,16 @@ function BotConfigDialog({
               </p>
             </div>
             <Switch checked={dailyRecapEnabled} onCheckedChange={setDailyRecapEnabled} />
+          </div>
+
+          <div className="flex items-center justify-between rounded-md border p-3">
+            <div>
+              <p className="text-sm font-medium">Per-SKU Breakdown</p>
+              <p className="text-xs text-muted-foreground">
+                Appends a per-SKU breakdown to hourly drops and the day-end recap
+              </p>
+            </div>
+            <Switch checked={skuBreakdownEnabled} onCheckedChange={setSkuBreakdownEnabled} />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -660,6 +673,7 @@ function BotConfigDialog({
                 marketplaces,
                 hourly_bot: { enabled },
                 daily_recap_enabled: dailyRecapEnabled,
+                sku_breakdown_enabled: skuBreakdownEnabled,
                 test_channel_id: testChannelId,
                 use_test_channel: useTest,
               })

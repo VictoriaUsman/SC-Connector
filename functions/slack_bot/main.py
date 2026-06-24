@@ -147,11 +147,28 @@ def _sku_breakdown_enabled(client_id: str) -> bool:
     """True if ``client_id`` belongs to an allowlisted account family.
 
     Matches the exact id or any regional variant (``"{family}-..."``), so e.g.
-    ``skylight-frame-uk`` is covered by the ``skylight-frame`` family.
+    ``skylight-frame-uk`` is covered by the ``skylight-frame`` family. This is the
+    legacy default; prefer ``_sku_breakdown_enabled_for_config`` which also honors
+    the per-customer UI toggle.
     """
     return any(
         client_id == family or client_id.startswith(f"{family}-")
         for family in _sku_breakdown_families()
+    )
+
+
+def _sku_breakdown_enabled_for_config(config: dict) -> bool:
+    """Whether a bot config gets the per-SKU breakdown appended.
+
+    The per-customer ``sku_breakdown_enabled`` toggle (set in the Slack Bots UI)
+    turns the breakdown on for any customer that requires it. It is OR-ed with the
+    legacy family allowlist (Skylight/Ritual, env-overridable via
+    ``SKU_BREAKDOWN_CLIENT_IDS``) so allowlisted accounts keep working before the
+    toggle is set — the allowlist is a transitional default and can be retired
+    once their configs are toggled on.
+    """
+    return bool(config.get("sku_breakdown_enabled")) or _sku_breakdown_enabled(
+        config.get("client_id", "")
     )
 
 
@@ -376,12 +393,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     current_cumulative=current_cumulative,
                     base_currency=config.get("base_currency", "USD"),
                 )
-                # Skylight/Ritual only: append a per-SKU breakdown for the
-                # completed recap day. The recap is per-account (single
+                # Per-SKU breakdown (per-customer toggle / legacy allowlist) for
+                # the completed recap day. The recap is per-account (single
                 # marketplace/currency), so the existing single-currency
                 # reconciliation in _append_sku_breakdown applies directly —
                 # full_day reconciles to this recap's full-day metrics.
-                if _sku_breakdown_enabled(client_id):
+                if _sku_breakdown_enabled_for_config(config):
                     _append_sku_breakdown(
                         blocks, client_id, marketplaces, now, metrics,
                         label=marketplaces[0] if len(marketplaces) == 1 else None,
@@ -403,9 +420,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     metrics=metrics,
                     base_currency=config.get("base_currency", "USD"),
                 )
-                # Skylight/Ritual only: append a cumulative per-SKU breakdown.
+                # Per-SKU breakdown (per-customer toggle / legacy allowlist).
                 # Purely additive — leaves the account-level blocks untouched.
-                if _sku_breakdown_enabled(client_id):
+                if _sku_breakdown_enabled_for_config(config):
                     _append_sku_breakdown(blocks, client_id, marketplaces, now, metrics)
                 text_fallback = f"Hourly Update — {client_name} | {event_name}"
 
@@ -1364,21 +1381,23 @@ def _maybe_append_combined_sku_breakdown(
     now: datetime,
     metrics: list[MarketplaceMetrics],
 ) -> None:
-    """Append per-marketplace SKU breakdowns for an allowlisted combined family.
+    """Append per-marketplace SKU breakdowns for a toggled/allowlisted family.
 
     For each marketplace in ``_sku_breakdown_marketplaces()`` (US, CA, UK by
     default, in display order) that the family covers, append a breakdown
     reconciled to that marketplace's own single-currency account line (USD for
     US, CAD for CA, GBP for UK). Each marketplace is owned by its own regional
     member account (e.g. ``skylight-frame-ca`` for CA), so the SKU rows for that
-    member reconcile to the matching row in the combined drop. Non-allowlisted
-    members, marketplaces the family doesn't cover, and any reconciliation miss
-    are silently skipped — every section is strictly additive and independent.
+    member reconcile to the matching row in the combined drop. The breakdown is
+    gated per member by ``_sku_breakdown_enabled_for_config`` (per-customer toggle
+    or legacy allowlist). Members without it enabled, marketplaces the family
+    doesn't cover, and any reconciliation miss are silently skipped — every
+    section is strictly additive and independent.
     """
     metrics_by_mkt = {m.marketplace: m for m in metrics}
     for mkt in _sku_breakdown_marketplaces():
         member = next((m for m in members if mkt in m.get("marketplaces", [])), None)
-        if not member or not _sku_breakdown_enabled(member["client_id"]):
+        if not member or not _sku_breakdown_enabled_for_config(member):
             continue
         row = metrics_by_mkt.get(mkt)
         if row is None:

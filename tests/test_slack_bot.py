@@ -29,8 +29,9 @@ def _make_bot_config(
     client_id: str = "c1",
     marketplaces: list[str] | None = None,
     enabled: bool = True,
+    sku_breakdown: bool | None = None,
 ) -> dict:
-    return {
+    config = {
         "id": client_id,
         "client_id": client_id,
         "hourly_bot": {"enabled": enabled},
@@ -40,6 +41,9 @@ def _make_bot_config(
         "base_currency": "USD",
         "use_test_channel": False,
     }
+    if sku_breakdown is not None:
+        config["sku_breakdown_enabled"] = sku_breakdown
+    return config
 
 
 @pytest.fixture(autouse=True)
@@ -1223,6 +1227,41 @@ class TestSkuBreakdownGating:
             assert mod._sku_breakdown_enabled("ritual") is False
 
 
+class TestSkuBreakdownConfigToggle:
+    """The per-customer ``sku_breakdown_enabled`` toggle lets a PM enable the
+    breakdown for any customer; the legacy allowlist is an OR-ed safety net."""
+
+    def test_toggle_enables_non_allowlisted_client(self):
+        from slack_bot.main import _sku_breakdown_enabled_for_config
+
+        cfg = {"client_id": "brook-whittle", "sku_breakdown_enabled": True}
+        assert _sku_breakdown_enabled_for_config(cfg) is True
+
+    def test_no_toggle_and_not_allowlisted_is_disabled(self):
+        from slack_bot.main import _sku_breakdown_enabled_for_config
+
+        assert _sku_breakdown_enabled_for_config({"client_id": "brook-whittle"}) is False
+        assert _sku_breakdown_enabled_for_config(
+            {"client_id": "brook-whittle", "sku_breakdown_enabled": False}
+        ) is False
+
+    def test_allowlisted_client_stays_enabled_without_toggle(self):
+        from slack_bot.main import _sku_breakdown_enabled_for_config
+
+        # Legacy default: Skylight/Ritual keep working before the PM toggles them.
+        assert _sku_breakdown_enabled_for_config({"client_id": "ritual"}) is True
+        assert _sku_breakdown_enabled_for_config({"client_id": "skylight-frame-uk"}) is True
+
+    def test_allowlist_wins_even_if_toggle_false(self):
+        from slack_bot.main import _sku_breakdown_enabled_for_config
+
+        # OR semantics: the allowlist is a safety net, so an allowlisted account
+        # can't be silently disabled by a stale false flag (zero-regression).
+        assert _sku_breakdown_enabled_for_config(
+            {"client_id": "ritual", "sku_breakdown_enabled": False}
+        ) is True
+
+
 class TestSkuQueryReconcilesByConstruction:
     """The SKU query must read the SAME source/window/filters as the hourly
     account-orders query, only adding GROUP BY sku — so the rows reconcile to
@@ -1587,6 +1626,32 @@ class TestCombinedSkuBreakdown:
         assert blocks == []
         mock_q.assert_not_called()
 
+    def test_toggle_enables_breakdown_for_non_allowlisted_family(self):
+        import slack_bot.main as mod
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics
+
+        # A non-allowlisted family gets the breakdown when each member has the
+        # per-customer toggle on.
+        members = [
+            {"client_id": "moxe", "marketplaces": ["US"], "sku_breakdown_enabled": True},
+            {"client_id": "moxe-ca", "marketplaces": ["CA"], "sku_breakdown_enabled": True},
+        ]
+        metrics = [
+            MarketplaceMetrics("US", "USD", total_sales=300.0, units=10, spend=10, ppc_sales=100),
+            MarketplaceMetrics("CA", "CAD", total_sales=200.0, units=4, spend=5, ppc_sales=50),
+        ]
+        rows = {
+            "moxe": [SkuMetrics("US-A", 10, 300.0)],
+            "moxe-ca": [SkuMetrics("CA-A", 4, 200.0)],
+        }
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n, **k: rows[c]):
+            mod._maybe_append_combined_sku_breakdown(blocks, members, self._now, metrics)
+
+        joined = " ".join(self._section_texts(blocks))
+        assert "Per-SKU Breakdown (US)" in joined
+        assert "Per-SKU Breakdown (CA)" in joined
+
     def test_missing_marketplace_is_skipped_others_still_append(self):
         import slack_bot.main as mod
 
@@ -1684,11 +1749,11 @@ class TestRecapSkuBreakdown:
         )
         assert "Per-SKU Breakdown (US)" in text
 
-    def _run_recap(self, client_id: str, marketplaces: list[str], sku_rows):
+    def _run_recap(self, client_id: str, marketplaces: list[str], sku_rows, sku_breakdown: bool | None = None):
         from slack_bot.main import handler, MarketplaceMetrics
 
         metrics = [MarketplaceMetrics("US", "USD", total_sales=1000, units=10, spend=100, ppc_sales=500)]
-        cfg = _make_bot_config(client_id=client_id, marketplaces=marketplaces)
+        cfg = _make_bot_config(client_id=client_id, marketplaces=marketplaces, sku_breakdown=sku_breakdown)
         with (
             patch("slack_bot.main.datetime") as mock_dt_cls,
             patch("slack_bot.main.get_live_event", return_value={
@@ -1737,6 +1802,20 @@ class TestRecapSkuBreakdown:
         assert "Day 1 Recap" in text
         assert "Per-SKU Breakdown" not in text
 
+    def test_toggle_enables_recap_breakdown_for_any_customer(self):
+        import slack_bot.main as mod
+
+        rows = [mod.SkuMetrics("A", 10, 1000.0)]  # reconciles to recap total
+        body, status, mock_post = self._run_recap("brook-whittle", ["US"], rows, sku_breakdown=True)
+
+        assert status == 200 and body["messages_sent"] == 1
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "Day 1 Recap" in text
+        assert "Per-SKU Breakdown (US)" in text
+
 
 class TestSkuBreakdownCumulative:
     """Day-to-date window means each hour's rows are cumulative: hour 2 >=
@@ -1764,10 +1843,10 @@ class TestHandlerSkuBreakdownIntegration:
 
         return [MarketplaceMetrics("US", "USD", total_sales=350.0, units=12, spend=10, ppc_sales=100)]
 
-    def _run_handler(self, client_id: str, sku_rows):
+    def _run_handler(self, client_id: str, sku_rows, sku_breakdown: bool | None = None):
         from slack_bot.main import handler
 
-        cfg = _make_bot_config(client_id=client_id)
+        cfg = _make_bot_config(client_id=client_id, sku_breakdown=sku_breakdown)
         with (
             patch("slack_bot.main.get_live_event", return_value={
                 "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
@@ -1800,6 +1879,29 @@ class TestHandlerSkuBreakdownIntegration:
 
         skus = [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)]
         body, status, mock_post = self._run_handler("c1", skus)
+
+        assert status == 200 and body["messages_sent"] == 1
+        posted_blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in posted_blocks)
+        assert "Per-SKU Breakdown" not in text
+
+    def test_toggle_enables_breakdown_for_any_customer(self):
+        import slack_bot.main as mod
+
+        # A non-allowlisted customer gets the breakdown purely from the toggle.
+        skus = [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)]
+        body, status, mock_post = self._run_handler("brook-whittle", skus, sku_breakdown=True)
+
+        assert status == 200 and body["messages_sent"] == 1
+        posted_blocks = mock_post.call_args[0][1]
+        text = " ".join(b.get("text", {}).get("text", "") for b in posted_blocks)
+        assert "Per-SKU Breakdown" in text
+
+    def test_toggle_off_keeps_breakdown_absent_for_non_allowlisted(self):
+        import slack_bot.main as mod
+
+        skus = [mod.SkuMetrics("A", 10, 300.0), mod.SkuMetrics("B", 2, 50.0)]
+        body, status, mock_post = self._run_handler("brook-whittle", skus, sku_breakdown=False)
 
         assert status == 200 and body["messages_sent"] == 1
         posted_blocks = mock_post.call_args[0][1]
