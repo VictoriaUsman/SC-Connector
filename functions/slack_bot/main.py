@@ -376,6 +376,17 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     current_cumulative=current_cumulative,
                     base_currency=config.get("base_currency", "USD"),
                 )
+                # Skylight/Ritual only: append a per-SKU breakdown for the
+                # completed recap day. The recap is per-account (single
+                # marketplace/currency), so the existing single-currency
+                # reconciliation in _append_sku_breakdown applies directly —
+                # full_day reconciles to this recap's full-day metrics.
+                if _sku_breakdown_enabled(client_id):
+                    _append_sku_breakdown(
+                        blocks, client_id, marketplaces, now, metrics,
+                        label=marketplaces[0] if len(marketplaces) == 1 else None,
+                        report_date=recap_date, full_day=True,
+                    )
                 text_fallback = f"Day {recap_day} Recap — {client_name} | {event_name}"
             else:
                 metrics = _query_metrics(client_id, marketplaces, now)
@@ -598,6 +609,40 @@ def _query_metrics(
     return results
 
 
+def _marketplace_day_window(
+    marketplace: str,
+    now: datetime,
+    *,
+    report_date: str | None = None,
+    full_day: bool = False,
+) -> tuple[str, str]:
+    """UTC ``[start, end)`` timestamps for a marketplace-local day.
+
+    ``full_day=True`` returns the complete calendar day given by ``report_date``
+    (used by day-end recaps). Otherwise it returns the live day-to-date window —
+    marketplace-local midnight today up to next midnight, derived from ``now``
+    (used by hourly updates). Both the account orders query and the per-SKU query
+    call this, so their windows are provably identical and the SKU rows reconcile
+    to the account total by construction.
+    """
+    from shared.config import MARKETPLACE_TIMEZONES
+
+    mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
+    if full_day:
+        day = date_type.fromisoformat(report_date)
+        start_local = datetime(day.year, day.month, day.day, tzinfo=mkt_tz)
+    else:
+        start_local = now.astimezone(mkt_tz).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+    end_local = start_local + timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        start_local.astimezone(timezone.utc).strftime(fmt),
+        end_local.astimezone(timezone.utc).strftime(fmt),
+    )
+
+
 def _query_orders(
     bq: bigquery.Client,
     project: str,
@@ -640,9 +685,8 @@ def _query_orders(
     rows whose storefront matches this marketplace. Unknown marketplaces fall
     back to the unscoped behaviour so we never zero out a real total.
     """
-    from shared.config import MARKETPLACE_TIMEZONES, get_marketplace_sales_channel
+    from shared.config import get_marketplace_sales_channel
 
-    mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
     sales_channel = get_marketplace_sales_channel(marketplace)
     sales_channel_clause = (
         "\n              AND LOWER(sales_channel) = @sales_channel"
@@ -650,74 +694,34 @@ def _query_orders(
         else ""
     )
 
-    if full_day:
-        day = date_type.fromisoformat(report_date)
-        day_start_local = datetime(day.year, day.month, day.day, tzinfo=mkt_tz)
-        day_end_local = day_start_local + timedelta(days=1)
-        day_start_utc = day_start_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        day_end_utc = day_end_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    day_start_utc, day_end_utc = _marketplace_day_window(
+        marketplace, now, report_date=report_date, full_day=full_day,
+    )
 
-        query = f"""
-            SELECT
-                COALESCE(SUM(item_price), 0) AS total_sales,
-                COALESCE(SUM(quantity), 0) AS units
-            FROM `{project}.{dataset}.orders_latest`
-            WHERE client_id = @client_id
-              AND purchase_date >= @day_start
-              AND purchase_date < @day_end
-              AND order_status != 'Cancelled'
-              AND marketplace = @marketplace{sales_channel_clause}
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-                bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", day_start_utc),
-                bigquery.ScalarQueryParameter("day_end", "TIMESTAMP", day_end_utc),
-                bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
-                *(
-                    [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
-                    if sales_channel
-                    else []
-                ),
-            ]
-        )
-    else:
-        mkt_now = now.astimezone(mkt_tz)
-        mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        mkt_next_midnight = mkt_midnight + timedelta(days=1)
-        mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))
-        mkt_next_midnight_utc = mkt_next_midnight.astimezone(ZoneInfo("UTC"))
-
-        query = f"""
-            SELECT
-                COALESCE(SUM(item_price), 0) AS total_sales,
-                COALESCE(SUM(quantity), 0) AS units
-            FROM `{project}.{dataset}.orders_latest`
-            WHERE client_id = @client_id
-              AND purchase_date >= @mkt_midnight
-              AND purchase_date < @mkt_next_midnight
-              AND order_status != 'Cancelled'
-              AND marketplace = @marketplace{sales_channel_clause}
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-                bigquery.ScalarQueryParameter(
-                    "mkt_midnight", "TIMESTAMP",
-                    mkt_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                ),
-                bigquery.ScalarQueryParameter(
-                    "mkt_next_midnight", "TIMESTAMP",
-                    mkt_next_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                ),
-                bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
-                *(
-                    [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
-                    if sales_channel
-                    else []
-                ),
-            ]
-        )
+    query = f"""
+        SELECT
+            COALESCE(SUM(item_price), 0) AS total_sales,
+            COALESCE(SUM(quantity), 0) AS units
+        FROM `{project}.{dataset}.orders_latest`
+        WHERE client_id = @client_id
+          AND purchase_date >= @day_start
+          AND purchase_date < @day_end
+          AND order_status != 'Cancelled'
+          AND marketplace = @marketplace{sales_channel_clause}
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
+            bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", day_start_utc),
+            bigquery.ScalarQueryParameter("day_end", "TIMESTAMP", day_end_utc),
+            bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+            *(
+                [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
+                if sales_channel
+                else []
+            ),
+        ]
+    )
     for row in bq.query(query, job_config=job_config):
         return {
             "total_sales": float(row["total_sales"]),
@@ -833,36 +837,37 @@ def _query_sku_orders(
     client_id: str,
     marketplace: str,
     now: datetime,
+    *,
+    report_date: str | None = None,
+    full_day: bool = False,
 ) -> list[SkuMetrics]:
-    """Per-SKU cumulative units and total sales for the current marketplace day.
+    """Per-SKU units and total sales for a marketplace day, decomposing the
+    account orders sum.
 
-    This is the account-level hourly orders sum decomposed by SKU: it reads the
-    SAME table (``orders_latest``), the SAME purchase-date window
-    (marketplace-local midnight → next midnight), and the SAME filters as the
-    hourly branch of ``_query_orders`` — non-cancelled, this client +
-    marketplace, AND the same ``sales_channel`` storefront scoping — only adding
-    ``GROUP BY sku``. The ``sales_channel`` clause must mirror ``_query_orders``
-    exactly: the All Orders report is account-wide, so without it the SKU rollup
-    would include other-storefront lines the account total excludes, breaking
-    reconciliation (e.g. a non-amazon.com $0 line adding a phantom unit). Because
-    the row set is identical, ``SUM`` over the SKU groups equals the ungrouped
-    account total by construction, so the breakdown reconciles to the figure
-    already shown in the drop without a second independent pull.
+    Reads the SAME table (``orders_latest``), the SAME purchase-date window (via
+    the shared ``_marketplace_day_window`` — the live day-to-date window for
+    hourly drops, or the full calendar day for ``full_day`` recaps), and the SAME
+    filters as ``_query_orders`` — non-cancelled, this client + marketplace, AND
+    the same ``sales_channel`` storefront scoping — only adding ``GROUP BY sku``.
+    The ``sales_channel`` clause must mirror ``_query_orders`` exactly: the All
+    Orders report is account-wide, so without it the SKU rollup would include
+    other-storefront lines the account total excludes, breaking reconciliation
+    (e.g. a non-amazon.com $0 line adding a phantom unit). Because the row set is
+    identical, ``SUM`` over the SKU groups equals the ungrouped account total by
+    construction, so the breakdown reconciles to the figure already shown without
+    a second independent pull.
     """
-    from shared.config import MARKETPLACE_TIMEZONES, get_marketplace_sales_channel
+    from shared.config import get_marketplace_sales_channel
 
-    mkt_tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles"))
     sales_channel = get_marketplace_sales_channel(marketplace)
     sales_channel_clause = (
         "\n          AND LOWER(sales_channel) = @sales_channel"
         if sales_channel
         else ""
     )
-    mkt_now = now.astimezone(mkt_tz)
-    mkt_midnight = mkt_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    mkt_next_midnight = mkt_midnight + timedelta(days=1)
-    mkt_midnight_utc = mkt_midnight.astimezone(ZoneInfo("UTC"))
-    mkt_next_midnight_utc = mkt_next_midnight.astimezone(ZoneInfo("UTC"))
+    day_start_utc, day_end_utc = _marketplace_day_window(
+        marketplace, now, report_date=report_date, full_day=full_day,
+    )
 
     query = f"""
         SELECT
@@ -871,8 +876,8 @@ def _query_sku_orders(
             COALESCE(SUM(quantity), 0) AS units
         FROM `{project}.{dataset}.orders_latest`
         WHERE client_id = @client_id
-          AND purchase_date >= @mkt_midnight
-          AND purchase_date < @mkt_next_midnight
+          AND purchase_date >= @day_start
+          AND purchase_date < @day_end
           AND order_status != 'Cancelled'
           AND marketplace = @marketplace{sales_channel_clause}
         GROUP BY sku
@@ -880,14 +885,8 @@ def _query_sku_orders(
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
-            bigquery.ScalarQueryParameter(
-                "mkt_midnight", "TIMESTAMP",
-                mkt_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            ),
-            bigquery.ScalarQueryParameter(
-                "mkt_next_midnight", "TIMESTAMP",
-                mkt_next_midnight_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            ),
+            bigquery.ScalarQueryParameter("day_start", "TIMESTAMP", day_start_utc),
+            bigquery.ScalarQueryParameter("day_end", "TIMESTAMP", day_end_utc),
             bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
             *(
                 [bigquery.ScalarQueryParameter("sales_channel", "STRING", sales_channel.lower())]
@@ -910,12 +909,17 @@ def _query_sku_breakdown(
     client_id: str,
     marketplaces: list[str],
     now: datetime,
+    *,
+    report_date: str | None = None,
+    full_day: bool = False,
 ) -> list[SkuMetrics]:
     """Account-level per-SKU rollup, aggregated across ``marketplaces``.
 
     Mirrors how the drop's account total sums each marketplace, so the SKU rows
-    sum to that same total. Sorted by sales descending; every SKU with activity
-    is returned (no top-N cap).
+    sum to that same total. ``report_date``/``full_day`` are forwarded so a
+    day-end recap can roll up a completed calendar day instead of the live
+    day-to-date window. Sorted by sales descending; every SKU with activity is
+    returned (no top-N cap).
     """
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
@@ -923,7 +927,10 @@ def _query_sku_breakdown(
 
     by_sku: dict[str, SkuMetrics] = {}
     for mkt in marketplaces:
-        for row in _query_sku_orders(bq, project, dataset, client_id, mkt, now):
+        for row in _query_sku_orders(
+            bq, project, dataset, client_id, mkt, now,
+            report_date=report_date, full_day=full_day,
+        ):
             agg = by_sku.get(row.sku)
             if agg is None:
                 by_sku[row.sku] = SkuMetrics(
@@ -1274,8 +1281,11 @@ def _append_sku_breakdown(
     now: datetime,
     metrics: list[MarketplaceMetrics],
     label: str | None = None,
+    *,
+    report_date: str | None = None,
+    full_day: bool = False,
 ) -> None:
-    """Append a cumulative per-SKU breakdown to an hourly drop (in place).
+    """Append a per-SKU breakdown to a drop (in place).
 
     Strictly additive: the existing account-level blocks are never touched. The
     breakdown is appended only when (a) the drop reports a single currency — so
@@ -1284,7 +1294,9 @@ def _append_sku_breakdown(
     currency, reconciliation failure, or query error) leaves the drop unchanged.
 
     ``label`` is forwarded to the header so stacked per-marketplace breakdowns
-    in one combined drop are distinguishable.
+    in one combined drop are distinguishable. ``report_date``/``full_day`` are
+    forwarded to the query so a day-end recap reconciles to a completed calendar
+    day instead of the live day-to-date window.
     """
     currencies = {m.currency for m in metrics}
     if len(currencies) != 1:
@@ -1293,10 +1305,13 @@ def _append_sku_breakdown(
     currency = currencies.pop()
 
     try:
-        sku_rows = _query_sku_breakdown(client_id, marketplaces, now)
+        sku_rows = _query_sku_breakdown(
+            client_id, marketplaces, now,
+            report_date=report_date, full_day=full_day,
+        )
     except Exception:
         logger.exception(
-            "Per-SKU breakdown query failed — posting hourly drop without it",
+            "Per-SKU breakdown query failed — posting drop without it",
             extra={"client_id": client_id, "phase": "sku_breakdown"},
         )
         return

@@ -381,17 +381,17 @@ class TestQueryOrders:
         )
 
         query = captured["query"]
-        assert "purchase_date >= @mkt_midnight" in query
+        assert "purchase_date >= @day_start" in query
         # The fix: bound the top of the current day too, and never pin to the
         # ingestion report_date partition (the source of the freeze).
-        assert "purchase_date < @mkt_next_midnight" in query
+        assert "purchase_date < @day_end" in query
         assert "report_date" not in query
 
         params = captured["params"]
         # US -> America/Los_Angeles; 2026-07-13 is PDT (UTC-7): 00:00 local = 07:00Z,
         # next midnight 2026-07-14 00:00 local = 2026-07-14 07:00Z.
-        assert params["mkt_midnight"] == datetime(2026, 7, 13, 7, 0, tzinfo=timezone.utc)
-        assert params["mkt_next_midnight"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
+        assert params["day_start"] == datetime(2026, 7, 13, 7, 0, tzinfo=timezone.utc)
+        assert params["day_end"] == datetime(2026, 7, 14, 7, 0, tzinfo=timezone.utc)
 
 
 class TestQueryOrdersMarketplaceScoping:
@@ -1252,9 +1252,10 @@ class TestSkuQueryReconcilesByConstruction:
         sku_bq, sku_cap = self._capture_bq([{"sku": "A", "total_sales": 100.0, "units": 5}])
         _query_sku_orders(sku_bq, "proj", "ds", "ritual", "US", now)
 
-        # Identical day-to-date window and filters → identical row set.
-        assert sku_cap["params"]["mkt_midnight"] == acct_cap["params"]["mkt_midnight"]
-        assert sku_cap["params"]["mkt_next_midnight"] == acct_cap["params"]["mkt_next_midnight"]
+        # Identical day-to-date window and filters → identical row set. Both
+        # queries now share the same param names (via _marketplace_day_window).
+        assert sku_cap["params"]["day_start"] == acct_cap["params"]["day_start"]
+        assert sku_cap["params"]["day_end"] == acct_cap["params"]["day_end"]
         assert sku_cap["params"]["client_id"] == acct_cap["params"]["client_id"]
         assert sku_cap["params"]["marketplace"] == acct_cap["params"]["marketplace"]
         # The sales_channel storefront scoping MUST match the account query, or
@@ -1264,13 +1265,39 @@ class TestSkuQueryReconcilesByConstruction:
         assert sku_cap["params"].get("sales_channel") == acct_cap["params"].get("sales_channel")
 
         q = sku_cap["query"]
-        assert "purchase_date >= @mkt_midnight" in q
-        assert "purchase_date < @mkt_next_midnight" in q
+        assert "purchase_date >= @day_start" in q
+        assert "purchase_date < @day_end" in q
         assert "order_status != 'Cancelled'" in q
         assert "LOWER(sales_channel) = @sales_channel" in q
         assert "GROUP BY sku" in q
         # Never key off the ingestion report_date partition (the freeze bug).
         assert "report_date" not in q
+
+    def test_sku_full_day_window_matches_account_full_day_window(self):
+        from slack_bot.main import _query_orders, _query_sku_orders
+
+        # now is just past midnight of the NEXT day, like the midnight recap slot.
+        now = datetime(2026, 7, 14, 8, 30, tzinfo=timezone.utc)
+
+        acct_bq, acct_cap = self._capture_bq([{"total_sales": 100.0, "units": 5}])
+        _query_orders(acct_bq, "proj", "ds", "ritual", "US", "2026-07-13", now, full_day=True)
+
+        sku_bq, sku_cap = self._capture_bq([{"sku": "A", "total_sales": 100.0, "units": 5}])
+        _query_sku_orders(
+            sku_bq, "proj", "ds", "ritual", "US", now,
+            report_date="2026-07-13", full_day=True,
+        )
+
+        # A completed-day recap SKU query spans the same full calendar day as the
+        # account recap query, so the SKU rows reconcile to the recap total.
+        assert sku_cap["params"]["day_start"] == acct_cap["params"]["day_start"]
+        assert sku_cap["params"]["day_end"] == acct_cap["params"]["day_end"]
+
+        # ...and that full recap-day window is NOT the live "today" window: the
+        # hourly (full_day=False) query keys off `now`, which is the new day.
+        hourly_bq, hourly_cap = self._capture_bq([{"sku": "A", "total_sales": 0.0, "units": 0}])
+        _query_sku_orders(hourly_bq, "proj", "ds", "ritual", "US", now)
+        assert hourly_cap["params"]["day_start"] != sku_cap["params"]["day_start"]
 
     def test_aggregates_across_marketplaces_and_sorts_desc(self):
         import slack_bot.main as mod
@@ -1280,7 +1307,7 @@ class TestSkuQueryReconcilesByConstruction:
             "CA": [mod.SkuMetrics("A", 5, 150.0)],
         }
 
-        def fake_sku_orders(bq, project, dataset, client_id, marketplace, now):
+        def fake_sku_orders(bq, project, dataset, client_id, marketplace, now, **kwargs):
             return per_mkt[marketplace]
 
         with (
@@ -1503,7 +1530,7 @@ class TestCombinedSkuBreakdown:
 
         rows = self._sku_rows_by_client()
 
-        def fake_query(client_id, marketplaces, now):
+        def fake_query(client_id, marketplaces, now, **kwargs):
             return rows[client_id]
 
         blocks: list[dict] = []
@@ -1531,7 +1558,7 @@ class TestCombinedSkuBreakdown:
 
         rows = self._sku_rows_by_client()
         blocks: list[dict] = []
-        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n: rows[c]):
+        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n, **k: rows[c]):
             mod._maybe_append_combined_sku_breakdown(
                 blocks, self._members(), self._now, self._metrics(),
             )
@@ -1571,7 +1598,7 @@ class TestCombinedSkuBreakdown:
         metrics = [m for m in self._metrics() if m.marketplace != "CA"]
         rows = self._sku_rows_by_client()
         blocks: list[dict] = []
-        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n: rows[c]):
+        with patch.object(mod, "_query_sku_breakdown", side_effect=lambda c, m, n, **k: rows[c]):
             mod._maybe_append_combined_sku_breakdown(blocks, members, self._now, metrics)
 
         joined = " ".join(self._section_texts(blocks))
@@ -1588,7 +1615,7 @@ class TestCombinedSkuBreakdown:
         rows = self._sku_rows_by_client()
         queried: list[str] = []
 
-        def fake_query(client_id, marketplaces, now):
+        def fake_query(client_id, marketplaces, now, **kwargs):
             queried.append(client_id)
             return rows[client_id]
 
@@ -1603,6 +1630,112 @@ class TestCombinedSkuBreakdown:
         assert "Per-SKU Breakdown (CA)" not in joined
         assert "Per-SKU Breakdown (US)" in joined
         assert "Per-SKU Breakdown (UK)" in joined
+
+
+class TestRecapSkuBreakdown:
+    """The day-end recap reuses _append_sku_breakdown with full_day for the
+    completed recap day (no separate recap-specific helper)."""
+
+    _now = datetime(2026, 7, 14, 7, 45, tzinfo=timezone.utc)  # midnight recap slot (PDT)
+
+    def test_query_sku_breakdown_forwards_report_date_and_full_day(self):
+        import slack_bot.main as mod
+
+        captured: dict = {}
+
+        def fake_sku_orders(bq, project, dataset, client_id, marketplace, now, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        with (
+            patch.object(mod, "_get_bq", return_value=MagicMock()),
+            patch.object(mod, "_query_sku_orders", side_effect=fake_sku_orders),
+        ):
+            mod._query_sku_breakdown(
+                "ritual", ["US"], self._now,
+                report_date="2026-07-13", full_day=True,
+            )
+
+        assert captured.get("report_date") == "2026-07-13"
+        assert captured.get("full_day") is True
+
+    def test_append_sku_breakdown_forwards_report_date_and_full_day(self):
+        import slack_bot.main as mod
+        from slack_bot.main import MarketplaceMetrics, SkuMetrics
+
+        captured: dict = {}
+
+        def fake_breakdown(client_id, marketplaces, now, **kwargs):
+            captured.update(kwargs)
+            return [SkuMetrics("A", 10, 1000.0)]
+
+        metrics = [MarketplaceMetrics("US", "USD", total_sales=1000.0, units=10, spend=0, ppc_sales=0)]
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", side_effect=fake_breakdown):
+            mod._append_sku_breakdown(
+                blocks, "ritual", ["US"], self._now, metrics,
+                label="US", report_date="2026-07-13", full_day=True,
+            )
+
+        assert captured.get("report_date") == "2026-07-13"
+        assert captured.get("full_day") is True
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "Per-SKU Breakdown (US)" in text
+
+    def _run_recap(self, client_id: str, marketplaces: list[str], sku_rows):
+        from slack_bot.main import handler, MarketplaceMetrics
+
+        metrics = [MarketplaceMetrics("US", "USD", total_sales=1000, units=10, spend=100, ppc_sales=500)]
+        cfg = _make_bot_config(client_id=client_id, marketplaces=marketplaces)
+        with (
+            patch("slack_bot.main.datetime") as mock_dt_cls,
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[cfg]),
+            patch("slack_bot.main.get_client", return_value={"id": client_id, "name": client_id, "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=metrics),
+            patch("slack_bot.main._fetch_prior_yoy_metrics", return_value=(None, None)),
+            patch("slack_bot.main._query_cumulative_metrics", return_value=None),
+            patch("slack_bot.main._query_sku_breakdown", return_value=sku_rows),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            mock_dt_cls.now.return_value = self._now
+            body, status = handler(_make_request())
+        return body, status, mock_post
+
+    def test_gated_recap_includes_sku_breakdown(self):
+        import slack_bot.main as mod
+
+        rows = [mod.SkuMetrics("A", 10, 1000.0)]  # reconciles to recap total
+        body, status, mock_post = self._run_recap("ritual", ["US"], rows)
+
+        assert status == 200 and body["messages_sent"] == 1
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "Day 1 Recap" in text
+        assert "Per-SKU Breakdown (US)" in text
+
+    def test_non_gated_recap_has_no_sku_breakdown(self):
+        import slack_bot.main as mod
+
+        rows = [mod.SkuMetrics("A", 10, 1000.0)]
+        body, status, mock_post = self._run_recap("c1", ["US"], rows)
+
+        assert status == 200 and body["messages_sent"] == 1
+        blocks = mock_post.call_args[0][1]
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "Day 1 Recap" in text
+        assert "Per-SKU Breakdown" not in text
 
 
 class TestSkuBreakdownCumulative:
