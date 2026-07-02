@@ -149,7 +149,7 @@ export const TIMEFRAME_STRATEGIES = [
 
 export const MARKETPLACE_TO_REGION: Record<string, string> = {
   US: "na", CA: "na", MX: "na",
-  UK: "eu", DE: "eu", FR: "eu", IT: "eu", ES: "eu", NL: "eu", SE: "eu", PL: "eu", TR: "eu",
+  UK: "eu", DE: "eu", FR: "eu", IT: "eu", ES: "eu", NL: "eu", BE: "eu", SE: "eu", PL: "eu", TR: "eu",
   AU: "fe", SG: "fe",
 };
 
@@ -170,6 +170,10 @@ export const MARKETPLACES: { id: string; label: string; flag: string }[] = [
   { id: "FR", label: "France", flag: "\u{1F1EB}\u{1F1F7}" },
   { id: "IT", label: "Italy", flag: "\u{1F1EE}\u{1F1F9}" },
   { id: "ES", label: "Spain", flag: "\u{1F1EA}\u{1F1F8}" },
+  { id: "NL", label: "Netherlands", flag: "\u{1F1F3}\u{1F1F1}" },
+  { id: "BE", label: "Belgium", flag: "\u{1F1E7}\u{1F1EA}" },
+  { id: "SE", label: "Sweden", flag: "\u{1F1F8}\u{1F1EA}" },
+  { id: "PL", label: "Poland", flag: "\u{1F1F5}\u{1F1F1}" },
   { id: "AU", label: "Australia", flag: "\u{1F1E6}\u{1F1FA}" },
 ];
 

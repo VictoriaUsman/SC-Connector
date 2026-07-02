@@ -18,7 +18,7 @@ LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 MARKETPLACE_TO_REGION: dict[str, str] = {
     "US": "na", "CA": "na", "MX": "na",
     "UK": "eu", "DE": "eu", "FR": "eu", "IT": "eu",
-    "ES": "eu", "NL": "eu", "SE": "eu", "PL": "eu", "TR": "eu",
+    "ES": "eu", "NL": "eu", "BE": "eu", "SE": "eu", "PL": "eu", "TR": "eu",
     "AU": "fe", "SG": "fe",
 }
 
@@ -40,6 +40,7 @@ MARKETPLACE_TIMEZONES: dict[str, str] = {
     "IT": "Europe/Paris",
     "ES": "Europe/Paris",
     "NL": "Europe/Paris",
+    "BE": "Europe/Paris",
     "SE": "Europe/Paris",
     "PL": "Europe/Paris",
     "TR": "Europe/Istanbul",
@@ -68,6 +69,10 @@ MARKETPLACE_IDS: dict[str, str] = {
     "FR": "A13V1IB3VIYZZH",
     "IT": "APJ6JRA9NG5V4",
     "ES": "A1RKKUPIHCS9HS",
+    "NL": "A1805IZSGTT6HS",
+    "BE": "AMEN7PMS3EDWL",
+    "SE": "A2NODRKZP88ZB9",
+    "PL": "A1C3SOZRARQ6R3",
     "AU": "A39IBJ37TRP1C6",
 }
 
@@ -90,6 +95,7 @@ MARKETPLACE_SALES_CHANNELS: dict[str, str] = {
     "IT": "Amazon.it",
     "ES": "Amazon.es",
     "NL": "Amazon.nl",
+    "BE": "Amazon.com.be",
     "SE": "Amazon.se",
     "PL": "Amazon.pl",
     "TR": "Amazon.com.tr",
