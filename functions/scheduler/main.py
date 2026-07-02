@@ -20,9 +20,9 @@ from typing import Any
 import flask
 
 from shared.firestore_utils import (
+    claim_due_schedule,
     get_client,
     list_due_schedules,
-    update_schedule_run_times,
 )
 from shared.logging_setup import init_logging
 from shared.schedule_compute import compute_next_run
@@ -47,8 +47,31 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
     random.shuffle(due)
 
-    by_client: dict[str, list[dict[str, Any]]] = {}
+    # Atomically claim each due schedule *before* fanning out. This advances
+    # next_run_at inside a transaction that only proceeds if the schedule is
+    # still due, so a duplicate scheduler invocation (Cloud Scheduler retry or
+    # an overlapping cron tick) cannot re-process the same schedule and produce
+    # duplicate report files. Only schedules we win the claim for are launched.
+    claimed: list[dict[str, Any]] = []
+    already_claimed = 0
     for sched in due:
+        schedule_config = sched.get("schedule_config", {"type": sched.get("frequency", "daily")})
+        try:
+            next_run = compute_next_run(now, schedule_config)
+        except Exception:
+            logger.exception("Failed to compute next run — skipping schedule", extra={"schedule_id": sched["id"]})
+            continue
+        if claim_due_schedule(sched["id"], now, next_run):
+            claimed.append(sched)
+        else:
+            already_claimed += 1
+            logger.info(
+                "Schedule already claimed by another run — skipping",
+                extra={"schedule_id": sched["id"]},
+            )
+
+    by_client: dict[str, list[dict[str, Any]]] = {}
+    for sched in claimed:
         for cid in _get_client_ids(sched):
             by_client.setdefault(cid, []).append(sched)
 
@@ -92,15 +115,16 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     logger.exception("Failed to launch workflow", extra={"schedule_id": sched["id"], "marketplace": marketplace})
                     errors.append({"schedule_id": sched["id"], "error": str(exc)})
 
-    for sched in due:
-        try:
-            schedule_config = sched.get("schedule_config", {"type": sched.get("frequency", "daily")})
-            next_run = compute_next_run(now, schedule_config)
-            update_schedule_run_times(sched["id"], last_run_at=now, next_run_at=next_run)
-        except Exception:
-            logger.exception("Failed to update schedule run times", extra={"schedule_id": sched["id"]})
+    # next_run_at / last_run_at are advanced at claim time (see the claim loop
+    # above), so there is no end-of-run update pass — that late update was the
+    # window that let a duplicate invocation re-fan-out the same schedules.
 
-    run_summary = {"launched": launched, "skipped": skipped, "errors": len(errors)}
+    run_summary = {
+        "launched": launched,
+        "skipped": skipped,
+        "errors": len(errors),
+        "already_claimed": already_claimed,
+    }
     if errors:
         # Returns HTTP 200 (the run itself succeeded) but per-schedule failures
         # must not be silent: emit a single ERROR so alerting + the agent see it.

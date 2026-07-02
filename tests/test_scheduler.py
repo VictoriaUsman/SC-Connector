@@ -57,6 +57,13 @@ def mock_launch():
         yield m
 
 
+@pytest.fixture(autouse=True)
+def mock_claim():
+    """By default, every due schedule is successfully claimed (won) by this run."""
+    with patch("scheduler.main.claim_due_schedule", return_value=True) as m:
+        yield m
+
+
 # ---------------------------------------------------------------------------
 # Core flow
 # ---------------------------------------------------------------------------
@@ -72,7 +79,7 @@ class TestSchedulerHandler:
         assert body["launched"] == 0
         mock_launch.assert_not_called()
 
-    def test_launches_workflow_for_due_schedule(self, mock_launch):
+    def test_launches_workflow_for_due_schedule(self, mock_launch, mock_claim):
         from scheduler.main import handler
 
         sched = _make_schedule()
@@ -81,7 +88,6 @@ class TestSchedulerHandler:
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
             patch("scheduler.main.client_has_credentials", return_value=True),
-            patch("scheduler.main.update_schedule_run_times") as mock_update,
         ):
             body, status = handler(_make_request())
 
@@ -94,7 +100,26 @@ class TestSchedulerHandler:
         assert call_kwargs[0][3] == "c1"   # client_id
         assert call_kwargs[0][4] == "US"   # marketplace
 
-        mock_update.assert_called_once()
+        mock_claim.assert_called_once()
+
+    def test_skips_schedule_already_claimed_by_another_run(self, mock_launch, mock_claim):
+        """A duplicate scheduler invocation must not re-fan-out a claimed schedule."""
+        from scheduler.main import handler
+
+        sched = _make_schedule()
+        mock_claim.return_value = False  # another invocation already claimed it
+
+        with (
+            patch("scheduler.main.list_due_schedules", return_value=[sched]),
+            patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
+            patch("scheduler.main.client_has_credentials", return_value=True),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["launched"] == 0
+        assert body["already_claimed"] == 1
+        mock_launch.assert_not_called()
 
     def test_skips_inactive_client(self, mock_launch):
         from scheduler.main import handler
@@ -135,7 +160,6 @@ class TestSchedulerHandler:
             patch("scheduler.main.list_due_schedules", return_value=schedules),
             patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
             patch("scheduler.main.client_has_credentials", return_value=True),
-            patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
 
@@ -157,7 +181,6 @@ class TestSchedulerHandler:
             patch("scheduler.main.list_due_schedules", return_value=scheds),
             patch("scheduler.main.get_client", side_effect=fake_get_client),
             patch("scheduler.main.client_has_credentials", return_value=True),
-            patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
 
@@ -190,7 +213,6 @@ class TestMultiMarketplaceFanOut:
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "testy", "is_active": True, "name": "testy"}),
             patch("scheduler.main.client_has_credentials", return_value=True),
-            patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
 
@@ -223,7 +245,6 @@ class TestMultiMarketplaceFanOut:
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "testy", "is_active": True}),
             patch("scheduler.main.client_has_credentials", return_value=True),
-            patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
 
@@ -248,7 +269,6 @@ class TestSchedulerErrors:
             patch("scheduler.main.list_due_schedules", return_value=[sched]),
             patch("scheduler.main.get_client", return_value={"id": "c1", "is_active": True}),
             patch("scheduler.main.client_has_credentials", return_value=True),
-            patch("scheduler.main.update_schedule_run_times"),
         ):
             body, status = handler(_make_request())
 

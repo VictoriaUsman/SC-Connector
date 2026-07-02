@@ -157,6 +157,72 @@ def update_schedule_run_times(
     })
 
 
+def _schedule_is_due(data: dict[str, Any] | None, now: datetime) -> bool:
+    """Whether a schedule doc is still due (``next_run_at`` <= ``now``).
+
+    A missing ``next_run_at`` is treated as due (it matched the due query and
+    should be claimed). Firestore returns timezone-aware datetimes, but we
+    defensively coerce naive values to UTC so the comparison never raises.
+    """
+    if data is None:
+        return False
+    next_run_at = data.get("next_run_at")
+    if next_run_at is None:
+        return True
+    if isinstance(next_run_at, datetime) and next_run_at.tzinfo is None:
+        next_run_at = next_run_at.replace(tzinfo=timezone.utc)
+    return next_run_at <= now
+
+
+def claim_due_schedule(
+    schedule_id: str,
+    now: datetime,
+    next_run_at: datetime,
+) -> bool:
+    """Atomically claim a due schedule for this run, advancing its run times.
+
+    The scheduler reads all schedules whose ``next_run_at <= now`` and fans out
+    workflows for each. Because Cloud Scheduler delivers at-least-once and a
+    slow run can overlap the next cron tick, two scheduler invocations could
+    both observe the same schedule as due and fan out duplicate workflows —
+    producing duplicate report files in Drive.
+
+    To make the claim exactly-once, we advance ``next_run_at`` inside a
+    Firestore transaction that first re-reads the document and only proceeds if
+    it is *still* due. The first invocation wins and fans out; any concurrent or
+    retried invocation sees the advanced ``next_run_at`` and returns ``False``,
+    so it skips the schedule.
+
+    Returns ``True`` if this caller claimed the schedule, ``False`` otherwise.
+    """
+    db = get_db()
+    ref = db.collection("schedules").document(schedule_id)
+
+    # Read ``firestore.transactional`` at call time so tests can patch it.
+    transactional = firestore.transactional
+
+    @transactional
+    def _claim(transaction) -> bool:
+        snapshot = ref.get(transaction=transaction)
+        data = snapshot.to_dict() if snapshot.exists else None
+        if not _schedule_is_due(data, now):
+            return False
+        transaction.update(ref, {"last_run_at": now, "next_run_at": next_run_at})
+        return True
+
+    try:
+        return bool(_claim(db.transaction()))
+    except Exception:
+        # A transaction contention loss (or transient Firestore error) means we
+        # could not safely claim the schedule; treat it as "someone else has
+        # it" so we never double-fan-out on error.
+        logger.warning(
+            "Failed to claim schedule — skipping to avoid duplicate fan-out",
+            extra={"schedule_id": schedule_id},
+        )
+        return False
+
+
 def delete_schedule(schedule_id: str) -> None:
     get_db().collection("schedules").document(schedule_id).delete()
 
@@ -174,6 +240,64 @@ def create_job(job_data: dict[str, Any]) -> str:
     doc_ref = get_db().collection("jobs").document()
     doc_ref.set(job_data)
     return doc_ref.id
+
+
+_JOB_DEDUPE_COLLECTION = "_job_launch_dedupe"
+
+
+def _job_dedupe_doc_id(dedupe_key: str) -> str:
+    """Deterministic, Firestore-safe document id for a launch dedupe key.
+
+    Keys can be long and contain characters Firestore forbids in ids (e.g.
+    slashes), so we hash them. Collisions are astronomically unlikely with
+    SHA-256 and would only ever suppress a genuinely-identical launch.
+    """
+    import hashlib
+
+    return hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()
+
+
+def try_claim_job_launch(dedupe_key: str, metadata: dict[str, Any] | None = None) -> bool:
+    """Atomically claim a launch dedupe key. Returns ``True`` if newly claimed.
+
+    Idempotency guard for workflow launches: a single logical pull (identified
+    by schedule, execution date, client, marketplace, report type and date
+    range) should only ever be launched once. We record the claim with
+    Firestore's atomic ``document.create()``; a duplicate launch attempt for the
+    same key fails with ``AlreadyExists`` and returns ``False``, so the caller
+    can skip it and avoid producing a duplicate Drive file.
+
+    Fails open: if Firestore is unavailable the launch proceeds (returns
+    ``True``) rather than silently dropping a report.
+    """
+    from google.api_core.exceptions import AlreadyExists
+
+    ref = (
+        get_db()
+        .collection(_JOB_DEDUPE_COLLECTION)
+        .document(_job_dedupe_doc_id(dedupe_key))
+    )
+    payload: dict[str, Any] = {
+        "dedupe_key": dedupe_key,
+        "created_at": datetime.now(timezone.utc),
+    }
+    if metadata:
+        payload.update(metadata)
+    try:
+        ref.create(payload)
+        return True
+    except AlreadyExists:
+        logger.info(
+            "Skipping duplicate workflow launch",
+            extra={"dedupe_key": dedupe_key, "phase": "launch_dedupe"},
+        )
+        return False
+    except Exception:
+        logger.warning(
+            "Launch dedupe check failed (non-fatal) — proceeding with launch",
+            extra={"dedupe_key": dedupe_key, "phase": "launch_dedupe"},
+        )
+        return True
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:

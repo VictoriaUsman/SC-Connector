@@ -21,7 +21,7 @@ from google.cloud.workflows.executions_v1.types import Execution
 
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES
 from shared.api_operations import get_api_operation, is_api_operation
-from shared.firestore_utils import create_job, update_job_status
+from shared.firestore_utils import create_job, try_claim_job_launch, update_job_status
 from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import (
     SALES_TRAFFIC_REPORT_TYPE,
@@ -217,6 +217,43 @@ def _expand_report_option_variants(type_params: dict[str, Any]) -> list[dict[str
     return variants
 
 
+def _launch_dedupe_key(
+    *,
+    trigger: str,
+    schedule_id: str,
+    execution_date: str,
+    client_id: str,
+    marketplace: str,
+    report_type: str,
+    api_source: str,
+    report_date: str,
+    report_end_date: str,
+    variant: dict[str, Any] | None,
+) -> str:
+    """Build a stable idempotency key for one logical report pull.
+
+    Two launches that share every component describe the exact same pull, so at
+    most one should ever run. ``trigger`` is included so a deliberate manual
+    "Run Now" after a scheduled run is not suppressed, while a duplicate of the
+    *same* trigger (two scheduler fires, or a double-clicked manual trigger) is.
+    """
+    variant_repr = json.dumps(variant, sort_keys=True, default=str) if variant else ""
+    return "|".join(
+        [
+            trigger,
+            schedule_id or "",
+            execution_date or "",
+            client_id,
+            marketplace,
+            report_type,
+            api_source,
+            report_date or "",
+            report_end_date or "",
+            variant_repr,
+        ]
+    )
+
+
 def launch_for_marketplace(
     parent: str,
     now: datetime,
@@ -254,6 +291,51 @@ def launch_for_marketplace(
     schedule_api_source = schedule.get("api_source", "sp_api")
     params_map = _get_report_params_map(schedule)
 
+    schedule_id = schedule["id"]
+    execution_date_str = execution_date_val.isoformat()
+    # "schedule" (cron) vs "manual"/"retry" etc. so a deliberate re-trigger is
+    # not deduped against the scheduled run, but a duplicate of the same source
+    # is. See _launch_dedupe_key.
+    trigger = (extra_job_fields or {}).get("trigger", "schedule")
+
+    def _claim_launch(report_type: str, api_source: str, report_date: str,
+                      report_end_date: str, variant: dict[str, Any] | None) -> bool:
+        key = _launch_dedupe_key(
+            trigger=trigger,
+            schedule_id=schedule_id,
+            execution_date=execution_date_str,
+            client_id=client_id,
+            marketplace=marketplace,
+            report_type=report_type,
+            api_source=api_source,
+            report_date=report_date,
+            report_end_date=report_end_date,
+            variant=variant,
+        )
+        claimed = try_claim_job_launch(
+            key,
+            metadata={
+                "schedule_id": schedule_id,
+                "client_id": client_id,
+                "marketplace": marketplace,
+                "report_type": report_type,
+                "execution_date": execution_date_str,
+            },
+        )
+        if not claimed:
+            logger.info(
+                "Skipping duplicate report pull for this run",
+                extra={
+                    "schedule_id": schedule_id,
+                    "client_id": client_id,
+                    "marketplace": marketplace,
+                    "report_type": report_type,
+                    "execution_date": execution_date_str,
+                    "phase": "launch_dedupe",
+                },
+            )
+        return claimed
+
     job_ids: list[str] = []
 
     for report_type in report_types:
@@ -276,6 +358,11 @@ def launch_for_marketplace(
         # failed job instead of launching a doomed workflow.
         removed_reason = removed_report_reason(report_type)
         if removed_reason and effective_source == "sp_api":
+            if not _claim_launch(
+                report_type, effective_source,
+                rt_start.isoformat(), rt_end.isoformat(), None,
+            ):
+                continue
             job_data = {
                 "client_id": client_id,
                 "api_source": effective_source,
@@ -314,6 +401,11 @@ def launch_for_marketplace(
         # cover the full requested range in one call, so there is no report-
         # option variant expansion and no single-day reconciliation re-pulls.
         if is_api_operation(report_type):
+            if not _claim_launch(
+                report_type, effective_source,
+                rt_start.isoformat(), rt_end.isoformat(), type_params,
+            ):
+                continue
             op_params = {**type_params}
             op_params.update(
                 compute_report_dates(marketplace, effective_source, rt_start, rt_end)
@@ -378,6 +470,13 @@ def launch_for_marketplace(
                     dates_to_pull.append((recon_date, recon_date, recon_params))
 
             for pull_start, pull_end, pull_params in dates_to_pull:
+                if not _claim_launch(
+                    report_type, effective_source,
+                    pull_start.isoformat(),
+                    pull_end.isoformat() if pull_end != pull_start else "",
+                    variant_params,
+                ):
+                    continue
                 job_data: dict[str, Any] = {
                     "client_id": client_id,
                     "api_source": effective_source,

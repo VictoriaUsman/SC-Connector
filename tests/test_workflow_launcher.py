@@ -636,3 +636,121 @@ class TestLaunchForMarketplaceApiOperations:
 
         assert ids == ["job-sns"]
         assert mock_exec_client.create_execution.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# launch_for_marketplace — idempotency / duplicate-pull guard
+# ---------------------------------------------------------------------------
+
+class TestLaunchForMarketplaceDedupe:
+    """A single logical pull (schedule+execution_date+client+marketplace+
+    report_type+date-range) must be launched at most once, even if the
+    scheduler fires twice — the root of the duplicate-Drive-file bug.
+    """
+
+    def _make_schedule(self, **overrides) -> dict:
+        sched = {
+            "id": "s1",
+            "api_source": "sp_api",
+            "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
+            "frequency": "daily",
+            "report_params": {},
+            "folder_name": "",
+            "subfolder_strategy": "date",
+            "reconciliation_days": [],
+            "timeframe": {"strategy": "yesterday"},
+        }
+        sched.update(overrides)
+        return sched
+
+    def test_second_identical_run_is_fully_deduped(self, mock_exec_client):
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule()
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        seen: set[str] = set()
+
+        def fake_claim(key, metadata=None):
+            if key in seen:
+                return False
+            seen.add(key)
+            return True
+
+        with (
+            patch("shared.workflow_launcher.try_claim_job_launch", side_effect=fake_claim),
+            patch("shared.workflow_launcher.create_job", side_effect=lambda d: "j"),
+        ):
+            ids1 = launch_for_marketplace("parent", now, sched, "c1", "US")
+            ids2 = launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        assert len(ids1) == 1
+        assert ids2 == []  # duplicate run produced no new jobs
+        assert mock_exec_client.create_execution.call_count == 1
+
+    def test_dedupe_skips_job_creation_and_launch(self, mock_exec_client):
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule()
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("shared.workflow_launcher.try_claim_job_launch", return_value=False),
+            patch("shared.workflow_launcher.create_job") as mock_create,
+        ):
+            ids = launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        assert ids == []
+        mock_create.assert_not_called()
+        mock_exec_client.create_execution.assert_not_called()
+
+    def test_reconciliation_pulls_have_distinct_keys(self, mock_exec_client):
+        """Primary + T-3/T-7 differ by report_date, so none are wrongly deduped."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(reconciliation_days=[3, 7])
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        keys: list[str] = []
+
+        def capture(key, metadata=None):
+            keys.append(key)
+            return True
+
+        with (
+            patch("shared.workflow_launcher.try_claim_job_launch", side_effect=capture),
+            patch("shared.workflow_launcher.create_job", side_effect=["j1", "j2", "j3"]),
+        ):
+            ids = launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        assert len(ids) == 3
+        assert len(set(keys)) == 3
+
+    def test_manual_trigger_not_deduped_against_scheduled(self, mock_exec_client):
+        """A deliberate manual re-run uses a different trigger scope, so it is
+        not suppressed by the scheduled run's dedupe key."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule()
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        keys: list[str] = []
+
+        def capture(key, metadata=None):
+            keys.append(key)
+            return True
+
+        with (
+            patch("shared.workflow_launcher.try_claim_job_launch", side_effect=capture),
+            patch("shared.workflow_launcher.create_job", side_effect=lambda d: "j"),
+        ):
+            launch_for_marketplace("parent", now, sched, "c1", "US")
+            launch_for_marketplace(
+                "parent", now, sched, "c1", "US",
+                extra_job_fields={"trigger": "manual"},
+            )
+
+        assert len(keys) == 2
+        assert keys[0] != keys[1]
+        assert keys[0].startswith("schedule|")
+        assert keys[1].startswith("manual|")
