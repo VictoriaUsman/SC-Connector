@@ -522,6 +522,101 @@ class TestUploadOrReplace:
         body = create_call.kwargs.get("body") or create_call[1].get("body")
         assert body["mimeType"] == "application/vnd.google-apps.spreadsheet"
 
+    def test_converted_sheet_stored_without_extension(self, mock_service):
+        """A TSV converted to a Sheet must be stored under its extension-less
+        stem, matching the title Drive assigns — so future replace searches
+        (which look for the stem) always find and replace it."""
+        from shared.drive_client import upload_or_replace
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "sheet-1"}
+
+        upload_or_replace(
+            "sbCampaigns_2026-06-23_to_2026-07-06_Foamma_US.tsv",
+            b"col1\tcol2\nval1\tval2", "folder-1",
+            mime_type="text/tab-separated-values",
+        )
+
+        create_call = mock_service.files().create.call_args
+        body = create_call.kwargs.get("body") or create_call[1].get("body")
+        assert body["name"] == "sbCampaigns_2026-06-23_to_2026-07-06_Foamma_US"
+
+    def test_replace_search_matches_extension_stripped_sheet(self, mock_service):
+        """Regression for recurring duplicate Sheets (CU-868k7evq5).
+
+        Drive drops the extension when converting a TSV to a Sheet, so a report
+        uploaded as ``<name>.tsv`` is stored as ``<name>``. The replace search
+        must look for BOTH names, otherwise the already-converted Sheet is never
+        found, never deleted, and each re-upload stacks another duplicate."""
+        from shared.drive_client import upload_or_replace
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "new-sheet"}
+
+        upload_or_replace(
+            "report.tsv", b"col1\tcol2\nval1\tval2", "folder-1",
+            mime_type="text/tab-separated-values",
+        )
+
+        search_queries = [
+            c.kwargs.get("q")
+            for c in mock_service.files().list.call_args_list
+            if c.kwargs.get("q")
+        ]
+        assert search_queries, "expected a search query for existing files"
+        q = search_queries[-1]
+        assert "name='report.tsv'" in q
+        assert "name='report'" in q
+
+    def test_replaces_already_converted_duplicate_sheet(self, mock_service):
+        """End-to-end: an existing extension-less Sheet is deleted before the
+        new upload, so the folder converges to exactly one file per report."""
+        from shared.drive_client import upload_or_replace
+
+        # The broadened search surfaces the previously-converted Sheet (whose
+        # stored title has no extension).
+        mock_service.files().list().execute.return_value = {
+            "files": [{"id": "stale-sheet"}]
+        }
+        mock_service.files().create().execute.return_value = {"id": "fresh-sheet"}
+
+        result = upload_or_replace(
+            "spCampaigns_2026-06-23_to_2026-07-06_Rolio_US.tsv",
+            b"col1\tcol2\nval1\tval2", "folder-1",
+            mime_type="text/tab-separated-values",
+        )
+
+        assert result == "fresh-sheet"
+        mock_service.files().delete.assert_called_once()
+        deleted_id = (
+            mock_service.files().delete.call_args.kwargs.get("fileId")
+            or mock_service.files().delete.call_args[1].get("fileId")
+        )
+        assert deleted_id == "stale-sheet"
+
+    def test_json_replace_search_uses_exact_name_only(self, mock_service):
+        """Non-convertible types (JSON/XML) keep their extension in Drive, so
+        the stem is not added to the search (avoids matching unrelated files)."""
+        from shared.drive_client import upload_or_replace
+
+        mock_service.files().list().execute.return_value = {"files": []}
+        mock_service.files().create().execute.return_value = {"id": "file-json"}
+
+        upload_or_replace(
+            "report.json", b'{"data": 1}', "folder-1",
+            mime_type="application/json",
+        )
+
+        search_queries = [
+            c.kwargs.get("q")
+            for c in mock_service.files().list.call_args_list
+            if c.kwargs.get("q")
+        ]
+        assert search_queries
+        q = search_queries[-1]
+        assert "name='report.json'" in q
+        assert "name='report'" not in q
+
     def test_converts_small_csv_to_google_sheet(self, mock_service):
         from shared.drive_client import upload_or_replace
 

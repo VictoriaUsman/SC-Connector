@@ -363,6 +363,11 @@ _SHEETS_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 _SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 
 
+def _strip_extension(filename: str) -> str:
+    """Return ``filename`` without its trailing extension (if any)."""
+    return filename.rsplit(".", 1)[0] if "." in filename else filename
+
+
 def upload_or_replace(
     filename: str,
     content: bytes,
@@ -374,12 +379,40 @@ def upload_or_replace(
     TSV/CSV files under 10 MB are auto-converted to native Google Sheets
     so that Claude (and other tools) can read them directly via the
     Google Drive connector.
+
+    When a TSV/CSV is converted to a native Google Sheet, Drive drops the file
+    extension from the stored title (a Sheet has no extension) — so a file
+    uploaded as ``report.tsv`` is stored and searchable only as ``report``. If
+    the replace search looked only for the extension-qualified ``report.tsv``,
+    it would never match the already-converted Sheet, so the stale copy would
+    never be deleted and every re-upload (a re-run, workflow retry, or a
+    duplicate trigger) would stack another duplicate Sheet in the folder. To
+    replace reliably we (a) search for both the extension-qualified name and
+    the extension-stripped stem for Sheets-convertible reports, and (b) store
+    the converted Sheet under the stem so its title is deterministic and future
+    searches always find it.
     """
     from googleapiclient.errors import HttpError
 
     service = get_service()
 
-    query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+    convert_to_sheets = (
+        mime_type in _SHEETS_CONVERTIBLE_MIMES
+        and len(content) <= _SHEETS_SIZE_LIMIT
+    )
+
+    # Match both the raw filename and, for Sheets-convertible report types, the
+    # extension-stripped title Drive assigns to the converted Sheet. This cleans
+    # up both legacy raw uploads and previously-converted Sheets regardless of
+    # this run's size (a prior smaller run may already be an extension-less
+    # Sheet even if this content skips conversion).
+    stem = _strip_extension(filename)
+    names_to_replace = [filename]
+    if mime_type in _SHEETS_CONVERTIBLE_MIMES and stem != filename:
+        names_to_replace.append(stem)
+
+    name_clause = " or ".join(f"name='{name}'" for name in names_to_replace)
+    query = f"({name_clause}) and '{folder_id}' in parents and trashed=false"
     existing = service.files().list(
         q=query,
         fields="files(id)",
@@ -397,11 +430,10 @@ def upload_or_replace(
             else:
                 raise
 
-    body: dict = {"name": filename, "parents": [folder_id]}
-    convert_to_sheets = (
-        mime_type in _SHEETS_CONVERTIBLE_MIMES
-        and len(content) <= _SHEETS_SIZE_LIMIT
-    )
+    # Store the converted Sheet under the extension-stripped stem so its title
+    # matches what Drive would assign anyway, keeping the replace search stable.
+    stored_name = stem if convert_to_sheets else filename
+    body: dict = {"name": stored_name, "parents": [folder_id]}
     if convert_to_sheets:
         body["mimeType"] = _SHEETS_MIME
         logger.info(
