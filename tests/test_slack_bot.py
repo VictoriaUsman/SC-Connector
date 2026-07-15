@@ -664,8 +664,10 @@ class TestHandlerIntegration:
                 total_sales=90.69, units=3, spend=102.57, ppc_sales=293.79,
             ),
         ]
+        midday_pdt = datetime(2026, 7, 14, 18, 5, tzinfo=timezone.utc)  # 11:05 AM PDT
 
         with (
+            patch("slack_bot.main.datetime") as mock_dt_cls,
             patch("slack_bot.main.get_live_event", return_value={
                 "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
             }),
@@ -675,6 +677,7 @@ class TestHandlerIntegration:
             patch("slack_bot.main.post_message") as mock_post,
             patch("slack_bot.main.log_bot_activity") as mock_log,
         ):
+            mock_dt_cls.now.return_value = midday_pdt
             body, status = handler(_make_request())
 
         assert status == 200
@@ -2050,7 +2053,9 @@ class TestCombinedHandlerIntegration:
     def _run(self, configs, per_member, rates, *, sku_rows=None):
         from slack_bot.main import handler
 
+        midday_pdt = datetime(2026, 7, 14, 18, 5, tzinfo=timezone.utc)  # 11:05 AM PDT
         patches = [
+            patch("slack_bot.main.datetime"),
             patch("slack_bot.main.get_live_event", return_value={
                 "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
             }),
@@ -2070,8 +2075,9 @@ class TestCombinedHandlerIntegration:
         from contextlib import ExitStack
         with ExitStack() as stack:
             mocks = [stack.enter_context(p) for p in patches]
+            mocks[0].now.return_value = midday_pdt
             body, status = handler(_make_request())
-        mock_post = mocks[7]
+        mock_post = mocks[8]
         return body, status, mock_post
 
     def test_two_configs_combine_into_one_message_with_converted_total(self):
