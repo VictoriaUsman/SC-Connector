@@ -219,7 +219,15 @@ report_pipeline:
             folder_name: ${default(map.get(args, "folder_name"), "")}
             subfolder_strategy: ${default(map.get(args, "subfolder_strategy"), "date")}
             execution_date: ${default(map.get(args, "execution_date"), "")}
-          max_throttle_retries: 5
+          # The download-upload function has a small max-instance ceiling and
+          # each Ads campaign download holds an instance for minutes (the SB
+          # campaigns legacy v2 augmentation especially). During the scheduler's
+          # nightly fan-out many reports become ready at once, saturate the
+          # service, and the platform sheds the excess invocations with a 429
+          # "Rate exceeded." (Google Frontend). A 5-retry budget was exhausted
+          # before the service drained, crashing the workflow; ride the
+          # saturation window out with a larger budget so the pull self-heals.
+          max_throttle_retries: 10
           initial_wait_seconds: 60
         result: download_response
 
@@ -352,7 +360,11 @@ report_pipeline:
             execution_date: ${default(map.get(args, "execution_date"), "")}
             report_date: ${default(map.get(args, "report_date"), "")}
             report_end_date: ${default(map.get(args, "report_end_date"), "")}
-          max_throttle_retries: 5
+          # fetch_api shares the same small max-instance ceiling and long
+          # per-invocation hold as download-upload, so it is subject to the same
+          # platform 429 "Rate exceeded." under concurrent fan-out. Use the same
+          # enlarged throttle budget so a synchronous API pull also self-heals.
+          max_throttle_retries: 10
           initial_wait_seconds: 30
         result: fetch_response
 

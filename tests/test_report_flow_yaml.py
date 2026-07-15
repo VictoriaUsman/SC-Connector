@@ -11,6 +11,14 @@ Covers CU-868k0buex:
     transport error (Connection reset / timeout, as surfaced by the SB
     campaigns legacy v2 augmentation) does not raise
     "KeyError: key not found: code".
+
+Covers CU-868k9yg8r:
+  * The download-upload (and fetch_api) steps must carry a throttle-retry
+    budget large enough to ride out a platform 429 "Rate exceeded." burst.
+    During the scheduler's nightly fan-out the download-upload service
+    saturates and Google Frontend sheds the excess invocations with 429; a
+    5-retry budget was exhausted before the service drained, crashing the
+    workflow. The budget must stay >= 10 so the pull self-heals.
 """
 
 from __future__ import annotations
@@ -134,3 +142,43 @@ class TestCodeAccessIsNullSafe:
         cond = call_except["check_throttle"]["switch"][0]["condition"]
         assert "call_err.code" not in cond, cond
         assert 'map.get(call_err, "code")' in cond, cond
+
+
+class TestThrottleBudgetRidesOutRateExceeded:
+    """CU-868k9yg8r: the download-upload / fetch_api invocations get platform
+    429 "Rate exceeded." when the service saturates during the nightly fan-out.
+    Their throttle-retry budget must be large enough (>= 10) to outlast the
+    saturation window so the affected pulls retry automatically and complete,
+    and a 429 must be classified as a throttle (retryable via backoff)."""
+
+    _MIN_DOWNLOAD_BUDGET = 10
+
+    def _pipeline_steps(self) -> dict:
+        return _steps_to_map(_load()["report_pipeline"]["steps"])
+
+    def test_download_upload_uses_throttle_retry_call(self):
+        step = self._pipeline_steps()["download_upload"]
+        assert step["call"] == "throttle_retry_call"
+
+    def test_download_upload_budget_is_large_enough(self):
+        args = self._pipeline_steps()["download_upload"]["args"]
+        assert args["max_throttle_retries"] >= self._MIN_DOWNLOAD_BUDGET, (
+            f"download-upload throttle budget too small to survive a 'Rate "
+            f"exceeded.' burst: {args['max_throttle_retries']}"
+        )
+
+    def test_api_call_fetch_budget_is_large_enough(self):
+        args = self._pipeline_steps()["api_call_fetch"]["args"]
+        assert args["max_throttle_retries"] >= self._MIN_DOWNLOAD_BUDGET, (
+            f"fetch_api throttle budget too small to survive a 'Rate exceeded.' "
+            f"burst: {args['max_throttle_retries']}"
+        )
+
+    def test_429_is_treated_as_a_throttle_and_backs_off(self):
+        doc = _load()
+        throttle_steps = _steps_to_map(doc["throttle_retry_call"]["steps"])
+        call_except = _steps_to_map(throttle_steps["attempt_call"]["except"]["steps"])
+        first_branch = call_except["check_throttle"]["switch"][0]
+        # A 429 within the retry budget must route to the backoff step, not raise.
+        assert "429" in first_branch["condition"]
+        assert first_branch["next"] == "throttle_backoff"

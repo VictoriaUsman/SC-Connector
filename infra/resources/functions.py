@@ -13,7 +13,12 @@ FUNCTION_DEFS = [
     {"name": "auth",            "source_dir": "auth",            "memory": "256Mi", "timeout": 60,  "max_instances": 5},
     {"name": "create-report",   "source_dir": "create_report",   "memory": "256Mi", "timeout": 120, "max_instances": 20},
     {"name": "poll-status",     "source_dir": "poll_status",     "memory": "256Mi", "timeout": 60,  "max_instances": 20},
-    {"name": "download-upload", "source_dir": "download_upload", "memory": "512Mi", "timeout": 540, "max_instances": 10},
+    # download-upload holds an instance for minutes per Ads campaign download
+    # (the SB campaigns legacy v2 augmentation especially). A ceiling of 10 was
+    # saturated during the scheduler's nightly fan-out, so the platform shed the
+    # excess invocations with 429 "Rate exceeded." Raise the ceiling so bursts
+    # of concurrent downloads are served instead of throttled.
+    {"name": "download-upload", "source_dir": "download_upload", "memory": "512Mi", "timeout": 540, "max_instances": 30},
     {"name": "scheduler",       "source_dir": "scheduler",       "memory": "256Mi", "timeout": 540, "max_instances": 1},
     {"name": "api",             "source_dir": "api",             "memory": "256Mi", "timeout": 60,  "max_instances": 10},
     {"name": "ingest-bigquery",          "source_dir": "ingest_bigquery",          "memory": "512Mi", "timeout": 300, "max_instances": 10},
