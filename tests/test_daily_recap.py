@@ -437,3 +437,73 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
 
         assert mock_query.call_args[0][2] == "2026-06-04"
         assert mock_post.call_args[0][1][0]["text"]["text"].startswith("06/04/26\n")
+
+
+# ---------------------------------------------------------------------------
+# AU (Amazon Australia) account — end-to-end daily recap (CU-868k6gq75)
+# ---------------------------------------------------------------------------
+
+
+class TestAuAccountEndToEnd:
+    """An AU account produces and delivers a daily recap like US/UK/EU accounts.
+
+    AU is region ``fe`` and uses AUD + Australia/Sydney. This drives the real
+    query-construction and currency-formatting paths (only BigQuery and Slack
+    transport are faked) to prove the recap generates and delivers for AU.
+    """
+
+    def test_recap_generated_and_delivered_for_au_account(self):
+        from daily_recap.main import handler
+
+        config = _make_bot_config(client_id="acme-au", marketplaces=["AU"])
+        config["base_currency"] = "AUD"
+        config["client_timezone"] = "Australia/Sydney"
+
+        # 01:00 UTC on 07/02 is 11:00 AEST (UTC+10) on 07/02 -> previous day 07/01.
+        # A datetime subclass freezes now() while still constructing real
+        # datetimes (the real _day_bounds_utc path builds the AU day window).
+        now = datetime(2026, 7, 2, 1, 0, tzinfo=timezone.utc)
+
+        class _FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now.astimezone(tz) if tz else now
+
+        fake = _FakeBQ([
+            ("`proj.ds.orders_latest`", [{"total_sales": 1604.29}]),
+            ("UNION ALL", [{"spend": 100.18, "ppc_sales": 347.68}]),
+        ])
+
+        with (
+            patch("daily_recap.main.datetime", _FrozenDateTime),
+            patch("daily_recap.main.list_bot_configs", return_value=[config]),
+            patch("daily_recap.main.get_client", return_value={"id": "acme-au", "name": "Acme AU", "is_active": True}),
+            patch("daily_recap.main._get_bq", return_value=fake),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity") as mock_log,
+            patch.dict(os.environ, {"GCP_PROJECT": "proj", "BQ_DATASET": "ds"}),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+
+        # The recap targets yesterday in Sydney and scopes BigQuery to AU.
+        orders_call = next(c for c in fake.calls if "`proj.ds.orders_latest`" in c[0])
+        assert _params(orders_call[1])["marketplaces"] == ["AU"]
+        ads_call = next(c for c in fake.calls if "UNION ALL" in c[0])
+        assert _params(ads_call[1])["marketplaces"] == ["AU"]
+
+        # Delivered message: Sydney recap date + AUD (A$) currency symbol.
+        text = mock_post.call_args[0][1][0]["text"]["text"]
+        assert text.startswith("07/01/26\n")
+        assert "• Spend: A$100.18" in text
+        assert "• PPC Sales: A$347.68" in text
+        assert "• Total Sales: A$1,604.29" in text
+        assert "• ACoS: 28.81%" in text
+        assert "• TACoS: 6.24%" in text
+
+        log_data = mock_log.call_args[0][0]
+        assert log_data["status"] == "sent"
+        assert log_data["marketplaces_reported"] == ["AU"]
+        assert log_data["recap_date"] == "2026-07-01"
