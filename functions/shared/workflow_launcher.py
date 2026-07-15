@@ -129,8 +129,21 @@ def launch_execution(
 
 
 def get_report_types(schedule: dict[str, Any]) -> list[str]:
-    """Extract the report_types list from a schedule (or request data) dict."""
-    return schedule.get("report_types") or []
+    """Extract the report_types list from a schedule (or request data) dict.
+
+    Backward-compatible with the legacy singular ``report_type`` field, mirroring
+    how the scheduler already tolerates legacy singular ``client_id`` /
+    ``marketplace``. Without this fallback a schedule persisted with only a
+    singular ``report_type`` fans out to zero report types, so the run produces
+    no jobs at all and the UI shows "No jobs found for this run".
+    """
+    report_types = schedule.get("report_types")
+    if report_types:
+        return report_types
+    legacy = schedule.get("report_type")
+    if legacy:
+        return [legacy]
+    return []
 
 
 def is_ads_report_type(report_type: str) -> bool:

@@ -134,6 +134,41 @@ class TestBuildPayload:
 
 
 # ---------------------------------------------------------------------------
+# get_report_types — plural + legacy singular support
+# ---------------------------------------------------------------------------
+
+class TestGetReportTypes:
+    def test_plural_report_types(self):
+        from shared.workflow_launcher import get_report_types
+
+        assert get_report_types({"report_types": ["spCampaigns", "spTargeting"]}) == [
+            "spCampaigns",
+            "spTargeting",
+        ]
+
+    def test_legacy_singular_report_type(self):
+        """A schedule persisted with only a singular ``report_type`` must still
+        resolve to a one-element list — otherwise its run produces zero jobs."""
+        from shared.workflow_launcher import get_report_types
+
+        assert get_report_types({"report_type": "spCampaigns"}) == ["spCampaigns"]
+
+    def test_plural_takes_precedence_over_singular(self):
+        from shared.workflow_launcher import get_report_types
+
+        assert get_report_types(
+            {"report_types": ["spCampaigns"], "report_type": "ignored"}
+        ) == ["spCampaigns"]
+
+    def test_empty_returns_empty_list(self):
+        from shared.workflow_launcher import get_report_types
+
+        assert get_report_types({}) == []
+        assert get_report_types({"report_types": []}) == []
+        assert get_report_types({"report_type": ""}) == []
+
+
+# ---------------------------------------------------------------------------
 # launch_execution — retry behavior
 # ---------------------------------------------------------------------------
 
@@ -209,6 +244,25 @@ class TestLaunchForMarketplace:
         assert payload["client_id"] == "c1"
         assert payload["marketplace"] == "US"
         assert payload["schedule_id"] == "s1"
+
+    def test_legacy_singular_report_type_produces_job(self, mock_exec_client):
+        """Regression: a schedule persisted with a legacy singular ``report_type``
+        (no ``report_types`` array) must still fan out at least one job, instead
+        of silently producing none ("No jobs found for this run")."""
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(reconciliation_days=[])
+        del sched["report_types"]
+        sched["report_type"] = "GET_SALES_AND_TRAFFIC_REPORT"
+        now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
+        with patch("shared.workflow_launcher.create_job", return_value="job-1"):
+            ids = launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        assert ids == ["job-1"]
+        mock_exec_client.create_execution.assert_called_once()
+        payload = json.loads(mock_exec_client.create_execution.call_args.kwargs["execution"].argument)
+        assert payload["report_type"] == "GET_SALES_AND_TRAFFIC_REPORT"
 
     def test_execution_date_in_payload(self, mock_exec_client):
         from shared.workflow_launcher import launch_for_marketplace
