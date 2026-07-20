@@ -37,6 +37,17 @@ SALES_TRAFFIC_DATA_LAG_DAYS = 1
 _SALES_TRAFFIC_TRAILING_STRATEGIES = {"yesterday", "today", "last_n_days"}
 
 
+def is_sales_traffic_trailing(strategy: str) -> bool:
+    """True if a Sales & Traffic pull with this strategy is ops-anchored + lagged.
+
+    Trailing strategies get the operations-timezone anchoring and the
+    data-availability lag (see ``compute_sales_traffic_date_range``); fixed
+    calendar-period and historical windows do not. Exposed so callers (e.g. the
+    workflow launcher's window logging) can report which path was taken.
+    """
+    return strategy in _SALES_TRAFFIC_TRAILING_STRATEGIES
+
+
 def get_marketplace_tz(marketplace: str) -> ZoneInfo:
     tz_name = MARKETPLACE_TIMEZONES.get(marketplace, "America/Los_Angeles")
     return ZoneInfo(tz_name)

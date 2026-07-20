@@ -28,6 +28,7 @@ from shared.schedule_compute import (
     compute_date_range,
     compute_report_dates,
     compute_sales_traffic_date_range,
+    is_sales_traffic_trailing,
     marketplace_today,
     marketplace_yesterday,
 )
@@ -360,10 +361,36 @@ def launch_for_marketplace(
         # pulls through the same complete end date (D-2 from the run date) even
         # when the scheduler fires near a day boundary. All other report types
         # use the standard marketplace-local range computed above.
-        if report_type == SALES_TRAFFIC_REPORT_TYPE and effective_source == "sp_api":
+        sales_traffic_window = (
+            report_type == SALES_TRAFFIC_REPORT_TYPE and effective_source == "sp_api"
+        )
+        if sales_traffic_window:
             rt_start, rt_end = compute_sales_traffic_date_range(marketplace, timeframe, now)
         else:
             rt_start, rt_end = start_date, end_date
+
+        # Structured record of the resolved pull window at launch time. Without
+        # this, diagnosing a "window is short / inconsistent across marketplaces"
+        # report means reverse-engineering the range from job documents after the
+        # fact. ``ops_anchored`` flags the Sales & Traffic operations-timezone
+        # anchoring + data-availability lag path, which is where such window bugs
+        # have historically hidden.
+        logger.info(
+            "Resolved report pull window",
+            extra={
+                "schedule_id": schedule.get("id"),
+                "client_id": client_id,
+                "marketplace": marketplace,
+                "report_type": report_type,
+                "api_source": effective_source,
+                "strategy": strategy,
+                "ops_anchored": sales_traffic_window and is_sales_traffic_trailing(strategy),
+                "window_start": rt_start.isoformat(),
+                "window_end": rt_end.isoformat(),
+                "window_days": (rt_end - rt_start).days + 1,
+                "execution_date": execution_date_val.isoformat(),
+            },
+        )
 
         # Report types Amazon has permanently removed are accepted by createReport
         # but immediately cancelled, wasting the limited createReport quota and

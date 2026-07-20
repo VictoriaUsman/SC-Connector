@@ -642,6 +642,81 @@ class TestLaunchForMarketplaceSalesTraffic:
 
 
 # ---------------------------------------------------------------------------
+# launch_for_marketplace — resolved-window structured logging
+# ---------------------------------------------------------------------------
+
+class TestLaunchForMarketplaceWindowLog:
+    """The launcher must emit one structured 'Resolved report pull window' log
+    per report type so a short/inconsistent-window report is a single log query
+    rather than a job-document reconstruction.
+    """
+
+    def _make_schedule(self, **overrides) -> dict:
+        sched = {
+            "id": "s1",
+            "api_source": "sp_api",
+            "report_types": ["GET_SALES_AND_TRAFFIC_REPORT"],
+            "frequency": "daily",
+            "report_params": {},
+            "folder_name": "",
+            "subfolder_strategy": "date",
+            "reconciliation_days": [],
+            "timeframe": {"strategy": "last_n_days", "days": 30, "end_offset_days": 0},
+        }
+        sched.update(overrides)
+        return sched
+
+    def _window_record(self, caplog):
+        recs = [r for r in caplog.records if r.getMessage() == "Resolved report pull window"]
+        assert len(recs) == 1, [r.getMessage() for r in caplog.records]
+        return recs[0]
+
+    def test_sales_traffic_last_n_days_log_is_ops_anchored(self, mock_exec_client, caplog):
+        import logging
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule()
+        now = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc)  # 6am PHT Jun 11
+
+        with caplog.at_level(logging.INFO, logger="shared.workflow_launcher"):
+            with patch("shared.workflow_launcher.create_job", return_value="j1"):
+                launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        rec = self._window_record(caplog)
+        assert rec.report_type == "GET_SALES_AND_TRAFFIC_REPORT"
+        assert rec.strategy == "last_n_days"
+        assert rec.ops_anchored is True
+        assert rec.window_end == "2026-06-09"
+        assert rec.window_days == 30
+
+    def test_br_ly_rolling_window_log_is_full_30_days_not_ops_anchored(self, mock_exec_client, caplog):
+        """BR last-year rolling window: 30 inclusive days, no S&T lag/anchoring.
+
+        Regression for the recurrence where the last-year comparison window came
+        back 29 days ending one day early (rolling_window off-by-one + the S&T
+        data lag wrongly applied to a year-old window).
+        """
+        import logging
+        from shared.workflow_launcher import launch_for_marketplace
+
+        sched = self._make_schedule(
+            timeframe={"strategy": "rolling_window", "start_offset": -364, "end_offset": -336},
+        )
+        now = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
+
+        with caplog.at_level(logging.INFO, logger="shared.workflow_launcher"):
+            with patch("shared.workflow_launcher.create_job", return_value="j1"):
+                launch_for_marketplace("parent", now, sched, "c1", "US")
+
+        rec = self._window_record(caplog)
+        assert rec.strategy == "rolling_window"
+        assert rec.ops_anchored is False
+        assert rec.window_start == "2025-07-20"
+        assert rec.window_end == "2025-08-18"
+        assert rec.window_days == 30
+
+
+# ---------------------------------------------------------------------------
 # launch_for_marketplace — synchronous API operations (mode="api_call")
 # ---------------------------------------------------------------------------
 
