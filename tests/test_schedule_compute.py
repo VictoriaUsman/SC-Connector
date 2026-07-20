@@ -89,7 +89,9 @@ class TestComputeDateRange:
         start, end = compute_date_range(
             "US", {"strategy": "rolling_window", "start_offset": -7, "end_offset": -1}, now
         )
-        assert start == date(2026, 3, 13)
+        # Inclusive of both boundary days: end lands on today-1 (Mar 19) and the
+        # start day (today-7) is fully included, so the window opens on Mar 12.
+        assert start == date(2026, 3, 12)
         assert end == date(2026, 3, 19)
 
     def test_rolling_window_same_day(self):
@@ -99,7 +101,30 @@ class TestComputeDateRange:
         start, end = compute_date_range(
             "US", {"strategy": "rolling_window", "start_offset": -1, "end_offset": -1}, now
         )
-        assert start == end == date(2026, 3, 19)
+        # Both boundaries name today-1 (Mar 19); the window is inclusive of its
+        # start day, so it spans Mar 18–19.
+        assert start == date(2026, 3, 18)
+        assert end == date(2026, 3, 19)
+
+    def test_rolling_window_single_unit_offset_is_one_day_shift(self):
+        """A one-unit change to either offset must move the date exactly one day."""
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 3, 20)
+
+        def rng(so, eo):
+            return compute_date_range(
+                "US", {"strategy": "rolling_window", "start_offset": so, "end_offset": eo}, now
+            )
+
+        s0, _ = rng(-7, -1)
+        s1, _ = rng(-6, -1)  # start one day later
+        s2, _ = rng(-8, -1)  # start one day earlier
+        assert (s1 - s0).days == 1
+        assert (s0 - s2).days == 1
+        _, e0 = rng(-7, -1)
+        _, e1 = rng(-7, -2)  # end one day earlier
+        assert (e0 - e1).days == 1
 
     # -- last_calendar_week --------------------------------------------------
 
@@ -403,6 +428,85 @@ class TestComputeSalesTrafficDateRange:
         assert (
             compute_sales_traffic_date_range("US", tf, now)
             == compute_date_range("US", tf, now)
+        )
+
+
+# ---------------------------------------------------------------------------
+# BR last-year (LY) comparison windows — CU-868kdyjc1
+#
+# The BR "LY30D" / "LY N30D" schedules pull Sales & Traffic over a rolling
+# window ~a year in the past for year-over-year comparison. Two bugs made the
+# resolved window a day short / shifted:
+#   1. rolling_window dropped its first day (start boundary off by one).
+#   2. the Sales & Traffic trailing-data lag was wrongly applied to these
+#      historical windows, shifting the whole range back a day.
+# Both the plain and the Sales & Traffic resolution paths must now produce the
+# exact windows the ops tracking sheet expects, with the stored offsets
+# unchanged, and adjacent offsets must move the range by exactly one day.
+# ---------------------------------------------------------------------------
+
+class TestBenchmarkLastYearWindows:
+
+    # A midday run so both the marketplace clock and the ops clock read
+    # 2026-07-20 (the ticket's fixed run date).
+    _RUN_2026_07_20 = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+
+    def test_ly30d_resolves_to_intended_30_day_window(self):
+        """AC1: offsets (-394, -366) → 2025-06-20…2025-07-19 (30 days)."""
+        from shared.schedule_compute import (
+            compute_date_range,
+            compute_sales_traffic_date_range,
+        )
+
+        tf = {"strategy": "rolling_window", "start_offset": -394, "end_offset": -366}
+        expected = (date(2025, 6, 20), date(2025, 7, 19))
+        assert compute_date_range("US", tf, self._RUN_2026_07_20) == expected
+        # These schedules are Sales & Traffic — the actual production path.
+        assert compute_sales_traffic_date_range("US", tf, self._RUN_2026_07_20) == expected
+        start, end = expected
+        assert (end - start).days + 1 == 30
+
+    def test_ly_n30d_regression_still_correct(self):
+        """AC3: offsets (-364, -336) → 2025-07-20…2025-08-18 (30 days), unchanged."""
+        from shared.schedule_compute import (
+            compute_date_range,
+            compute_sales_traffic_date_range,
+        )
+
+        tf = {"strategy": "rolling_window", "start_offset": -364, "end_offset": -336}
+        expected = (date(2025, 7, 20), date(2025, 8, 18))
+        assert compute_date_range("US", tf, self._RUN_2026_07_20) == expected
+        assert compute_sales_traffic_date_range("US", tf, self._RUN_2026_07_20) == expected
+        start, end = expected
+        assert (end - start).days + 1 == 30
+
+    def test_single_unit_start_offset_shift_is_one_clean_day(self):
+        """AC2: -395/-394/-393 produce start dates one clean day apart, no skips."""
+        from shared.schedule_compute import compute_sales_traffic_date_range
+
+        starts = {
+            off: compute_sales_traffic_date_range(
+                "US",
+                {"strategy": "rolling_window", "start_offset": off, "end_offset": -366},
+                self._RUN_2026_07_20,
+            )[0]
+            for off in (-395, -394, -393)
+        }
+        assert starts[-395] == date(2025, 6, 19)
+        assert starts[-394] == date(2025, 6, 20)  # the previously-skipped target day
+        assert starts[-393] == date(2025, 6, 21)
+
+    def test_ly_window_not_shifted_by_sales_traffic_data_lag(self):
+        """Historical rolling windows must match the plain marketplace range."""
+        from shared.schedule_compute import (
+            compute_date_range,
+            compute_sales_traffic_date_range,
+        )
+
+        tf = {"strategy": "rolling_window", "start_offset": -394, "end_offset": -366}
+        assert (
+            compute_sales_traffic_date_range("US", tf, self._RUN_2026_07_20)
+            == compute_date_range("US", tf, self._RUN_2026_07_20)
         )
 
 

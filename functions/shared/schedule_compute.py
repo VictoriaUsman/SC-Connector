@@ -30,8 +30,11 @@ SALES_TRAFFIC_DATA_LAG_DAYS = 1
 # Strategies whose end is a moving "trailing" boundary (i.e. relative to today),
 # for which the Sales & Traffic ops-anchoring + data lag is meaningful. Fixed
 # calendar-period strategies (last_calendar_week/month) and historical windows
-# (prior_year_window) are already aligned and must not be shifted.
-_SALES_TRAFFIC_TRAILING_STRATEGIES = {"yesterday", "today", "last_n_days", "rolling_window"}
+# (rolling_window, prior_year_window) are already aligned and must not be
+# shifted — e.g. the BR last-year (LY) rolling windows point ~a year into the
+# past, where the data is long finalized, so applying the trailing data lag
+# would only shift the intended comparison range by a day.
+_SALES_TRAFFIC_TRAILING_STRATEGIES = {"yesterday", "today", "last_n_days"}
 
 
 def get_marketplace_tz(marketplace: str) -> ZoneInfo:
@@ -81,6 +84,7 @@ def compute_date_range(
       today             — T-0 to T-0 (for hourly/intraday)
       last_n_days       — trailing N days with optional end_offset_days
       rolling_window    — explicit start_offset / end_offset from today
+                          (inclusive of both boundary days)
       last_calendar_week — most recent completed week, configurable week_start
       last_calendar_month — first to last day of previous calendar month
       prior_year_window — window around today's date shifted back N years
@@ -113,7 +117,17 @@ def compute_date_range(
     if strategy == "rolling_window":
         start_offset = timeframe.get("start_offset", -7)
         end_offset = timeframe.get("end_offset", -1)
-        return today + timedelta(days=start_offset), today + timedelta(days=end_offset)
+        # A rolling window is inclusive of BOTH boundary days. ``end_offset``
+        # already lands on the last day (``today + end_offset``); the start
+        # boundary must include the day it names too. Previously the start was
+        # computed as ``today + start_offset``, which dropped the first day and
+        # made the resolved window one day short — so the BR last-year (LY)
+        # comparison windows came back 29 days starting one day late instead of
+        # the intended 30-day span. Anchor the start on the full first day so a
+        # single-unit change to either offset is always a clean one-day shift.
+        start = today + timedelta(days=start_offset) - timedelta(days=1)
+        end = today + timedelta(days=end_offset)
+        return start, end
 
     if strategy == "last_calendar_week":
         week_start_dow = timeframe.get("week_start", 0)  # 0=Mon
@@ -169,9 +183,10 @@ def compute_sales_traffic_date_range(
        always complete. Combined with the standard "yesterday" end, a 0-day
        delay lands the end date at D-2 from the operations run date.
 
-    Only trailing strategies (yesterday/today/last_n_days/rolling_window) get
-    this treatment. Fixed calendar-period and prior-year strategies are already
-    aligned and fall back to the standard marketplace-anchored computation.
+    Only trailing strategies (yesterday/today/last_n_days) get this treatment.
+    Fixed calendar-period and historical strategies (rolling_window,
+    last_calendar_week/month, prior_year_window) are already aligned and fall
+    back to the standard marketplace-anchored computation.
     """
     strategy = timeframe.get("strategy", "yesterday")
     if strategy not in _SALES_TRAFFIC_TRAILING_STRATEGIES:
