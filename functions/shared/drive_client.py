@@ -362,10 +362,86 @@ _SHEETS_CONVERTIBLE_MIMES = {"text/tab-separated-values", "text/csv"}
 _SHEETS_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 _SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 
+# Firestore collection recording the last file uploaded for each
+# (folder_id, stored_name). See _delete_recorded_file for why this exists.
+_FILE_INDEX_COLLECTION = "_drive_file_index"
+
 
 def _strip_extension(filename: str) -> str:
     """Return ``filename`` without its trailing extension (if any)."""
     return filename.rsplit(".", 1)[0] if "." in filename else filename
+
+
+def _file_index_key(folder_id: str, stored_name: str) -> str:
+    """Deterministic Firestore doc id for a (folder, stored file name) pair."""
+    return f"{folder_id}__{stored_name}".replace("/", "_")
+
+
+def _delete_recorded_file(folder_id: str, stored_name: str) -> None:
+    """Delete the exact file a prior upload recorded for this (folder, name).
+
+    Drive's ``files.list`` name query is *eventually consistent*, so a rapid
+    re-upload of the same report — a workflow retry after the download-upload
+    ``http.post`` times out (the SB campaigns pull runs for minutes and the
+    workflow re-invokes it), a duplicate trigger, or a concurrent run — often
+    does not yet see the file the previous attempt just created (a freshly
+    converted Google Sheet in particular). The name-based search then finds
+    nothing to delete and each attempt stacks another duplicate in the folder.
+
+    To replace reliably we record every uploaded file's id in a strongly-
+    consistent Firestore doc keyed by (folder_id, stored_name). Before each
+    upload we read that doc and delete the recorded file by *id*, which is
+    immune to search propagation lag, so repeated uploads converge to exactly
+    one file. Best-effort: never fail an upload over dedupe bookkeeping.
+    """
+    from googleapiclient.errors import HttpError
+
+    try:
+        ref = _get_db().collection(_FILE_INDEX_COLLECTION).document(
+            _file_index_key(folder_id, stored_name)
+        )
+        snap = ref.get()
+        if not snap.exists:
+            return
+        prior_id = (snap.to_dict() or {}).get("file_id")
+        if not prior_id:
+            return
+        try:
+            get_service().files().delete(
+                fileId=prior_id, supportsAllDrives=True,
+            ).execute()
+            logger.info(
+                "[file-dedupe] Deleted prior recorded file %s for '%s'",
+                prior_id, stored_name,
+            )
+        except HttpError as exc:
+            if exc.resp.status != 404:
+                raise
+    except Exception as exc:
+        logger.warning(
+            "[file-dedupe] Could not delete recorded file (non-fatal)",
+            extra={"folder_id": folder_id, "stored_name": stored_name, "error": str(exc)[:200]},
+        )
+
+
+def _record_uploaded_file(folder_id: str, stored_name: str, file_id: str) -> None:
+    """Record the just-uploaded file's id so the next upload can replace it
+    deterministically (see _delete_recorded_file). Best-effort."""
+    try:
+        ref = _get_db().collection(_FILE_INDEX_COLLECTION).document(
+            _file_index_key(folder_id, stored_name)
+        )
+        ref.set({
+            "file_id": file_id,
+            "folder_id": folder_id,
+            "name": stored_name,
+            "updated_at": _firestore_module.SERVER_TIMESTAMP,
+        })
+    except Exception as exc:
+        logger.warning(
+            "[file-dedupe] Could not record uploaded file (non-fatal)",
+            extra={"folder_id": folder_id, "stored_name": stored_name, "error": str(exc)[:200]},
+        )
 
 
 def upload_or_replace(
@@ -391,6 +467,14 @@ def upload_or_replace(
     the extension-stripped stem for Sheets-convertible reports, and (b) store
     the converted Sheet under the stem so its title is deterministic and future
     searches always find it.
+
+    Drive's search is only eventually consistent though, so a rapid re-upload
+    (a workflow retry after the download-upload http call times out, a duplicate
+    trigger, or a concurrent run) may not yet see the file the prior attempt
+    created and would stack a duplicate. As a deterministic, search-lag-immune
+    guard we also record each uploaded file's id in Firestore and delete that
+    exact file by id before the new upload, so repeated uploads of the same
+    report converge to a single file.
     """
     from googleapiclient.errors import HttpError
 
@@ -401,12 +485,20 @@ def upload_or_replace(
         and len(content) <= _SHEETS_SIZE_LIMIT
     )
 
+    # The name the new file is stored under (converted Sheets drop the
+    # extension). Also the key under which we track/replace it in Firestore.
+    stem = _strip_extension(filename)
+    stored_name = stem if convert_to_sheets else filename
+
+    # Deterministic replace: delete the exact file a prior upload recorded for
+    # this (folder, stored_name), regardless of Drive search propagation lag.
+    _delete_recorded_file(folder_id, stored_name)
+
     # Match both the raw filename and, for Sheets-convertible report types, the
     # extension-stripped title Drive assigns to the converted Sheet. This cleans
     # up both legacy raw uploads and previously-converted Sheets regardless of
     # this run's size (a prior smaller run may already be an extension-less
     # Sheet even if this content skips conversion).
-    stem = _strip_extension(filename)
     names_to_replace = [filename]
     if mime_type in _SHEETS_CONVERTIBLE_MIMES and stem != filename:
         names_to_replace.append(stem)
@@ -432,7 +524,6 @@ def upload_or_replace(
 
     # Store the converted Sheet under the extension-stripped stem so its title
     # matches what Drive would assign anyway, keeping the replace search stable.
-    stored_name = stem if convert_to_sheets else filename
     body: dict = {"name": stored_name, "parents": [folder_id]}
     if convert_to_sheets:
         body["mimeType"] = _SHEETS_MIME
@@ -447,6 +538,10 @@ def upload_or_replace(
         fields="id",
         supportsAllDrives=True,
     ).execute()
+
+    # Record this file so the next upload of the same report can delete it
+    # deterministically even before Drive's search index catches up.
+    _record_uploaded_file(folder_id, stored_name, uploaded["id"])
     return uploaded["id"]
 
 
