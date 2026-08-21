@@ -1488,6 +1488,201 @@ class TestAppendSkuBreakdown:
         assert blocks == before  # error never breaks the existing drop
 
 
+class TestSkuYoy:
+    """Hourly SKU lines overlay last year's equivalent event-hour from BQ."""
+
+    _now = datetime(2026, 7, 13, 20, 45, tzinfo=timezone.utc)  # 13:45 PDT
+    _pst = ZoneInfo("America/Los_Angeles")
+
+    def test_format_with_prior_and_new(self):
+        from slack_bot.main import _format_sku_yoy
+
+        assert _format_sku_yoy(320, 280, "280") == " (LY 280, +14%)"
+        assert _format_sku_yoy(200, 280, "280") == " (LY 280, -29%)"
+        assert _format_sku_yoy(50, None, "") == " (new)"
+        assert _format_sku_yoy(50, 0, "0") == " (new)"
+
+    def test_line_shows_units_and_sales_yoy(self):
+        from slack_bot.main import SkuMetrics, _sku_breakdown_line
+
+        row = SkuMetrics("A", 320, 1200.0, ly_units=280, ly_total_sales=1050.0)
+        line = _sku_breakdown_line(row, "USD", yoy=True)
+        assert "`A` — 320 units (LY 280, +14%)" in line
+        assert "(LY $1,050.00, +14%)" in line
+
+        new_row = SkuMetrics("B", 10, 50.0)
+        new_line = _sku_breakdown_line(new_row, "USD", yoy=True)
+        assert "(new)" in new_line
+        assert "LY" not in new_line
+        assert "-100%" not in new_line
+
+        plain = _sku_breakdown_line(row, "USD", yoy=False)
+        assert "LY" not in plain
+        assert "(new)" not in plain
+
+    def test_event_day_aligns_to_prior_start(self):
+        from slack_bot.main import _resolve_prior_event_date
+
+        with patch("slack_bot.main.get_event", return_value={"start_date": "2025-07-08"}):
+            assert _resolve_prior_event_date("prior1", 1, self._pst) == "2025-07-08"
+            assert _resolve_prior_event_date("prior1", 2, self._pst) == "2025-07-09"
+        assert _resolve_prior_event_date(None, 1, self._pst) is None
+        with patch("slack_bot.main.get_event", return_value=None):
+            assert _resolve_prior_event_date("missing", 1, self._pst) is None
+
+    def test_hourly_ly_window_caps_at_current_hour(self):
+        from slack_bot.main import _clock_on_date, _marketplace_day_window
+
+        ly_now = _clock_on_date(self._now, "2025-07-08", self._pst)
+        start, end = _marketplace_day_window(
+            "US", ly_now, report_date="2025-07-08", through=ly_now,
+        )
+        full_start, full_end = _marketplace_day_window(
+            "US", ly_now, report_date="2025-07-08",
+        )
+        assert start == full_start
+        assert end != full_end
+        assert end == ly_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert ly_now.astimezone(self._pst).hour == 13
+
+    def test_recap_ly_window_is_full_day(self):
+        from slack_bot.main import _clock_on_date, _marketplace_day_window
+
+        ly_now = _clock_on_date(self._now, "2025-07-08", self._pst)
+        start, end = _marketplace_day_window(
+            "US", ly_now, report_date="2025-07-08", full_day=True, through=ly_now,
+        )
+        _, full_end = _marketplace_day_window(
+            "US", ly_now, report_date="2025-07-08", full_day=True,
+        )
+        assert end == full_end
+
+    def test_sku_orders_forwards_through(self):
+        from slack_bot.main import _clock_on_date, _query_sku_orders
+
+        ly_now = _clock_on_date(self._now, "2025-07-08", self._pst)
+        captured: dict = {}
+
+        def fake_query(query, job_config=None):
+            captured["params"] = {p.name: p.value for p in job_config.query_parameters}
+            return iter([])
+
+        bq = MagicMock()
+        bq.query.side_effect = fake_query
+        _query_sku_orders(
+            bq, "proj", "ds", "ritual", "US", ly_now,
+            report_date="2025-07-08", through=ly_now,
+        )
+        day_end = captured["params"]["day_end"]
+        if hasattr(day_end, "strftime"):
+            day_end = day_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert day_end == ly_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def test_append_renders_yoy_and_new(self):
+        import slack_bot.main as mod
+
+        current = [mod.SkuMetrics("A", 320, 1200.0), mod.SkuMetrics("B", 10, 50.0)]
+        ly = [mod.SkuMetrics("A", 280, 1050.0)]
+        calls: list[dict] = []
+
+        def fake_breakdown(client_id, marketplaces, now, **kwargs):
+            calls.append(kwargs)
+            return ly if kwargs.get("report_date") == "2025-07-08" else current
+
+        blocks: list[dict] = []
+        with (
+            patch.object(mod, "_query_sku_breakdown", side_effect=fake_breakdown),
+            patch.object(mod, "get_event", return_value={"start_date": "2025-07-08"}),
+        ):
+            mod._append_sku_breakdown(
+                blocks, "ritual", ["US"], self._now, self._metrics(),
+                prior_event_id="prior1", event_day=1, client_tz=self._pst,
+            )
+
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "320 units (LY 280, +14%)" in text
+        assert "`B`" in text and "(new)" in text
+        assert "-100%" not in text
+        ly_call = next(c for c in calls if c.get("report_date") == "2025-07-08")
+        assert ly_call.get("full_day") is False
+        assert ly_call.get("through") is not None
+
+    def test_append_without_prior_keeps_plain_lines(self):
+        import slack_bot.main as mod
+
+        skus = [mod.SkuMetrics("A", 10, 300.0)]
+        metrics = [mod.MarketplaceMetrics("US", "USD", total_sales=300.0, units=10, spend=10, ppc_sales=100)]
+        blocks: list[dict] = []
+        with patch.object(mod, "_query_sku_breakdown", return_value=skus):
+            mod._append_sku_breakdown(blocks, "ritual", ["US"], self._now, metrics)
+
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "`A` — 10 units ·" in text
+        assert "LY" not in text
+        assert "(new)" not in text
+
+    def test_ly_query_failure_still_posts(self):
+        import slack_bot.main as mod
+
+        current = [mod.SkuMetrics("A", 10, 300.0)]
+        metrics = [mod.MarketplaceMetrics("US", "USD", total_sales=300.0, units=10, spend=10, ppc_sales=100)]
+
+        def fake_breakdown(client_id, marketplaces, now, **kwargs):
+            if kwargs.get("report_date"):
+                raise RuntimeError("LY BQ down")
+            return current
+
+        blocks: list[dict] = []
+        with (
+            patch.object(mod, "_query_sku_breakdown", side_effect=fake_breakdown),
+            patch.object(mod, "get_event", return_value={"start_date": "2025-07-08"}),
+        ):
+            mod._append_sku_breakdown(
+                blocks, "ritual", ["US"], self._now, metrics,
+                prior_event_id="prior1", event_day=1, client_tz=self._pst,
+            )
+
+        text = " ".join(
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        )
+        assert "`A`" in text
+        assert "LY" not in text
+
+    def test_recap_ly_query_is_full_day(self):
+        import slack_bot.main as mod
+
+        current = [mod.SkuMetrics("A", 10, 1000.0)]
+        captured: list[dict] = []
+
+        def fake_breakdown(client_id, marketplaces, now, **kwargs):
+            captured.append(kwargs)
+            return current
+
+        metrics = [mod.MarketplaceMetrics("US", "USD", total_sales=1000.0, units=10, spend=0, ppc_sales=0)]
+        with (
+            patch.object(mod, "_query_sku_breakdown", side_effect=fake_breakdown),
+            patch.object(mod, "get_event", return_value={"start_date": "2025-07-08"}),
+        ):
+            mod._append_sku_breakdown(
+                [], "ritual", ["US"], self._now, metrics,
+                report_date="2026-07-13", full_day=True,
+                prior_event_id="prior1", event_day=1, client_tz=self._pst,
+            )
+
+        ly_call = next(c for c in captured if c.get("report_date") == "2025-07-08")
+        assert ly_call.get("full_day") is True
+        assert ly_call.get("through") is None
+
+    def _metrics(self):
+        from slack_bot.main import MarketplaceMetrics
+
+        return [MarketplaceMetrics("US", "USD", total_sales=1250.0, units=330, spend=10, ppc_sales=100)]
+
+
 class TestSkuBreakdownMarketplaces:
     """The combined drop breaks down US, then CA, then UK by default, and the
     set is env-overridable so it can change mid-event without a deploy."""

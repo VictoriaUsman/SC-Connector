@@ -313,8 +313,9 @@ function EventDialog({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Link last year's equivalent event so the midnight recap can show
-              year-over-year stats. Leave as None to omit YoY.
+              Link last year's equivalent event so hourly SKU lines and the
+              midnight recap can show year-over-year stats. Leave as None to
+              omit YoY.
             </p>
           </div>
 

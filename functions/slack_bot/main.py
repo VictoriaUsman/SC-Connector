@@ -81,6 +81,8 @@ class SkuMetrics:
     sku: str
     units: int
     total_sales: float
+    ly_units: int | None = None
+    ly_total_sales: float | None = None
 
 
 # Half-cent tolerance so currency rounding noise (e.g. total == ppc within a
@@ -354,7 +356,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 )
                 # Skylight/Ritual only: append per-marketplace SKU breakdowns
                 # (US, then CA, then UK), each reconciled to its own line.
-                _maybe_append_combined_sku_breakdown(blocks, members, now, metrics)
+                _maybe_append_combined_sku_breakdown(
+                    blocks, members, now, metrics,
+                    prior_event_id=live_event.get("prior_event_id"),
+                    event_day=day_index,
+                    client_tz=client_tz,
+                )
                 text_fallback = f"Hourly Update — {rep_name} | {event_name}"
                 marketplaces_reported = sorted(_family_marketplaces(members))
                 anchor_client_id = rep["client_id"]
@@ -403,6 +410,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                         blocks, client_id, marketplaces, now, metrics,
                         label=marketplaces[0] if len(marketplaces) == 1 else None,
                         report_date=recap_date, full_day=True,
+                        prior_event_id=live_event.get("prior_event_id"),
+                        event_day=recap_day,
+                        client_tz=client_tz,
                     )
                 text_fallback = f"Day {recap_day} Recap — {client_name} | {event_name}"
             else:
@@ -423,7 +433,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 # Per-SKU breakdown (per-customer toggle / legacy allowlist).
                 # Purely additive — leaves the account-level blocks untouched.
                 if _sku_breakdown_enabled_for_config(config):
-                    _append_sku_breakdown(blocks, client_id, marketplaces, now, metrics)
+                    _append_sku_breakdown(
+                        blocks, client_id, marketplaces, now, metrics,
+                        prior_event_id=live_event.get("prior_event_id"),
+                        event_day=day_index,
+                        client_tz=client_tz,
+                    )
                 text_fallback = f"Hourly Update — {client_name} | {event_name}"
 
             # One thin parent message per channel per event-day acts as the
@@ -632,13 +647,17 @@ def _marketplace_day_window(
     *,
     report_date: str | None = None,
     full_day: bool = False,
+    through: datetime | None = None,
 ) -> tuple[str, str]:
     """UTC ``[start, end)`` timestamps for a marketplace-local day.
 
     ``full_day=True`` returns the complete calendar day given by ``report_date``
     (used by day-end recaps). Otherwise it returns the live day-to-date window —
     marketplace-local midnight today up to next midnight, derived from ``now``
-    (used by hourly updates). Both the account orders query and the per-SKU query
+    (used by hourly updates). ``through`` caps the hourly end at that instant
+    (prior-year YoY: same event-day through the current hour-of-day, so last
+    year's already-complete afternoon is not compared against this year's
+    still-running morning). Both the account orders query and the per-SKU query
     call this, so their windows are provably identical and the SKU rows reconcile
     to the account total by construction.
     """
@@ -652,7 +671,10 @@ def _marketplace_day_window(
         start_local = now.astimezone(mkt_tz).replace(
             hour=0, minute=0, second=0, microsecond=0,
         )
-    end_local = start_local + timedelta(days=1)
+    if through is not None and not full_day:
+        end_local = through.astimezone(mkt_tz)
+    else:
+        end_local = start_local + timedelta(days=1)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return (
         start_local.astimezone(timezone.utc).strftime(fmt),
@@ -857,6 +879,7 @@ def _query_sku_orders(
     *,
     report_date: str | None = None,
     full_day: bool = False,
+    through: datetime | None = None,
 ) -> list[SkuMetrics]:
     """Per-SKU units and total sales for a marketplace day, decomposing the
     account orders sum.
@@ -884,6 +907,7 @@ def _query_sku_orders(
     )
     day_start_utc, day_end_utc = _marketplace_day_window(
         marketplace, now, report_date=report_date, full_day=full_day,
+        through=through,
     )
 
     query = f"""
@@ -929,6 +953,7 @@ def _query_sku_breakdown(
     *,
     report_date: str | None = None,
     full_day: bool = False,
+    through: datetime | None = None,
 ) -> list[SkuMetrics]:
     """Account-level per-SKU rollup, aggregated across ``marketplaces``.
 
@@ -946,7 +971,7 @@ def _query_sku_breakdown(
     for mkt in marketplaces:
         for row in _query_sku_orders(
             bq, project, dataset, client_id, mkt, now,
-            report_date=report_date, full_day=full_day,
+            report_date=report_date, full_day=full_day, through=through,
         ):
             agg = by_sku.get(row.sku)
             if agg is None:
@@ -1252,10 +1277,76 @@ def _convert_totals(
     return total_spend, total_ppc, total_sales
 
 
+def _clock_on_date(now: datetime, report_date: str, tz: ZoneInfo) -> datetime:
+    """Same clock time as ``now``, moved onto ``report_date`` in ``tz``."""
+    local = now.astimezone(tz)
+    day = date_type.fromisoformat(report_date)
+    return datetime(
+        day.year, day.month, day.day,
+        local.hour, local.minute, local.second, local.microsecond,
+        tzinfo=tz,
+    )
+
+
+def _resolve_prior_event_date(
+    prior_event_id: str | None,
+    event_day: int,
+    client_tz: ZoneInfo,
+) -> str | None:
+    """ISO date of the linked prior event's equivalent event-day, or None."""
+    if not prior_event_id or event_day < 1:
+        return None
+    prior = get_event(prior_event_id)
+    if not prior:
+        return None
+    prior_start = prior.get("start_date", "")
+    if not prior_start:
+        return None
+    return _report_date_for_event_day(prior_start, event_day, client_tz)
+
+
+def _attach_sku_yoy(sku_rows: list[SkuMetrics], ly_rows: list[SkuMetrics]) -> None:
+    by_sku = {row.sku: row for row in ly_rows}
+    for row in sku_rows:
+        prior = by_sku.get(row.sku)
+        if prior is None:
+            continue
+        row.ly_units = prior.units
+        row.ly_total_sales = prior.total_sales
+
+
+def _format_sku_yoy(current: float, prior: float | None, formatted_prior: str) -> str:
+    """Inline YoY: `` (LY 280, +14%)`` or `` (new)`` when there is no baseline."""
+    if prior is None or prior == 0:
+        return " (new)"
+    pct = ((current - prior) / abs(prior)) * 100
+    sign = "+" if pct >= 0 else ""
+    return f" (LY {formatted_prior}, {sign}{pct:.0f}%)"
+
+
+def _sku_breakdown_line(s: SkuMetrics, currency: str, *, yoy: bool) -> str:
+    units = f"{s.units:,} units"
+    sales = format_currency(s.total_sales, currency)
+    if yoy:
+        units += _format_sku_yoy(
+            float(s.units),
+            None if s.ly_units is None else float(s.ly_units),
+            f"{s.ly_units:,}" if s.ly_units is not None else "",
+        )
+        sales += _format_sku_yoy(
+            s.total_sales,
+            s.ly_total_sales,
+            format_currency(s.ly_total_sales, currency) if s.ly_total_sales is not None else "",
+        )
+    return f"`{s.sku}` — {units} · {sales}"
+
+
 def _build_sku_breakdown_blocks(
     sku_rows: list[SkuMetrics],
     currency: str,
     label: str | None = None,
+    *,
+    yoy: bool = False,
 ) -> list[dict]:
     """Build the appended per-SKU breakdown blocks (header + chunked rows).
 
@@ -1266,10 +1357,7 @@ def _build_sku_breakdown_blocks(
     """
     suffix = f" ({label})" if label else ""
     header = f"*Per-SKU Breakdown{suffix} — Day to Date (cumulative)*"
-    line_strs = [
-        f"`{s.sku}` — {s.units:,} units · {format_currency(s.total_sales, currency)}"
-        for s in sku_rows
-    ]
+    line_strs = [_sku_breakdown_line(s, currency, yoy=yoy) for s in sku_rows]
 
     blocks: list[dict] = [
         {"type": "divider"},
@@ -1301,6 +1389,9 @@ def _append_sku_breakdown(
     *,
     report_date: str | None = None,
     full_day: bool = False,
+    prior_event_id: str | None = None,
+    event_day: int = 0,
+    client_tz: ZoneInfo | None = None,
 ) -> None:
     """Append a per-SKU breakdown to a drop (in place).
 
@@ -1314,6 +1405,10 @@ def _append_sku_breakdown(
     in one combined drop are distinguishable. ``report_date``/``full_day`` are
     forwarded to the query so a day-end recap reconciles to a completed calendar
     day instead of the live day-to-date window.
+
+    When ``prior_event_id`` is set, each SKU line also gets last-year units and
+    sales for the equivalent event-day (hourly: through the current hour-of-day;
+    recap: the full day). A SKU with no prior-year row renders as new / no-comp.
     """
     currencies = {m.currency for m in metrics}
     if len(currencies) != 1:
@@ -1349,7 +1444,46 @@ def _append_sku_breakdown(
         )
         return
 
-    blocks.extend(_build_sku_breakdown_blocks(sku_rows, currency, label=label))
+    yoy = _maybe_attach_sku_yoy(
+        sku_rows, client_id, marketplaces, now,
+        prior_event_id=prior_event_id, event_day=event_day,
+        client_tz=client_tz, full_day=full_day,
+    )
+    blocks.extend(_build_sku_breakdown_blocks(sku_rows, currency, label=label, yoy=yoy))
+
+
+def _maybe_attach_sku_yoy(
+    sku_rows: list[SkuMetrics],
+    client_id: str,
+    marketplaces: list[str],
+    now: datetime,
+    *,
+    prior_event_id: str | None,
+    event_day: int,
+    client_tz: ZoneInfo | None,
+    full_day: bool,
+) -> bool:
+    """Attach LY units/sales onto ``sku_rows``. True when YoY should render."""
+    if not prior_event_id or client_tz is None:
+        return False
+    try:
+        ly_date = _resolve_prior_event_date(prior_event_id, event_day, client_tz)
+        if not ly_date:
+            return False
+        ly_now = _clock_on_date(now, ly_date, client_tz)
+        ly_rows = _query_sku_breakdown(
+            client_id, marketplaces, ly_now,
+            report_date=ly_date, full_day=full_day,
+            through=None if full_day else ly_now,
+        )
+    except Exception:
+        logger.exception(
+            "Prior-year SKU query failed — posting breakdown without YoY",
+            extra={"client_id": client_id, "phase": "sku_yoy"},
+        )
+        return False
+    _attach_sku_yoy(sku_rows, ly_rows)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1380,6 +1514,10 @@ def _maybe_append_combined_sku_breakdown(
     members: list[dict],
     now: datetime,
     metrics: list[MarketplaceMetrics],
+    *,
+    prior_event_id: str | None = None,
+    event_day: int = 0,
+    client_tz: ZoneInfo | None = None,
 ) -> None:
     """Append per-marketplace SKU breakdowns for a toggled/allowlisted family.
 
@@ -1402,7 +1540,10 @@ def _maybe_append_combined_sku_breakdown(
         row = metrics_by_mkt.get(mkt)
         if row is None:
             continue
-        _append_sku_breakdown(blocks, member["client_id"], [mkt], now, [row], label=mkt)
+        _append_sku_breakdown(
+            blocks, member["client_id"], [mkt], now, [row], label=mkt,
+            prior_event_id=prior_event_id, event_day=event_day, client_tz=client_tz,
+        )
 
 
 # ---------------------------------------------------------------------------
