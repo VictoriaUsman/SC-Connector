@@ -11,4 +11,3 @@ config:
   kalilos:frontend-url: https://kalilos-connector-staging.web.app
   kalilos:mcp-api-key:
     secure: v1:WGFKxIsF1QYPhByH:bj1jeNC4a/fPmDofceYhOCYHkMhul/ZzCKv3Rkg00rSXJWeIq57+Q02Cj8jOKA1z8jvQIIJYm0HDPgAiAnAPF9GUsTju8u1zSWtYg7gv7XM=
-  kalilos:alert-email: nivbraz90@gmail.com

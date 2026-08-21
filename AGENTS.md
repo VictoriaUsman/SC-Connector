@@ -493,23 +493,24 @@ When adding logs, keep these names stable and pass context via
 the entrypoint via `bind_log_context(...)`. Log level is controlled by the
 `LOG_LEVEL` env var (Pulumi config `kalilos:log-level`, default `INFO`).
 
-### Alerting, health & config
+### Health & config
 
-Cloud Monitoring is provisioned by `infra/resources/monitoring.py` (kept lean):
-- **Error-log alert** — fires when ERROR+ logs across functions + workflow exceed
-  a threshold in 5 min (log-based metric `kalilos-{env}-error-logs`).
-- **Uptime + alert** — an uptime check hits the API `/health` every 5 min and
-  alerts when it fails.
-- Notifications go to the email in Pulumi config `kalilos:alert-email` (unset =
-  policies exist but stay silent).
+There is **no Cloud Monitoring alerting**. The previous setup (error-log alert,
+`/health` uptime alert, Pub/Sub -> Slack `alert_notifier`, email channel) was
+removed because it fired continuously on chronic, expected staging errors —
+SP-API "access forbidden" for clients without real Amazon authorization, plus the
+resulting workflow failures — so it alerted ~14x/day indefinitely and carried no
+signal. Investigate via Cloud Logging and the dashboard's job status instead. If
+alerting is reintroduced, gate it on a condition that is *not* permanently true
+in staging (e.g. per-client error-rate deltas, or prod only).
 
 Health endpoints on the API function:
-- `GET /health` — cheap static liveness (used by the uptime check).
+- `GET /health` — cheap static liveness.
 - `GET /health?deep=1` — readiness; verifies Firestore reachability, returns 503
   if degraded. `make health` probes both after deploy.
 
 Optional Pulumi config keys (set with `pulumi config set kalilos:<key> <val>`):
-`log-level` (default `INFO`), `alert-email`, `alert-error-threshold` (default `5`).
+`log-level` (default `INFO`).
 
 ### Querying Cloud Function logs
 

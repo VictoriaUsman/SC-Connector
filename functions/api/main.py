@@ -300,9 +300,9 @@ def _internal_error(e: Exception):
 def health():
     """Liveness by default; readiness (dependency checks) with ``?deep=1``.
 
-    The default path stays a cheap static ``ok`` (used by the uptime check). The
-    deep variant verifies Firestore reachability and returns 503 if degraded, so
-    a broken dependency surfaces instead of a green-but-broken service.
+    The default path stays a cheap static ``ok``. The deep variant verifies
+    Firestore reachability and returns 503 if degraded, so a broken dependency
+    surfaces instead of a green-but-broken service.
     """
     if flask.request.args.get("deep") != "1":
         return flask.jsonify({"status": "ok"}), 200
