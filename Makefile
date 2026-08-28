@@ -56,6 +56,15 @@ secret-get:  ## Get a secret value. Usage: make secret-get NAME=x
 secret-list:  ## List all secrets in current project
 	@./scripts/secret-manager.sh list
 
+local-secret-set:  ## Set a local secret (LOCAL_MODE). Usage: make local-secret-set NAME=x VALUE=y
+	@./scripts/local-secret-manager.sh set $(NAME) $(VALUE)
+
+local-secret-get:  ## Get a local secret value. Usage: make local-secret-get NAME=x
+	@./scripts/local-secret-manager.sh get $(NAME)
+
+local-secret-list:  ## List all local secret names
+	@./scripts/local-secret-manager.sh list
+
 # --- Logs & Monitoring ---
 logs-fn:  ## Tail function logs. Usage: make logs-fn NAME=create_report
 	@./scripts/tail-logs.sh function $(NAME)
@@ -110,6 +119,7 @@ health:  ## Run health checks against current environment
 	init-staging init-prod \
 	deploy-all deploy-infra deploy-frontend deploy-mcp preview destroy \
 	secret-set secret-get secret-list \
+	local-secret-set local-secret-get local-secret-list \
 	logs-fn logs-workflow workflows-status workflows-cancel \
 	local-fn local-frontend local-mcp local-mcp-http \
 	test test-fn test-integration seed-firestore wipe-firestore workflow-trigger \
