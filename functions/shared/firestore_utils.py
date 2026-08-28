@@ -4,19 +4,24 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from google.cloud import firestore
 
+from shared.local_firestore import LocalFirestoreClient
+from shared.local_secrets import is_local_mode
+
 logger = logging.getLogger(__name__)
 
-_db: firestore.Client | None = None
+_db: firestore.Client | LocalFirestoreClient | None = None
+_LOCAL_FIRESTORE_DATA_FILE = Path(__file__).resolve().parents[2] / "scripts" / "mock-api-data.json"
 
 
-def get_db() -> firestore.Client:
+def get_db() -> firestore.Client | LocalFirestoreClient:
     global _db
     if _db is None:
-        _db = firestore.Client()
+        _db = LocalFirestoreClient(_LOCAL_FIRESTORE_DATA_FILE) if is_local_mode() else firestore.Client()
     return _db
 
 

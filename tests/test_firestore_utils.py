@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -272,3 +273,32 @@ class TestTryClaimJobLaunch:
             firestore_utils.try_claim_job_launch("k2")
         doc_ids = {c[0][0] for c in db.collection.return_value.document.call_args_list}
         assert len(doc_ids) == 2
+
+
+# ---------------------------------------------------------------------------
+# get_db — local vs. real Firestore client selection
+# ---------------------------------------------------------------------------
+
+class TestGetDbLocalMode:
+    def test_returns_local_firestore_client_when_local_mode(self, monkeypatch, tmp_path):
+        from shared.local_firestore import LocalFirestoreClient
+
+        monkeypatch.setenv("LOCAL_MODE", "true")
+        monkeypatch.setattr(firestore_utils, "_LOCAL_FIRESTORE_DATA_FILE", tmp_path / "data.json")
+        firestore_utils._db = None
+        try:
+            db = firestore_utils.get_db()
+            assert isinstance(db, LocalFirestoreClient)
+        finally:
+            firestore_utils._db = None
+
+    def test_returns_real_firestore_client_when_not_local_mode(self, monkeypatch):
+        from shared.local_firestore import LocalFirestoreClient
+
+        monkeypatch.delenv("LOCAL_MODE", raising=False)
+        firestore_utils._db = None
+        try:
+            db = firestore_utils.get_db()
+            assert not isinstance(db, LocalFirestoreClient)
+        finally:
+            firestore_utils._db = None
