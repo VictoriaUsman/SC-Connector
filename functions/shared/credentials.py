@@ -15,6 +15,7 @@ from google.cloud import secretmanager
 
 from shared.config import get_environment, get_project
 from shared.firestore_utils import get_client
+from shared.local_secrets import is_local_mode, resolve_secret
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,9 @@ def _get_sm() -> secretmanager.SecretManagerServiceClient:
 
 
 def _read_secret(secret_name: str) -> dict:
+    if is_local_mode():
+        return json.loads(resolve_secret(secret_name))
+
     project = get_project()
     name = f"projects/{project}/secrets/{secret_name}/versions/latest"
     resp = _get_sm().access_secret_version(name=name)

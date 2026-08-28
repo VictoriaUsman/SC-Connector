@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -87,3 +87,24 @@ class TestGetAdsCredentialsMarketplaceAware:
         # The per-marketplace map wins over the profile baked into the secret.
         assert creds["profile_id"] == "999"
         assert creds["refresh_token"] == "client-rt"
+
+
+class TestReadSecret:
+    def test_local_mode_reads_from_local_secrets(self, monkeypatch):
+        monkeypatch.setenv("LOCAL_MODE", "true")
+        try:
+            with patch("shared.credentials.resolve_secret", return_value='{"client_id": "abc"}') as mock_resolve:
+                result = credentials._read_secret("kalilos-staging-sp-api-app-credentials")
+            assert result == {"client_id": "abc"}
+            mock_resolve.assert_called_once_with("kalilos-staging-sp-api-app-credentials")
+        finally:
+            monkeypatch.delenv("LOCAL_MODE", raising=False)
+
+    def test_production_mode_uses_secret_manager(self, monkeypatch):
+        monkeypatch.delenv("LOCAL_MODE", raising=False)
+        fake_resp = MagicMock()
+        fake_resp.payload.data = b'{"client_id": "real"}'
+        with patch.object(credentials, "_get_sm") as mock_sm:
+            mock_sm.return_value.access_secret_version.return_value = fake_resp
+            result = credentials._read_secret("kalilos-staging-sp-api-app-credentials")
+        assert result == {"client_id": "real"}
