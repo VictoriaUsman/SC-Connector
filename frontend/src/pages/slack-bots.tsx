@@ -50,7 +50,7 @@ import {
   CURRENCIES,
   CLIENT_TIMEZONES,
 } from "@/types";
-import type { Event, BotConfig, Client, EventStatus, ManualAds } from "@/types";
+import type { Event, BotConfig, Client, EventStatus, ManualAds, SlackChannel } from "@/types";
 import {
   Loader2,
   MoreHorizontal,
@@ -64,6 +64,24 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
+
+// ---------------------------------------------------------------------------
+// Bot config channels — with legacy single-channel fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * The channels a bot config broadcasts to. Configs saved before
+ * multi-channel support only have slack_channel_id/slack_channel_name, so
+ * those are read as a one-item list when `channels` is absent.
+ */
+function getConfigChannels(config?: BotConfig): SlackChannel[] {
+  if (!config) return [];
+  if (config.channels?.length) return config.channels;
+  if (config.slack_channel_id) {
+    return [{ id: config.slack_channel_id, name: config.slack_channel_name }];
+  }
+  return [];
+}
 
 // ---------------------------------------------------------------------------
 // Event status badge
@@ -517,8 +535,10 @@ function BotConfigDialog({
   onSubmit: (data: Partial<BotConfig>) => void;
   loading: boolean;
 }) {
-  const [channelId, setChannelId] = useState(initial?.slack_channel_id ?? "");
-  const [channelName, setChannelName] = useState(initial?.slack_channel_name ?? "");
+  const initialChannels = getConfigChannels(initial);
+  const [channels, setChannels] = useState<SlackChannel[]>(
+    initialChannels.length > 0 ? initialChannels : [{ id: "", name: "" }],
+  );
   const [baseCurrency, setBaseCurrency] = useState(initial?.base_currency ?? "USD");
   const [tz, setTz] = useState(initial?.client_timezone ?? "America/Los_Angeles");
   const [marketplaces, setMarketplaces] = useState<string[]>(
@@ -539,6 +559,13 @@ function BotConfigDialog({
       prev.includes(mkt) ? prev.filter((m) => m !== mkt) : [...prev, mkt],
     );
   };
+
+  const updateChannel = (index: number, field: keyof SlackChannel, value: string) => {
+    setChannels((prev) => prev.map((c, i) => (i === index ? { ...c, [field]: value } : c)));
+  };
+  const addChannel = () => setChannels((prev) => [...prev, { id: "", name: "" }]);
+  const removeChannel = (index: number) =>
+    setChannels((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -575,23 +602,42 @@ function BotConfigDialog({
             <Switch checked={skuBreakdownEnabled} onCheckedChange={setSkuBreakdownEnabled} />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label>Slack Channels</Label>
+            <p className="text-xs text-muted-foreground">
+              Every update is posted to all channels below.
+            </p>
             <div className="space-y-2">
-              <Label>Slack Channel ID</Label>
-              <Input
-                value={channelId}
-                onChange={(e) => setChannelId(e.target.value)}
-                placeholder="C07XXXXXX"
-              />
+              {channels.map((channel, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <Input
+                    value={channel.id}
+                    onChange={(e) => updateChannel(index, "id", e.target.value)}
+                    placeholder="C07XXXXXX"
+                    className="flex-1"
+                  />
+                  <Input
+                    value={channel.name ?? ""}
+                    onChange={(e) => updateChannel(index, "name", e.target.value)}
+                    placeholder="#acme-reports"
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={channels.length === 1}
+                    onClick={() => removeChannel(index)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
             </div>
-            <div className="space-y-2">
-              <Label>Channel Name</Label>
-              <Input
-                value={channelName}
-                onChange={(e) => setChannelName(e.target.value)}
-                placeholder="#acme-reports"
-              />
-            </div>
+            <Button type="button" variant="outline" size="sm" onClick={addChannel}>
+              <Plus className="mr-1 h-4 w-4" />
+              Add channel
+            </Button>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -667,8 +713,7 @@ function BotConfigDialog({
             disabled={loading}
             onClick={() =>
               onSubmit({
-                slack_channel_id: channelId,
-                slack_channel_name: channelName,
+                channels: channels.filter((c) => c.id.trim()),
                 base_currency: baseCurrency,
                 client_timezone: tz,
                 marketplaces,
@@ -935,13 +980,19 @@ export function SlackBots() {
                 {clients.map((client) => {
                   const config = configByClientId.get(client.id);
                   const isEnabled = config?.hourly_bot?.enabled ?? false;
+                  const channels = getConfigChannels(config);
 
                   return (
                     <TableRow key={client.id}>
                       <TableCell className="font-medium">{client.name}</TableCell>
                       <TableCell>
-                        {config?.slack_channel_name ? (
-                          <span className="text-sm">{config.slack_channel_name}</span>
+                        {channels.length > 0 ? (
+                          <span className="text-sm">
+                            {channels[0].name ?? channels[0].id}
+                            {channels.length > 1 && (
+                              <span className="text-muted-foreground"> +{channels.length - 1} more</span>
+                            )}
+                          </span>
                         ) : (
                           <span className="text-sm text-muted-foreground">Not configured</span>
                         )}

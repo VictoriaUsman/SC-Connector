@@ -37,6 +37,7 @@ from shared.slack_client import (
     format_currency,
     format_percentage,
     post_message,
+    resolve_target_channels,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,12 +88,8 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if not client or not client.get("is_active", True):
             continue
 
-        channel_id = (
-            config.get("test_channel_id")
-            if config.get("use_test_channel")
-            else config.get("slack_channel_id")
-        )
-        if not channel_id:
+        target_channels = resolve_target_channels(config)
+        if not target_channels:
             logger.warning("No Slack channel for client", extra={"client_id": client_id})
             continue
 
@@ -119,13 +116,12 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             )
             blocks = _build_recap_blocks(recap_date, totals, currency)
             text_fallback = f"Daily Recap — {recap_date.strftime('%m/%d/%y')}"
-            result = post_message(channel_id, blocks, text_fallback)
 
             # Per-client totals are logged so the recap day and each metric are
             # verifiable in Cloud Logging (e.g. confirming Total Sales is no
             # longer spuriously zero once orders have ingested).
             logger.info(
-                "Daily recap posted",
+                "Daily recap computed",
                 extra={
                     "client_id": client_id,
                     "recap_date": report_date,
@@ -134,26 +130,48 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     "total_sales": round(totals.total_sales, 2),
                 },
             )
-            log_bot_activity({
-                "client_id": client_id,
-                "bot": "daily_recap",
-                "status": "sent",
-                "message_ts": result.get("ts"),
-                "recap_date": report_date,
-                "marketplaces_reported": marketplaces,
-            })
-            sent += 1
 
         except Exception as exc:
+            # Building the recap failed (e.g. a BigQuery error) before any
+            # channel was posted to.
             logger.exception("Failed to send daily recap", extra={"client_id": client_id})
             errors.append(f"{client_id}: {str(exc)[:100]}")
             log_bot_activity({
                 "client_id": client_id,
                 "bot": "daily_recap",
                 "status": "failed",
+                "channel_ids": target_channels,
                 "recap_date": recap_date.isoformat(),
                 "error": str(exc)[:500],
             })
+            continue
+
+        # Broadcast the same recap to every configured channel; one
+        # channel's failure doesn't block delivery to the others.
+        for channel_id in target_channels:
+            try:
+                result = post_message(channel_id, blocks, text_fallback)
+                log_bot_activity({
+                    "client_id": client_id,
+                    "bot": "daily_recap",
+                    "status": "sent",
+                    "channel_id": channel_id,
+                    "message_ts": result.get("ts"),
+                    "recap_date": report_date,
+                    "marketplaces_reported": marketplaces,
+                })
+                sent += 1
+            except Exception as exc:
+                logger.exception("Failed to send daily recap", extra={"client_id": client_id, "channel_id": channel_id})
+                errors.append(f"{client_id}: {str(exc)[:100]}")
+                log_bot_activity({
+                    "client_id": client_id,
+                    "bot": "daily_recap",
+                    "status": "failed",
+                    "channel_id": channel_id,
+                    "recap_date": report_date,
+                    "error": str(exc)[:500],
+                })
 
     if errors:
         logger.error(

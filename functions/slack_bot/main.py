@@ -41,6 +41,7 @@ from shared.slack_client import (
     format_delta_bps,
     format_percentage,
     post_message,
+    resolve_target_channels,
 )
 
 logger = logging.getLogger(__name__)
@@ -307,8 +308,8 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         client_name = client.get("name", client_id)
         client_tz_str = config.get("client_timezone", "America/Los_Angeles")
         client_tz = ZoneInfo(client_tz_str)
-        channel_id = config.get("test_channel_id") if config.get("use_test_channel") else config.get("slack_channel_id")
-        if not channel_id:
+        target_channels = resolve_target_channels(config)
+        if not target_channels:
             logger.warning("No Slack channel for client", extra={"client_id": client_id})
             continue
 
@@ -441,34 +442,6 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     )
                 text_fallback = f"Hourly Update — {client_name} | {event_name}"
 
-            # One thin parent message per channel per event-day acts as the
-            # thread anchor; every update for that day (hourly + the next-morning
-            # recap), from every account/marketplace posting to this channel,
-            # lands as a threaded reply under it. The anchor is created lazily on
-            # the first update of the day and reused thereafter, so neither a
-            # mid-day restart nor sibling accounts in the same channel ever spawn
-            # a duplicate parent.
-            parent_ts = _ensure_day_anchor(
-                channel_id=channel_id,
-                event_id=live_event["id"],
-                client_id=anchor_client_id,
-                event_name=event_name,
-                event_date=anchor_date,
-                day_index=anchor_day,
-            )
-            result = post_message(channel_id, blocks, text_fallback, thread_ts=parent_ts)
-
-            log_bot_activity({
-                "client_id": anchor_client_id,
-                "event_id": live_event["id"],
-                "status": "sent",
-                "channel_id": channel_id,
-                "message_ts": result.get("ts"),
-                "parent_ts": parent_ts,
-                "marketplaces_reported": marketplaces_reported,
-            })
-            sent += 1
-
         except TotalSalesInvariantError as exc:
             # Expected transient: this hour's orders pull has not ingested yet,
             # so Total Sales lags PPC Sales. The append-only ingest + *_latest
@@ -488,65 +461,115 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 "client_id": client_id,
                 "event_id": live_event["id"],
                 "status": "failed",
-                "channel_id": channel_id,
+                "channel_ids": target_channels,
                 "error": f"Total Sales invariant violated: {str(exc)[:500]}",
             })
-
-        except SlackApiError as exc:
-            if exc.is_channel_config_error:
-                # The Kalilos app isn't a member of this channel (or it was
-                # deleted/archived) — usually because someone switched the
-                # config's channel (e.g. toggled use_test_channel) to one the
-                # app was never invited to. Nothing the bot can self-heal; the
-                # operator must re-invite the app. Surface it as an actionable
-                # WARNING (not a paging ERROR) with the exact channel to fix.
-                logger.warning(
-                    "Slack channel not postable — invite the Kalilos app to the channel",
-                    extra={
-                        "client_id": client_id,
-                        "channel_id": channel_id,
-                        "phase": "slack_post",
-                        "error_code": exc.code.upper(),
-                        "remedy": f"Invite the Kalilos app to channel {channel_id} "
-                                  f"(/invite @Kalilos), or fix the channel in the bot config.",
-                    },
-                )
-                channel_skips.append(f"{client_id}: {exc.code} ({channel_id})")
-                log_bot_activity({
-                    "client_id": client_id,
-                    "event_id": live_event["id"],
-                    "status": "failed",
-                    "channel_id": channel_id,
-                    "error_code": exc.code,
-                    "error": f"Slack channel not joined: {exc.code} ({channel_id}). "
-                             f"Invite the Kalilos app to the channel.",
-                })
-            else:
-                logger.exception(
-                    "Slack API error sending hourly bot message",
-                    extra={"client_id": client_id, "channel_id": channel_id,
-                           "phase": "slack_post", "error_code": exc.code.upper()},
-                )
-                errors.append(f"{client_id}: {exc.code}")
-                log_bot_activity({
-                    "client_id": client_id,
-                    "event_id": live_event["id"],
-                    "status": "failed",
-                    "channel_id": channel_id,
-                    "error_code": exc.code,
-                    "error": str(exc)[:500],
-                })
+            continue
 
         except Exception as exc:
+            # Message building failed (e.g. a BigQuery error) before any
+            # channel was posted to.
             logger.exception("Failed to send hourly bot message", extra={"client_id": client_id})
             errors.append(f"{client_id}: {str(exc)[:100]}")
             log_bot_activity({
                 "client_id": client_id,
                 "event_id": live_event["id"],
                 "status": "failed",
-                "channel_id": channel_id,
+                "channel_ids": target_channels,
                 "error": str(exc)[:500],
             })
+            continue
+
+        # Broadcast the same message to every configured channel. Each
+        # channel gets its own thread anchor and is isolated from failures in
+        # the others — one bad channel (e.g. the app was never invited) never
+        # blocks delivery to the rest.
+        for channel_id in target_channels:
+            try:
+                # One thin parent message per channel per event-day acts as
+                # the thread anchor; every update for that day (hourly + the
+                # next-morning recap), from every account/marketplace posting
+                # to this channel, lands as a threaded reply under it. The
+                # anchor is created lazily on the first update of the day and
+                # reused thereafter, so neither a mid-day restart nor sibling
+                # accounts in the same channel ever spawn a duplicate parent.
+                parent_ts = _ensure_day_anchor(
+                    channel_id=channel_id,
+                    event_id=live_event["id"],
+                    client_id=anchor_client_id,
+                    event_name=event_name,
+                    event_date=anchor_date,
+                    day_index=anchor_day,
+                )
+                result = post_message(channel_id, blocks, text_fallback, thread_ts=parent_ts)
+
+                log_bot_activity({
+                    "client_id": anchor_client_id,
+                    "event_id": live_event["id"],
+                    "status": "sent",
+                    "channel_id": channel_id,
+                    "message_ts": result.get("ts"),
+                    "parent_ts": parent_ts,
+                    "marketplaces_reported": marketplaces_reported,
+                })
+                sent += 1
+
+            except SlackApiError as exc:
+                if exc.is_channel_config_error:
+                    # The Kalilos app isn't a member of this channel (or it
+                    # was deleted/archived) — usually because someone
+                    # switched the config's channel (e.g. toggled
+                    # use_test_channel) to one the app was never invited to.
+                    # Nothing the bot can self-heal; the operator must
+                    # re-invite the app. Surface it as an actionable WARNING
+                    # (not a paging ERROR) with the exact channel to fix.
+                    logger.warning(
+                        "Slack channel not postable — invite the Kalilos app to the channel",
+                        extra={
+                            "client_id": client_id,
+                            "channel_id": channel_id,
+                            "phase": "slack_post",
+                            "error_code": exc.code.upper(),
+                            "remedy": f"Invite the Kalilos app to channel {channel_id} "
+                                      f"(/invite @Kalilos), or fix the channel in the bot config.",
+                        },
+                    )
+                    channel_skips.append(f"{client_id}: {exc.code} ({channel_id})")
+                    log_bot_activity({
+                        "client_id": client_id,
+                        "event_id": live_event["id"],
+                        "status": "failed",
+                        "channel_id": channel_id,
+                        "error_code": exc.code,
+                        "error": f"Slack channel not joined: {exc.code} ({channel_id}). "
+                                 f"Invite the Kalilos app to the channel.",
+                    })
+                else:
+                    logger.exception(
+                        "Slack API error sending hourly bot message",
+                        extra={"client_id": client_id, "channel_id": channel_id,
+                               "phase": "slack_post", "error_code": exc.code.upper()},
+                    )
+                    errors.append(f"{client_id}: {exc.code}")
+                    log_bot_activity({
+                        "client_id": client_id,
+                        "event_id": live_event["id"],
+                        "status": "failed",
+                        "channel_id": channel_id,
+                        "error_code": exc.code,
+                        "error": str(exc)[:500],
+                    })
+
+            except Exception as exc:
+                logger.exception("Failed to send hourly bot message", extra={"client_id": client_id})
+                errors.append(f"{client_id}: {str(exc)[:100]}")
+                log_bot_activity({
+                    "client_id": client_id,
+                    "event_id": live_event["id"],
+                    "status": "failed",
+                    "channel_id": channel_id,
+                    "error": str(exc)[:500],
+                })
 
     if errors:
         logger.error(

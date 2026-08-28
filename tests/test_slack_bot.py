@@ -780,6 +780,102 @@ class TestHandlerIntegration:
         log_data = mock_log.call_args[0][0]
         assert log_data["error_code"] == "ratelimited"
 
+    def test_broadcasts_to_every_configured_channel(self):
+        """A config with multiple `channels` posts the same message to each,
+        threaded independently under each channel's own day anchor."""
+        from slack_bot.main import handler
+
+        config = _make_bot_config()
+        config.pop("slack_channel_id", None)
+        config["channels"] = [{"id": "C1", "name": "one"}, {"id": "C2", "name": "two"}]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[config]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=[]),
+            patch("slack_bot.main._build_message_blocks", return_value=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": "x"}},
+            ]),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 2
+        posted_channels = [call.args[0] for call in mock_post.call_args_list]
+        assert posted_channels == ["C1", "C2"]
+
+    def test_one_channel_failing_does_not_block_the_others(self):
+        """A `not_in_channel` error on one channel is a skip for that channel
+        only — the broadcast still reaches every other configured channel."""
+        from slack_bot.main import handler
+        from shared.slack_client import SlackApiError
+
+        config = _make_bot_config()
+        config.pop("slack_channel_id", None)
+        config["channels"] = [{"id": "C1"}, {"id": "C2"}]
+
+        def fake_post(channel_id, blocks, text_fallback, thread_ts=None):
+            if channel_id == "C1":
+                raise SlackApiError("not_in_channel", channel_id="C1")
+            return {"ok": True, "ts": "123.456"}
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[config]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=[]),
+            patch("slack_bot.main._build_message_blocks", return_value=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": "x"}},
+            ]),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", side_effect=fake_post) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+        assert body["channel_skips"] == 1
+        assert body["errors"] == 0
+        # Both channels were attempted — C1's failure didn't short-circuit C2.
+        assert [call.args[0] for call in mock_post.call_args_list] == ["C1", "C2"]
+
+    def test_legacy_single_channel_config_still_works(self):
+        """A config saved before multi-channel support (only slack_channel_id,
+        no channels list) still posts to its one channel."""
+        from slack_bot.main import handler
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=[]),
+            patch("slack_bot.main._build_message_blocks", return_value=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": "x"}},
+            ]),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            body, status = handler(_make_request())
+
+        assert status == 200
+        assert body["messages_sent"] == 1
+        assert mock_post.call_args.args[0] == "C123"
+
 
 class TestGetLiveEvent:
     """get_live_event must be deterministic when several events are live."""

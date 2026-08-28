@@ -52,6 +52,33 @@ class SlackApiError(RuntimeError):
     def is_channel_config_error(self) -> bool:
         return self.code in CHANNEL_CONFIG_ERRORS
 
+
+# ---------------------------------------------------------------------------
+# Channel resolution
+# ---------------------------------------------------------------------------
+
+def resolve_target_channels(config: dict) -> list[str]:
+    """Resolve which Slack channel(s) a bot config should post to.
+
+    Test Mode (``use_test_channel``) overrides the whole channel list with a
+    single test channel, so a misconfigured multi-channel broadcast can't leak
+    into production channels while testing. Otherwise every channel in
+    ``channels`` (the multi-channel shape) is a target, falling back to the
+    legacy single ``slack_channel_id`` field for configs saved before
+    multi-channel support existed.
+    """
+    if config.get("use_test_channel"):
+        test_channel = config.get("test_channel_id")
+        return [test_channel] if test_channel else []
+
+    channels = config.get("channels")
+    if channels:
+        return [c["id"] for c in channels if c.get("id")]
+
+    legacy_channel = config.get("slack_channel_id")
+    return [legacy_channel] if legacy_channel else []
+
+
 # ---------------------------------------------------------------------------
 # Currency formatting
 # ---------------------------------------------------------------------------

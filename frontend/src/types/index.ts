@@ -301,10 +301,24 @@ export interface Event {
   updated_at?: string;
 }
 
+export interface SlackChannel {
+  id: string;
+  name?: string;
+}
+
 export interface BotConfig {
   id: string;
   client_id: string;
-  slack_channel_id: string;
+  /**
+   * Channels the bot broadcasts to. Replaces the old single
+   * slack_channel_id/slack_channel_name pair; configs saved before
+   * multi-channel support only have those two fields, so callers should fall
+   * back to treating them as a one-item channels list.
+   */
+  channels?: SlackChannel[];
+  /** @deprecated use `channels` instead. Kept for configs saved before multi-channel support. */
+  slack_channel_id?: string;
+  /** @deprecated use `channels` instead. Kept for configs saved before multi-channel support. */
   slack_channel_name?: string;
   base_currency: string;
   client_timezone: string;
