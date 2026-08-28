@@ -18,6 +18,12 @@ frontend/dist-ssr/
 .env.staging
 .env.prod
 frontend/.env
+.env.local
+
+# Local dev sandbox (LOCAL_MODE) — dev-only data, not secrets but not
+# meant to be committed either
+scripts/local-secrets.json
+scripts/mock-api-data.json
 
 # Local data exports — often contain refresh tokens or PII, never commit
 studio_results_*.json

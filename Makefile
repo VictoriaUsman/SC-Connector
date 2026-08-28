@@ -91,6 +91,9 @@ local-mcp:  ## Run MCP server locally (stdio mode for Cursor/Claude Code)
 local-mcp-http:  ## Run MCP server locally (HTTP mode on port 8081)
 	@cd mcp-server && KALILOS_API_URL=$(or $(API_URL),http://localhost:8080) python server.py
 
+local-daily-recap:  ## Run daily recap locally against Supabase + real Slack (LOCAL_MODE)
+	@$(MAKE) local-fn NAME=daily_recap PORT=8082
+
 # --- Testing ---
 test:  ## Run all tests
 	@./scripts/run-tests.sh all
@@ -121,6 +124,6 @@ health:  ## Run health checks against current environment
 	secret-set secret-get secret-list \
 	local-secret-set local-secret-get local-secret-list \
 	logs-fn logs-workflow workflows-status workflows-cancel \
-	local-fn local-frontend local-mcp local-mcp-http \
+	local-fn local-frontend local-mcp local-mcp-http local-daily-recap \
 	test test-fn test-integration seed-firestore wipe-firestore workflow-trigger \
 	health

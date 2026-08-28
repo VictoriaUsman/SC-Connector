@@ -31,6 +31,17 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
+# Load local-mode overrides (LOCAL_MODE, METRICS_BACKEND, SUPABASE_DB_URL,
+# etc.) on top of .env.staging, if present.
+LOCAL_ENV_FILE="$PROJECT_ROOT/.env.local"
+if [[ -f "$LOCAL_ENV_FILE" ]]; then
+  log "Loading local overrides from $LOCAL_ENV_FILE"
+  set -a
+  # shellcheck disable=SC1090
+  source "$LOCAL_ENV_FILE"
+  set +a
+fi
+
 log "Starting '$FUNCTION_NAME' locally on port $PORT..."
 log "Function directory: $FUNCTION_DIR"
 echo ""
