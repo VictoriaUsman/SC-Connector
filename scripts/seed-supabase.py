@@ -14,8 +14,11 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg2
+
+CLIENT_TZ = ZoneInfo("America/Los_Angeles")
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -45,7 +48,7 @@ def main() -> None:
         sys.exit(1)
 
     client_id = sys.argv[1] if len(sys.argv) > 1 else "test-client"
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    yesterday = (datetime.now(timezone.utc).astimezone(CLIENT_TZ).date() - timedelta(days=1))
 
     conn = psycopg2.connect(db_url)
     try:
