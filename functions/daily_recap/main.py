@@ -32,6 +32,7 @@ from shared.firestore_utils import (
     list_bot_configs,
     log_bot_activity,
 )
+from shared import metrics_repository
 from shared.logging_setup import init_logging
 from shared.slack_client import (
     format_currency,
@@ -223,6 +224,10 @@ def _query_account_totals(
     The recap day is bounded by midnight-to-midnight in the client's configured
     timezone, converted to UTC for the ``purchase_date`` (TIMESTAMP) comparison.
     """
+    if os.environ.get("METRICS_BACKEND", "bigquery") == "supabase":
+        totals = metrics_repository.get_account_totals(client_id, marketplaces, report_date, client_tz)
+        return AccountTotals(**totals)
+
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
     bq = _get_bq()

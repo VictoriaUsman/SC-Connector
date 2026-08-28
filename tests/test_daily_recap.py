@@ -298,6 +298,36 @@ class TestDayBounds:
         assert end == "2026-06-05T00:00:00Z"
 
 
+class TestQueryAccountTotalsBackendDispatch:
+    def test_supabase_backend_delegates_to_metrics_repository(self, monkeypatch):
+        from daily_recap.main import AccountTotals, _query_account_totals
+
+        monkeypatch.setenv("METRICS_BACKEND", "supabase")
+        try:
+            with patch(
+                "daily_recap.main.metrics_repository.get_account_totals",
+                return_value={"spend": 1.0, "ppc_sales": 2.0, "total_sales": 3.0},
+            ) as mock_get:
+                totals = _query_account_totals("c1", ["US"], "2026-06-04", ZoneInfo("America/Los_Angeles"))
+            assert totals == AccountTotals(spend=1.0, ppc_sales=2.0, total_sales=3.0)
+            mock_get.assert_called_once_with("c1", ["US"], "2026-06-04", ZoneInfo("America/Los_Angeles"))
+        finally:
+            monkeypatch.delenv("METRICS_BACKEND", raising=False)
+
+    def test_default_backend_still_uses_bigquery(self, monkeypatch):
+        from daily_recap.main import _query_account_totals
+
+        monkeypatch.delenv("METRICS_BACKEND", raising=False)
+        with (
+            patch("daily_recap.main._get_bq", return_value=MagicMock()) as mock_bq,
+            patch("daily_recap.main._query_orders_total", return_value={"total_sales": 5.0}),
+            patch("daily_recap.main._query_ads_total", return_value={"spend": 1.0, "ppc_sales": 2.0}),
+        ):
+            totals = _query_account_totals("c1", ["US"], "2026-06-04", ZoneInfo("America/Los_Angeles"))
+        assert totals.total_sales == 5.0
+        mock_bq.assert_called_once()
+
+
 class TestQueryConstruction:
     def test_orders_query_uses_purchase_date_window_not_report_partition(self):
         from daily_recap.main import _query_orders_total
