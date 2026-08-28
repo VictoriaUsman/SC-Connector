@@ -14,6 +14,7 @@ import requests
 from google.cloud import secretmanager
 
 from shared.config import get_environment, get_project
+from shared.local_secrets import is_local_mode, resolve_secret
 
 logger = logging.getLogger(__name__)
 
@@ -174,16 +175,22 @@ def _get_sm() -> secretmanager.SecretManagerServiceClient:
 
 
 def _get_slack_token() -> str:
-    """Lazily load the Slack bot token from Secret Manager."""
+    """Lazily load the Slack bot token from Secret Manager (or
+    scripts/local-secrets.json when LOCAL_MODE=true)."""
     global _slack_token
     if _slack_token is not None:
         return _slack_token
 
-    project = get_project()
     env = get_environment()
-    secret_name = f"projects/{project}/secrets/kalilos-{env}-slack-bot-token/versions/latest"
+    short_name = f"kalilos-{env}-slack-bot-token"
 
-    resp = _get_sm().access_secret_version(name=secret_name)
+    if is_local_mode():
+        _slack_token = resolve_secret(short_name).strip()
+        return _slack_token
+
+    project = get_project()
+    full_name = f"projects/{project}/secrets/{short_name}/versions/latest"
+    resp = _get_sm().access_secret_version(name=full_name)
     _slack_token = resp.payload.data.decode("utf-8").strip()
     return _slack_token
 

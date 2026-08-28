@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
@@ -41,3 +42,36 @@ class TestResolveTargetChannels:
     def test_channels_entries_missing_id_are_skipped(self):
         config = {"channels": [{"id": "C1"}, {"name": "no id"}, {"id": "C2"}]}
         assert resolve_target_channels(config) == ["C1", "C2"]
+
+
+class TestGetSlackToken:
+    def test_local_mode_uses_local_secrets(self, monkeypatch):
+        import shared.slack_client as sc
+
+        sc._slack_token = None
+        monkeypatch.setenv("LOCAL_MODE", "true")
+        monkeypatch.setenv("ENVIRONMENT", "staging")
+        try:
+            with patch("shared.slack_client.resolve_secret", return_value="xoxb-local-token") as mock_resolve:
+                token = sc._get_slack_token()
+            assert token == "xoxb-local-token"
+            mock_resolve.assert_called_once_with("kalilos-staging-slack-bot-token")
+        finally:
+            sc._slack_token = None
+
+    def test_production_mode_uses_secret_manager(self, monkeypatch):
+        import shared.slack_client as sc
+
+        sc._slack_token = None
+        monkeypatch.delenv("LOCAL_MODE", raising=False)
+        monkeypatch.setenv("ENVIRONMENT", "staging")
+        monkeypatch.setenv("GCP_PROJECT", "test-project")
+        fake_resp = MagicMock()
+        fake_resp.payload.data = b"xoxb-real-token"
+        try:
+            with patch("shared.slack_client._get_sm") as mock_sm:
+                mock_sm.return_value.access_secret_version.return_value = fake_resp
+                token = sc._get_slack_token()
+            assert token == "xoxb-real-token"
+        finally:
+            sc._slack_token = None
