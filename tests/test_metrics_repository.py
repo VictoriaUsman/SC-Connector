@@ -87,11 +87,13 @@ class TestGetConnection:
         metrics_repository._conn = None
         monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://fake")
         fake_psycopg2 = MagicMock()
-        fake_psycopg2.connect.return_value = "fake-connection"
+        fake_connection = MagicMock(name="fake-connection")
+        fake_psycopg2.connect.return_value = fake_connection
         try:
             with patch.dict(sys.modules, {"psycopg2": fake_psycopg2}):
                 conn = metrics_repository._get_connection()
-            assert conn == "fake-connection"
+            assert conn is fake_connection
+            assert conn.autocommit is True
             fake_psycopg2.connect.assert_called_once_with("postgresql://fake")
         finally:
             metrics_repository._conn = None
@@ -100,7 +102,7 @@ class TestGetConnection:
         metrics_repository._conn = None
         monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://fake")
         fake_psycopg2 = MagicMock()
-        fake_psycopg2.connect.return_value = "fake-connection"
+        fake_psycopg2.connect.return_value = MagicMock(name="fake-connection")
         try:
             with patch.dict(sys.modules, {"psycopg2": fake_psycopg2}):
                 metrics_repository._get_connection()

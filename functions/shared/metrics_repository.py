@@ -30,6 +30,7 @@ def _get_connection():
         import psycopg2  # lazy: only required when METRICS_BACKEND=supabase
 
         _conn = psycopg2.connect(os.environ["SUPABASE_DB_URL"])
+        _conn.autocommit = True
     return _conn
 
 

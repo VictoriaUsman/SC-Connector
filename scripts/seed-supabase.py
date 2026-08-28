@@ -3,7 +3,11 @@
 test-client/US, so `daily_recap` run locally has real numbers to post.
 
 Usage:
-    SUPABASE_DB_URL=postgresql://... python scripts/seed-supabase.py [client_id]
+    SUPABASE_DB_URL=postgresql://... python scripts/seed-supabase.py [client_id] [client_timezone]
+
+Note: client_timezone must match whatever client_timezone is actually configured
+for that client in Firestore (or the local Firestore shim) — a mismatch causes
+daily_recap to silently query the wrong day (an all-zero recap, no error).
 
 Requires: psycopg2-binary
     pip install psycopg2-binary
@@ -18,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg2
 
-CLIENT_TZ = ZoneInfo("America/Los_Angeles")
+DEFAULT_CLIENT_TZ = "America/Los_Angeles"  # matches daily_recap's own fallback default
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -48,7 +52,9 @@ def main() -> None:
         sys.exit(1)
 
     client_id = sys.argv[1] if len(sys.argv) > 1 else "test-client"
-    yesterday = (datetime.now(timezone.utc).astimezone(CLIENT_TZ).date() - timedelta(days=1))
+    client_tz_name = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_CLIENT_TZ
+    client_tz = ZoneInfo(client_tz_name)
+    yesterday = (datetime.now(timezone.utc).astimezone(client_tz).date() - timedelta(days=1))
 
     conn = psycopg2.connect(db_url)
     try:
@@ -84,7 +90,7 @@ def main() -> None:
     total_sales = sum(o[3] for o in orders)
     total_spend = sum(c[4] for c in campaigns)
     total_ppc_sales = sum(c[5] for c in campaigns)
-    print(f"Seeded Supabase for client_id={client_id!r}, date={yesterday.isoformat()}")
+    print(f"Seeded Supabase for client_id={client_id!r}, date={yesterday.isoformat()}, client_timezone={client_tz_name!r}")
     print(f"  Total Sales: ${total_sales:.2f}")
     print(f"  Spend:       ${total_spend:.2f}")
     print(f"  PPC Sales:   ${total_ppc_sales:.2f}")
