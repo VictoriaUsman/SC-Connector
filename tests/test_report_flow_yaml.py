@@ -194,12 +194,19 @@ class TestSupabaseSecretFetch:
     def test_get_supabase_key_calls_secretmanager_connector(self):
         doc = _load()
         steps = _steps_to_map(doc["get_supabase_key"]["steps"])
-        fetch = steps["fetch_secret"]
+        fetch = steps["fetch_secret"]["try"]
         assert fetch["call"] == "googleapis.secretmanager.v1.projects.secrets.versions.access"
         name_expr = fetch["args"]["name"]
         assert "__SUPABASE_SECRET_NAME__" in name_expr
         assert 'sys.get_env("GOOGLE_CLOUD_PROJECT_ID")' in name_expr
         assert fetch["result"] == "secret_response"
+
+    def test_get_supabase_key_fetch_secret_has_retry(self):
+        doc = _load()
+        steps = _steps_to_map(doc["get_supabase_key"]["steps"])
+        fetch = steps["fetch_secret"]
+        assert "retry" in fetch
+        assert fetch["retry"]["max_retries"] >= 2
 
     def test_get_supabase_key_decodes_the_payload(self):
         doc = _load()
@@ -251,10 +258,14 @@ class TestSupabaseSecretFetch:
         pipeline_steps = _steps_to_map(doc["report_pipeline"]["steps"])
         ingest_except = _steps_to_map(pipeline_steps["ingest_bigquery"]["except"]["steps"])
 
-        assert "fetch_supabase_key" in ingest_except
-        assert ingest_except["fetch_supabase_key"]["call"] == "get_supabase_key"
+        safe_block = ingest_except["mark_ingest_failed_safe"]
+        try_steps = _steps_to_map(safe_block["try"]["steps"])
 
-        args = ingest_except["mark_ingest_failed"]["args"]
+        assert "fetch_supabase_key" in try_steps
+        assert try_steps["fetch_supabase_key"]["call"] == "get_supabase_key"
+        assert try_steps["fetch_supabase_key"]["result"] == "supabase_key"
+
+        args = try_steps["mark_ingest_failed"]["args"]
         assert "firestore.googleapis.com" not in args["url"]
         assert "SUPABASE_URL" in args["url"]
         assert "/rest/v1/jobs?id=eq." in args["url"]
@@ -266,17 +277,33 @@ class TestSupabaseSecretFetch:
         body = args["body"]
         assert body["ingest_status"] == "failed"
         assert "fields" not in body
-        assert "ingest_error" in body["ingest_error"]
+        assert body["ingest_error"] == "${text.decode(json.encode(ingest_error))}"
+
+    def test_mark_ingest_failed_is_best_effort(self):
+        """A failure fetching the key or writing the PATCH must not escape
+        and turn an already-delivered report into a failed job — it must be
+        caught and logged, not raised."""
+        doc = _load()
+        pipeline_steps = _steps_to_map(doc["report_pipeline"]["steps"])
+        ingest_except = _steps_to_map(pipeline_steps["ingest_bigquery"]["except"]["steps"])
+        safe_block = ingest_except["mark_ingest_failed_safe"]
+
+        assert "except" in safe_block
+        assert "steps" in safe_block["except"]
 
     def test_mark_api_ingest_failed_is_postgrest_not_firestore(self):
         doc = _load()
         pipeline_steps = _steps_to_map(doc["report_pipeline"]["steps"])
         api_ingest_except = _steps_to_map(pipeline_steps["api_call_ingest"]["except"]["steps"])
 
-        assert "fetch_supabase_key" in api_ingest_except
-        assert api_ingest_except["fetch_supabase_key"]["call"] == "get_supabase_key"
+        safe_block = api_ingest_except["mark_api_ingest_failed_safe"]
+        try_steps = _steps_to_map(safe_block["try"]["steps"])
 
-        args = api_ingest_except["mark_api_ingest_failed"]["args"]
+        assert "fetch_supabase_key_api" in try_steps
+        assert try_steps["fetch_supabase_key_api"]["call"] == "get_supabase_key"
+        assert try_steps["fetch_supabase_key_api"]["result"] == "supabase_key"
+
+        args = try_steps["mark_api_ingest_failed"]["args"]
         assert "firestore.googleapis.com" not in args["url"]
         assert "SUPABASE_URL" in args["url"]
         assert "/rest/v1/jobs?id=eq." in args["url"]
@@ -288,4 +315,45 @@ class TestSupabaseSecretFetch:
         body = args["body"]
         assert body["ingest_status"] == "failed"
         assert "fields" not in body
-        assert "ingest_error" in body["ingest_error"]
+        assert body["ingest_error"] == "${text.decode(json.encode(api_ingest_error))}"
+
+    def test_mark_api_ingest_failed_is_best_effort(self):
+        doc = _load()
+        pipeline_steps = _steps_to_map(doc["report_pipeline"]["steps"])
+        api_ingest_except = _steps_to_map(pipeline_steps["api_call_ingest"]["except"]["steps"])
+        safe_block = api_ingest_except["mark_api_ingest_failed_safe"]
+
+        assert "except" in safe_block
+        assert "steps" in safe_block["except"]
+
+    def test_no_firestore_references_remain_anywhere_in_the_file(self):
+        assert "firestore.googleapis.com" not in _YAML_PATH.read_text()
+
+    def test_no_duplicate_step_names_within_report_pipeline(self):
+        """report_pipeline previously had two sibling `fetch_supabase_key`
+        step names (one per ingest except-block) — a name-collision risk
+        within a single subworkflow's namespace. Recursively collect every
+        step name under report_pipeline and confirm none repeats."""
+        doc = _load()
+
+        def collect_names(steps):
+            names = []
+            for step in steps:
+                for name, body in step.items():
+                    names.append(name)
+                    if isinstance(body, dict):
+                        if "steps" in body:
+                            names.extend(collect_names(body["steps"]))
+                        if isinstance(body.get("try"), dict) and "steps" in body["try"]:
+                            names.extend(collect_names(body["try"]["steps"]))
+                        if isinstance(body.get("except"), dict) and "steps" in body["except"]:
+                            names.extend(collect_names(body["except"]["steps"]))
+                        if "switch" in body:
+                            for case in body["switch"]:
+                                if "steps" in case:
+                                    names.extend(collect_names(case["steps"]))
+            return names
+
+        names = collect_names(doc["report_pipeline"]["steps"])
+        duplicates = {n for n in names if names.count(n) > 1}
+        assert not duplicates, f"duplicate step names within report_pipeline: {duplicates}"

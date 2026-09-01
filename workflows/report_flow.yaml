@@ -262,23 +262,44 @@ report_pipeline:
                     marketplace: ${args.marketplace}
                     error: ${text.decode(json.encode(ingest_error))}
                   severity: ERROR
-            - fetch_supabase_key:
-                call: get_supabase_key
-                result: supabase_key
-            - mark_ingest_failed:
+            - mark_ingest_failed_safe:
                 # The job is already "completed" (delivered to Drive); record the
                 # ingestion failure on a dedicated sub-status field so it is
                 # queryable without breaking the completed/failed state machine.
-                call: http.patch
-                args:
-                  url: '${sys.get_env("SUPABASE_URL") + "/rest/v1/jobs?id=eq." + create_response.body.job_id}'
-                  headers:
-                    apikey: ${supabase_key}
-                    Authorization: '${"Bearer " + supabase_key}'
-                    Prefer: "return=minimal"
-                  body:
-                    ingest_status: "failed"
-                    ingest_error: ${text.decode(json.encode(ingest_error))}
+                # This whole block is itself best-effort: a failure fetching the
+                # Supabase key or writing the PATCH (e.g. a Secret Manager blip)
+                # must not escape and turn an already-delivered report into a
+                # failed job — log and move on instead.
+                try:
+                  steps:
+                    - fetch_supabase_key:
+                        call: get_supabase_key
+                        result: supabase_key
+                    - mark_ingest_failed:
+                        call: http.patch
+                        args:
+                          url: '${sys.get_env("SUPABASE_URL") + "/rest/v1/jobs?id=eq." + create_response.body.job_id}'
+                          headers:
+                            apikey: ${supabase_key}
+                            Authorization: '${"Bearer " + supabase_key}'
+                            Prefer: "return=minimal"
+                          body:
+                            ingest_status: "failed"
+                            ingest_error: ${text.decode(json.encode(ingest_error))}
+                except:
+                  as: mark_ingest_failed_error
+                  steps:
+                    - log_mark_ingest_failed_error:
+                        call: sys.log
+                        args:
+                          json:
+                            component: "report-flow"
+                            phase: "ingest_bigquery"
+                            error_type: "mark_ingest_failed_error"
+                            message: "Failed to record ingest failure on the job row (job stays completed; ingest_status/ingest_error not updated)"
+                            job_id: ${create_response.body.job_id}
+                            error: ${text.decode(json.encode(mark_ingest_failed_error))}
+                          severity: ERROR
 
     - log_complete:
         call: sys.log
@@ -401,20 +422,37 @@ report_pipeline:
                     marketplace: ${args.marketplace}
                     error: ${text.decode(json.encode(api_ingest_error))}
                   severity: ERROR
-            - fetch_supabase_key:
-                call: get_supabase_key
-                result: supabase_key
-            - mark_api_ingest_failed:
-                call: http.patch
-                args:
-                  url: '${sys.get_env("SUPABASE_URL") + "/rest/v1/jobs?id=eq." + args.job_id}'
-                  headers:
-                    apikey: ${supabase_key}
-                    Authorization: '${"Bearer " + supabase_key}'
-                    Prefer: "return=minimal"
-                  body:
-                    ingest_status: "failed"
-                    ingest_error: ${text.decode(json.encode(api_ingest_error))}
+            - mark_api_ingest_failed_safe:
+                try:
+                  steps:
+                    - fetch_supabase_key_api:
+                        call: get_supabase_key
+                        result: supabase_key
+                    - mark_api_ingest_failed:
+                        call: http.patch
+                        args:
+                          url: '${sys.get_env("SUPABASE_URL") + "/rest/v1/jobs?id=eq." + args.job_id}'
+                          headers:
+                            apikey: ${supabase_key}
+                            Authorization: '${"Bearer " + supabase_key}'
+                            Prefer: "return=minimal"
+                          body:
+                            ingest_status: "failed"
+                            ingest_error: ${text.decode(json.encode(api_ingest_error))}
+                except:
+                  as: mark_api_ingest_failed_error
+                  steps:
+                    - log_mark_api_ingest_failed_error:
+                        call: sys.log
+                        args:
+                          json:
+                            component: "report-flow"
+                            phase: "ingest_bigquery"
+                            error_type: "mark_ingest_failed_error"
+                            message: "Failed to record ingest failure on the job row (job stays completed; ingest_status/ingest_error not updated)"
+                            job_id: ${map.get(args, "job_id")}
+                            error: ${text.decode(json.encode(mark_api_ingest_failed_error))}
+                          severity: ERROR
 
     - log_api_call_complete:
         call: sys.log
@@ -476,10 +514,18 @@ get_supabase_key:
   params: []
   steps:
     - fetch_secret:
-        call: googleapis.secretmanager.v1.projects.secrets.versions.access
-        args:
-          name: '${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/secrets/__SUPABASE_SECRET_NAME__/versions/latest"}'
-        result: secret_response
+        try:
+          call: googleapis.secretmanager.v1.projects.secrets.versions.access
+          args:
+            name: '${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/secrets/__SUPABASE_SECRET_NAME__/versions/latest"}'
+          result: secret_response
+        retry:
+          predicate: ${http.default_retry_predicate}
+          max_retries: 2
+          backoff:
+            initial_delay: 2
+            max_delay: 30
+            multiplier: 2
     - decode_key:
         return: ${text.decode(base64.decode(secret_response.payload.data))}
 
