@@ -571,6 +571,7 @@ class TestListJobs:
         query, params = cur.queries[0]
         sql_text = str(query)
         assert all(k in sql_text for k in ("schedule_id", "execution_date", "client_id", "status"))
+        assert params == ("s1", "2026-03-21", "c1", "failed", 10)
 
 
 class TestGetEvent:
@@ -647,3 +648,11 @@ class TestGetLiveEvent:
             with caplog.at_level("WARNING"):
                 result = db.get_live_event()
         assert result["id"] == "e1"  # earliest start_date wins
+        # Verify WARNING was actually logged with expected extra fields
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.levelname == "WARNING"
+        assert record.live_event_count == 2
+        assert record.selected_event_id == "e1"
+        assert record.live_event_ids == ["e1", "e2"]  # sorted by start_date then id
+        assert record.live_event_names == ["Earlier", "Later"]  # sorted by start_date then id
