@@ -888,3 +888,99 @@ def record_uploaded_drive_file(folder_id: str, stored_name: str, file_id: str) -
             "file_id = EXCLUDED.file_id, updated_at = now()",
             (_drive_file_key(folder_id, stored_name), file_id, folder_id, stored_name),
         )
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+def health_check() -> None:
+    """Cheap liveness probe for the API's `/health?deep=1` endpoint. Raises on
+    any failure — callers catch broadly and report degraded status, mirroring
+    the original `list(get_db().collection("clients").limit(1).stream())`
+    check's all-exceptions-mean-unhealthy behavior."""
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1")
+
+
+# ---------------------------------------------------------------------------
+# Active jobs (rate limiting on-demand triggers)
+# ---------------------------------------------------------------------------
+
+def count_active_jobs(client_id: str, statuses: list[str], limit: int = 11) -> int:
+    """Count jobs for client_id whose status is in `statuses`, capped at
+    `limit`. The cap mirrors the original Firestore query's `.limit(11)`
+    over-fetch-by-one pattern: the caller only needs to distinguish "fewer
+    than 10" from "10 or more," so an exact unbounded count is unnecessary
+    and a capped count is cheaper."""
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT 1 FROM jobs WHERE client_id = %s AND status = ANY(%s) LIMIT %s"
+            ") t",
+            (client_id, statuses, limit),
+        )
+        return cur.fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
+# OAuth state (CSRF-style tokens for the Connect SP API / Ads API flows)
+# ---------------------------------------------------------------------------
+
+def get_oauth_state(state: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM oauth_states WHERE state = %s", (state,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def save_oauth_state(state: str, data: dict[str, Any]) -> None:
+    from psycopg2.extras import Json
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO oauth_states (state, data) VALUES (%s, %s) "
+            "ON CONFLICT (state) DO UPDATE SET data = EXCLUDED.data, created_at = now()",
+            (state, Json(data)),
+        )
+
+
+def delete_oauth_state(state: str) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM oauth_states WHERE state = %s", (state,))
+
+
+# ---------------------------------------------------------------------------
+# App config (generic key-value store; today's only user is the FX-rate cache)
+# ---------------------------------------------------------------------------
+
+def get_app_config(key: str) -> dict[str, Any] | None:
+    """Returns the config value directly (not wrapped), matching how
+    `currency.py`'s Firestore version returned `doc.to_dict()` — the caller
+    never dealt with a `{key, value}` envelope, just the value's own fields."""
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return row[0]
+
+
+def set_app_config(key: str, value: dict[str, Any]) -> None:
+    from psycopg2.extras import Json
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO app_config (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            (key, Json(value)),
+        )

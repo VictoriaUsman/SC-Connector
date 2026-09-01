@@ -8,6 +8,8 @@ import uuid
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
 from shared import db
@@ -828,3 +830,92 @@ class TestDriveFileIndex:
         assert "INSERT INTO drive_file_index" in sql_text
         assert "ON CONFLICT" in sql_text.upper() and "DO UPDATE" in sql_text.upper()
         assert "f1__report.tsv" in params and "gdrive-123" in params
+
+
+class TestHealthCheck:
+    def test_runs_select_1(self):
+        cur = _FakeCursor([(None, [(1,)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.health_check()  # must not raise
+        query, params = cur.queries[0]
+        assert "SELECT 1" in str(query)
+
+    def test_propagates_connection_failure(self):
+        with patch.object(db, "_get_connection", side_effect=RuntimeError("down")):
+            with pytest.raises(RuntimeError):
+                db.health_check()
+
+
+class TestCountActiveJobs:
+    def test_returns_bounded_count(self):
+        cur = _FakeCursor([(_desc("count"), [(7,)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.count_active_jobs("c1", ["pending", "polling"], limit=11)
+        assert result == 7
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "jobs" in sql_text and "LIMIT" in sql_text.upper()
+        assert params == ("c1", ["pending", "polling"], 11)
+
+    def test_default_limit_is_eleven(self):
+        cur = _FakeCursor([(_desc("count"), [(0,)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.count_active_jobs("c1", ["pending"])
+        _, params = cur.queries[0]
+        assert params[-1] == 11
+
+
+class TestOauthState:
+    def test_get_found(self):
+        cur = _FakeCursor([(_desc("state", "data"), [("s1", {"client_id": "c1"})])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.get_oauth_state("s1")
+        assert result == {"state": "s1", "data": {"client_id": "c1"}}
+
+    def test_get_missing(self):
+        cur = _FakeCursor([(_desc("state"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_oauth_state("missing") is None
+
+    def test_save_upserts_and_wraps_data_as_jsonb(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.save_oauth_state("s1", {"client_id": "c1", "api_source": "sp_api"})
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "INSERT INTO oauth_states" in sql_text
+        assert "ON CONFLICT" in sql_text.upper() and "DO UPDATE" in sql_text.upper()
+        assert params[0] == "s1"
+        assert any("Json" in str(type(p)) for p in params)
+
+    def test_delete(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.delete_oauth_state("s1")
+        query, params = cur.queries[0]
+        assert "DELETE FROM oauth_states" in str(query)
+        assert params == ("s1",)
+
+
+class TestAppConfig:
+    def test_get_found_returns_value_directly(self):
+        cur = _FakeCursor([(_desc("value"), [({"rates": {"USD": 1.0}, "base": "USD", "fetched_at": 123.0},)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.get_app_config("currency_rates")
+        assert result == {"rates": {"USD": 1.0}, "base": "USD", "fetched_at": 123.0}
+
+    def test_get_missing(self):
+        cur = _FakeCursor([(_desc("value"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_app_config("missing") is None
+
+    def test_set_upserts_and_wraps_value_as_jsonb(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.set_app_config("currency_rates", {"rates": {}, "base": "USD", "fetched_at": 1.0})
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "INSERT INTO app_config" in sql_text
+        assert "ON CONFLICT" in sql_text.upper() and "DO UPDATE" in sql_text.upper()
+        assert params[0] == "currency_rates"
+        assert any("Json" in str(type(p)) for p in params)
