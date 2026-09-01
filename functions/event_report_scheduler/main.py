@@ -18,7 +18,7 @@ from typing import Any
 
 import flask
 
-from shared.firestore_utils import (
+from shared.db import (
     get_client,
     get_event,
     get_live_event,
@@ -33,7 +33,7 @@ from shared.workflow_launcher import (
     get_workflow_parent,
     launch_execution,
 )
-from shared.firestore_utils import create_job
+from shared.db import create_job
 from shared.logging_setup import init_logging
 
 logger = logging.getLogger(__name__)

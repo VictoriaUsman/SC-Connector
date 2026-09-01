@@ -52,12 +52,6 @@ def _make_event(
     }
 
 
-@pytest.fixture(autouse=True)
-def _mock_firestore():
-    with patch("shared.firestore_utils.firestore.Client"):
-        yield
-
-
 class TestNoOpWhenNoEvent:
     def test_returns_immediately_when_no_live_event(self):
         from event_report_scheduler.main import handler
