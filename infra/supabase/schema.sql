@@ -155,6 +155,14 @@ CREATE TABLE IF NOT EXISTS slack_thread_anchors (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS drive_file_index (
+    file_key text PRIMARY KEY,
+    file_id text NOT NULL,
+    folder_id text NOT NULL,
+    name text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- ---------------------------------------------------------------------
 -- Row Level Security — only `jobs` is readable by the anon/PostgREST
 -- role (the frontend's realtime dashboard). Every other table is
@@ -168,6 +176,7 @@ ALTER TABLE schedules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE job_launch_dedupe ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drive_folder_locks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drive_file_index ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bot_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bot_activity ENABLE ROW LEVEL SECURITY;

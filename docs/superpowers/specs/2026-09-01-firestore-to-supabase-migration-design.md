@@ -8,7 +8,7 @@ plus internal coordination collections (`_job_launch_dedupe`,
 `bot_activity` — all live in Firestore today. Firestore is touched from three
 places: `functions/shared/firestore_utils.py` (the repository module 13
 Cloud Function files import), `functions/shared/drive_client.py` (its own
-`_drive_folder_locks` collection), and `workflows/report_flow.yaml` (three
+`_drive_folder_locks` and `_drive_file_index` collections), and `workflows/report_flow.yaml` (three
 direct HTTPS calls to the Firestore REST API for job-status writes on the
 error/ingest paths, using the workflow's own service-account IAM). The
 frontend reads `clients`/`schedules`/`events`/`bot_configs` through the Flask
@@ -42,7 +42,7 @@ brainstorming:
 
 - Every Firestore collection moves to a Postgres table in the existing
   Supabase project: `clients`, `schedules`, `jobs`, `job_launch_dedupe`,
-  `drive_folder_locks`, `events`, `bot_configs`, `bot_activity`,
+  `drive_folder_locks`, `drive_file_index`, `events`, `bot_configs`, `bot_activity`,
   `slack_thread_anchors`.
 - `functions/shared/firestore_utils.py` is rewritten against `psycopg2` as
   `functions/shared/db.py`, **preserving every function's name, signature,
@@ -123,6 +123,7 @@ what drive the design:
   the raw key is usable directly as the primary key).
 - **`drive_folder_locks`** — `lock_key text PRIMARY KEY`, `folder_id text`,
   `created_at timestamptz DEFAULT now()`.
+- **`drive_file_index`** — `file_key text PRIMARY KEY` (deterministic `folder_id__stored_name`, slashes replaced — same construction as today's Firestore doc id), `file_id text`, `folder_id text`, `name text`, `updated_at timestamptz DEFAULT now()`. Backs `drive_client.py`'s upload-dedup: before each upload, look up the prior recorded file id for `(folder_id, stored_name)` and delete it by id (immune to Drive's eventually-consistent name search), then record the new file's id after upload.
 - **`events`** — `id uuid PRIMARY KEY DEFAULT gen_random_uuid()`, `name`,
   `start_date date`, `end_date date`, `status`, `prior_event_id`,
   `manual_ads jsonb`, `manually_activated boolean`, `activated_at
