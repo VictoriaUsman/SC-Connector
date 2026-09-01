@@ -593,6 +593,15 @@ def list_jobs(
         return [_row_to_dict(cur, row) for row in rows]
 
 
+def increment_job_poll_count(job_id: str) -> None:
+    """Atomically increment a job's poll_count by 1. Replaces Firestore's
+    `firestore.Increment(1)` sentinel — which has no meaning as a plain SQL
+    UPDATE value — with the equivalent `SET poll_count = poll_count + 1`."""
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET poll_count = poll_count + 1 WHERE id = %s", (job_id,))
+
+
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------

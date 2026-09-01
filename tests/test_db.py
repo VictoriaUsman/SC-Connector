@@ -601,6 +601,17 @@ class TestListJobs:
         assert params == ("s1", "2026-03-21", "c1", "failed", 10)
 
 
+class TestIncrementJobPollCount:
+    def test_increments_via_sql(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.increment_job_poll_count("j1")
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "poll_count = poll_count + 1" in sql_text
+        assert params == ("j1",)
+
+
 class TestGetEvent:
     def test_found(self):
         cur = _FakeCursor([(_desc("id", "name"), [("e1", "Prime Day")])])

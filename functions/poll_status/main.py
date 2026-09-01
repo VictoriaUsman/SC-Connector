@@ -10,12 +10,11 @@ from __future__ import annotations
 import logging
 
 import flask
-from google.cloud import firestore
 
 from shared import ads_api_client, sp_api_client
 from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.credentials import get_ads_credentials, get_sp_credentials
-from shared.db import update_job, update_job_status
+from shared.db import increment_job_poll_count, update_job_status
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
@@ -73,7 +72,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             return {"error": f"Unknown api_source: {api_source}", "code": "INVALID_SOURCE"}, 400
 
         if job_id:
-            update_job(job_id, {"poll_count": firestore.Increment(1)})
+            increment_job_poll_count(job_id)
 
             if result["status"] == "failed":
                 update_job_status(
