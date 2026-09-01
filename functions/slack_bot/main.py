@@ -22,7 +22,7 @@ import flask
 from google.cloud import bigquery
 
 from shared.currency import convert, get_rates
-from shared.firestore_utils import (
+from shared.db import (
     get_client,
     get_event,
     get_live_event,

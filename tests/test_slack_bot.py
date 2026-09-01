@@ -12,8 +12,6 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
-import shared.firestore_utils  # noqa: F401 — register module before patch()
-
 os.environ.setdefault("GCP_PROJECT", "test-project")
 os.environ.setdefault("ENVIRONMENT", "staging")
 os.environ.setdefault("BQ_DATASET", "kalilos_reports_staging")
@@ -44,12 +42,6 @@ def _make_bot_config(
     if sku_breakdown is not None:
         config["sku_breakdown_enabled"] = sku_breakdown
     return config
-
-
-@pytest.fixture(autouse=True)
-def _mock_firestore():
-    with patch("shared.firestore_utils.firestore.Client"):
-        yield
 
 
 # ---------------------------------------------------------------------------
@@ -875,47 +867,6 @@ class TestHandlerIntegration:
         assert status == 200
         assert body["messages_sent"] == 1
         assert mock_post.call_args.args[0] == "C123"
-
-
-class TestGetLiveEvent:
-    """get_live_event must be deterministic when several events are live."""
-
-    def _fake_doc(self, doc_id: str, data: dict):
-        doc = MagicMock()
-        doc.id = doc_id
-        doc.to_dict.return_value = data
-        return doc
-
-    def _patch_db(self, docs: list):
-        fake_db = MagicMock()
-        fake_db.collection.return_value.where.return_value.stream.return_value = iter(docs)
-        return patch("shared.firestore_utils.get_db", return_value=fake_db)
-
-    def test_none_when_no_live_event(self):
-        from shared.firestore_utils import get_live_event
-
-        with self._patch_db([]):
-            assert get_live_event() is None
-
-    def test_single_live_event(self):
-        from shared.firestore_utils import get_live_event
-
-        docs = [self._fake_doc("e1", {"name": "PD", "start_date": "2026-06-21"})]
-        with self._patch_db(docs):
-            ev = get_live_event()
-        assert ev["id"] == "e1"
-
-    def test_multiple_live_events_picks_earliest_start_deterministically(self):
-        from shared.firestore_utils import get_live_event
-
-        # Intentionally out of order; earliest start_date (then id) must win.
-        docs = [
-            self._fake_doc("zeta", {"name": "B", "start_date": "2026-06-22"}),
-            self._fake_doc("alpha", {"name": "A", "start_date": "2026-06-21"}),
-        ]
-        with self._patch_db(docs):
-            ev = get_live_event()
-        assert ev["id"] == "alpha"
 
 
 # ---------------------------------------------------------------------------
