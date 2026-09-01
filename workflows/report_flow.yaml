@@ -262,21 +262,23 @@ report_pipeline:
                     marketplace: ${args.marketplace}
                     error: ${text.decode(json.encode(ingest_error))}
                   severity: ERROR
+            - fetch_supabase_key:
+                call: get_supabase_key
+                result: supabase_key
             - mark_ingest_failed:
                 # The job is already "completed" (delivered to Drive); record the
                 # ingestion failure on a dedicated sub-status field so it is
                 # queryable without breaking the completed/failed state machine.
                 call: http.patch
                 args:
-                  url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + create_response.body.job_id + "?updateMask.fieldPaths=ingest_status&updateMask.fieldPaths=ingest_error"}'
-                  auth:
-                    type: OAuth2
+                  url: '${sys.get_env("SUPABASE_URL") + "/rest/v1/jobs?id=eq." + create_response.body.job_id}'
+                  headers:
+                    apikey: ${supabase_key}
+                    Authorization: '${"Bearer " + supabase_key}'
+                    Prefer: "return=minimal"
                   body:
-                    fields:
-                      ingest_status:
-                        stringValue: "failed"
-                      ingest_error:
-                        stringValue: ${text.decode(json.encode(ingest_error))}
+                    ingest_status: "failed"
+                    ingest_error: ${text.decode(json.encode(ingest_error))}
 
     - log_complete:
         call: sys.log

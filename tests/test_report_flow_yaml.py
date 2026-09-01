@@ -245,3 +245,25 @@ class TestSupabaseSecretFetch:
         assert "fields" not in body
         assert "user_message" in body["error_details"]["message"]
         assert body["error_details"]["phase"] == "workflow_error"
+
+    def test_mark_ingest_failed_is_postgrest_not_firestore(self):
+        doc = _load()
+        pipeline_steps = _steps_to_map(doc["report_pipeline"]["steps"])
+        ingest_except = _steps_to_map(pipeline_steps["ingest_bigquery"]["except"]["steps"])
+
+        assert "fetch_supabase_key" in ingest_except
+        assert ingest_except["fetch_supabase_key"]["call"] == "get_supabase_key"
+
+        args = ingest_except["mark_ingest_failed"]["args"]
+        assert "firestore.googleapis.com" not in args["url"]
+        assert "SUPABASE_URL" in args["url"]
+        assert "/rest/v1/jobs?id=eq." in args["url"]
+        assert "create_response.body.job_id" in args["url"]
+        assert "auth" not in args
+        assert args["headers"]["apikey"] == "${supabase_key}"
+        assert args["headers"]["Prefer"] == "return=minimal"
+
+        body = args["body"]
+        assert body["ingest_status"] == "failed"
+        assert "fields" not in body
+        assert "ingest_error" in body["ingest_error"]
