@@ -5,6 +5,11 @@
 -- statement is safe to re-run (CREATE TABLE/INDEX IF NOT EXISTS,
 -- DROP POLICY IF EXISTS + CREATE POLICY).
 --
+-- Note: CREATE TABLE IF NOT EXISTS does not detect drift — re-running this
+-- against an existing table with a different shape silently does nothing.
+-- Future column additions need explicit ALTER TABLE ... ADD COLUMN IF NOT
+-- EXISTS statements, not edits to the CREATE TABLE block below.
+--
 -- Does NOT touch `orders`/`ad_campaign_metrics` — those are created by
 -- scripts/seed-supabase.py (Phase 1, daily_recap's BigQuery substitute)
 -- and are untouched by this migration.
@@ -54,6 +59,9 @@ CREATE TABLE IF NOT EXISTS schedules (
 CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules (is_active, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_schedules_client_ids ON schedules USING gin (client_ids);
 
+-- client_id and schedule_id are deliberately not FKs (unlike bot_configs
+-- and events below): on-demand jobs have no schedule, and this avoids
+-- blocking delete_schedule/delete_client on historical job rows.
 CREATE TABLE IF NOT EXISTS jobs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id text NOT NULL,
@@ -84,6 +92,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_client_started ON jobs (client_id, started_a
 CREATE INDEX IF NOT EXISTS idx_jobs_status_started ON jobs (status, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_schedule_started ON jobs (schedule_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_schedule_execution ON jobs (schedule_id, execution_date);
+CREATE INDEX IF NOT EXISTS idx_jobs_started ON jobs (started_at DESC);
 
 CREATE TABLE IF NOT EXISTS job_launch_dedupe (
     dedupe_key text PRIMARY KEY,
@@ -103,7 +112,7 @@ CREATE TABLE IF NOT EXISTS events (
     start_date date NOT NULL,
     end_date date NOT NULL,
     status text NOT NULL DEFAULT 'upcoming',
-    prior_event_id uuid REFERENCES events(id),
+    prior_event_id uuid REFERENCES events(id) ON DELETE SET NULL,
     manual_ads jsonb,
     manually_activated boolean NOT NULL DEFAULT false,
     activated_at timestamptz,
@@ -114,7 +123,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_status ON events (status);
 
 CREATE TABLE IF NOT EXISTS bot_configs (
-    client_id text PRIMARY KEY REFERENCES clients(id),
+    client_id text PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
     channels jsonb,
     slack_channel_id text,
     slack_channel_name text,
@@ -133,7 +142,7 @@ CREATE TABLE IF NOT EXISTS bot_configs (
 CREATE TABLE IF NOT EXISTS bot_activity (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-    "timestamp" timestamptz NOT NULL DEFAULT now()
+    "timestamp" timestamptz NOT NULL DEFAULT now() -- reserved word: always quote, e.g. SELECT "timestamp" FROM bot_activity
 );
 
 CREATE TABLE IF NOT EXISTS slack_thread_anchors (
@@ -166,3 +175,17 @@ ALTER TABLE slack_thread_anchors ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS jobs_public_read ON jobs;
 CREATE POLICY jobs_public_read ON jobs FOR SELECT TO anon USING (true);
+
+-- Supabase Realtime only emits postgres_changes events for tables in this
+-- publication — required for the frontend's live job-status subscription
+-- (design spec §4). Guarded because plain ALTER PUBLICATION ... ADD TABLE
+-- errors if jobs is already a member (not idempotent on its own).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'jobs'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime ADD TABLE jobs;
+    END IF;
+END $$;
