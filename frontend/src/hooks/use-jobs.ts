@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
@@ -29,6 +29,7 @@ async function fetchJobs(filter: JobsFilter): Promise<Job[]> {
  * Pass `undefined` to disable the listener (no query or subscription runs).
  */
 export function useRealtimeJobs(opts?: JobsFilter | undefined) {
+  const instanceId = useId();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(!!opts);
   const [error, setError] = useState<Error | null>(null);
@@ -48,8 +49,8 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
 
     let cancelled = false;
 
-    async function load() {
-      setLoading(true);
+    async function load(showLoading: boolean) {
+      if (showLoading) setLoading(true);
       try {
         const data = await fetchJobs({ clientId, scheduleId, status, max });
         if (!cancelled) {
@@ -64,7 +65,7 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
       }
     }
 
-    load();
+    load(true);
 
     // Realtime's postgres_changes filter only supports one column condition
     // per subscription, but callers here combine up to three (clientId,
@@ -72,19 +73,32 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
     // table and re-run the fully-filtered `load()` query on each event
     // instead — correct for any combination of filters, at the cost of an
     // extra refetch when an unrelated job row changes (acceptable at this
-    // table's scale).
+    // table's scale). `showLoading` is false on these refetches so a
+    // realtime event doesn't flash the whole list back to a loading state.
+    //
+    // The channel topic uses `useId()` alone (not the filter values) so
+    // each mounted hook instance gets its own channel — Supabase's
+    // realtime-js reuses a channel by topic when one already exists, so
+    // two instances sharing a topic would share a channel and one
+    // unmounting would silently kill the other's subscription.
     const channel = supabase
-      .channel(`jobs-realtime-${clientId ?? "*"}-${scheduleId ?? "*"}-${status ?? "*"}`)
+      .channel(`jobs-realtime-${instanceId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => {
-        load();
+        load(false);
       })
-      .subscribe();
+      .subscribe((subStatus, err) => {
+        if (err) {
+          console.warn("[useRealtimeJobs] realtime subscription error:", err);
+        } else if (subStatus !== "SUBSCRIBED" && subStatus !== "CLOSED") {
+          console.warn(`[useRealtimeJobs] realtime subscription status: ${subStatus}`);
+        }
+      });
 
     return () => {
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [enabled, clientId, scheduleId, status, max]);
+  }, [enabled, clientId, scheduleId, status, max, instanceId]);
 
   return { jobs, loading, error };
 }
@@ -94,6 +108,7 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
  * (identified by schedule_id + execution_date).
  */
 export function useRunJobs(scheduleId: string | undefined, executionDate: string | undefined) {
+  const instanceId = useId();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -107,8 +122,8 @@ export function useRunJobs(scheduleId: string | undefined, executionDate: string
 
     let cancelled = false;
 
-    async function load() {
-      setLoading(true);
+    async function load(showLoading: boolean) {
+      if (showLoading) setLoading(true);
       const { data, error: err } = await supabase
         .from("jobs")
         .select("*")
@@ -125,20 +140,26 @@ export function useRunJobs(scheduleId: string | undefined, executionDate: string
       setLoading(false);
     }
 
-    load();
+    load(true);
 
     const channel = supabase
-      .channel(`run-jobs-realtime-${scheduleId}-${executionDate}`)
+      .channel(`run-jobs-realtime-${instanceId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => {
-        load();
+        load(false);
       })
-      .subscribe();
+      .subscribe((subStatus, err) => {
+        if (err) {
+          console.warn("[useRunJobs] realtime subscription error:", err);
+        } else if (subStatus !== "SUBSCRIBED" && subStatus !== "CLOSED") {
+          console.warn(`[useRunJobs] realtime subscription status: ${subStatus}`);
+        }
+      });
 
     return () => {
       cancelled = true;
       supabase.removeChannel(channel);
     };
-  }, [scheduleId, executionDate]);
+  }, [scheduleId, executionDate, instanceId]);
 
   return { jobs, loading, error };
 }
