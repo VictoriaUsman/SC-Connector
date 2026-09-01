@@ -88,6 +88,8 @@ def _merge_upsert(table: str, key_col: str, key_val: Any, data: dict[str, Any]) 
     import psycopg2.sql as sql
     from psycopg2.extras import Json
 
+    data = {k: v for k, v in data.items() if k != key_col}
+
     jsonb_cols = _JSONB_COLUMNS.get(table, set())
     columns = [key_col] + list(data.keys())
     values: list[Any] = [key_val]
@@ -96,20 +98,30 @@ def _merge_upsert(table: str, key_col: str, key_val: Any, data: dict[str, Any]) 
 
     insert_cols = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
     placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
-    update_cols = sql.SQL(", ").join(
-        sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c))
-        for c in data.keys()
-    )
+
+    if data:
+        conflict_action = sql.SQL("DO UPDATE SET {updates}").format(
+            updates=sql.SQL(", ").join(
+                sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c))
+                for c in data.keys()
+            )
+        )
+    else:
+        # Nothing besides the key column to write. A brand-new key still needs
+        # the INSERT (to create the row with schema DEFAULTs); an existing key
+        # has nothing to update, so DO NOTHING avoids emitting an empty
+        # `DO UPDATE SET` clause, which is invalid SQL.
+        conflict_action = sql.SQL("DO NOTHING")
 
     query = sql.SQL(
         "INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
-        "ON CONFLICT ({key}) DO UPDATE SET {updates}"
+        "ON CONFLICT ({key}) {conflict_action}"
     ).format(
         table=sql.Identifier(table),
         cols=insert_cols,
         placeholders=placeholders,
         key=sql.Identifier(key_col),
-        updates=update_cols,
+        conflict_action=conflict_action,
     )
 
     conn = _get_connection()
@@ -127,6 +139,11 @@ def _merge_upsert_update_only(table: str, key_col: str, key_val: Any, data: dict
     already treats as a silent no-op today (mirroring the original code,
     none of which checked `.update()`'s implicit existence requirement).
     """
+    if not data:
+        # Nothing to update — building a SET clause with no columns would be
+        # invalid SQL, and there's no reason to open a connection for a no-op.
+        return
+
     import psycopg2.sql as sql
     from psycopg2.extras import Json
 

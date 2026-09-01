@@ -157,6 +157,31 @@ class TestMergeUpsert:
         assert "sp_api_secret_name" in sql_text
         assert "created_at" not in sql_text  # never touched — not in `data`
 
+    def test_key_column_in_data_is_not_duplicated(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db._merge_upsert("bot_configs", "client_id", "c1", {"client_id": "c1", "slack_channel_id": "C123"})
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert sql_text.count("client_id") == 2  # one INSERT column + one ON CONFLICT target, never a 3rd
+
+    def test_empty_data_update_only_is_a_no_op(self):
+        with patch.object(db, "_get_connection") as fake_conn:
+            db._merge_upsert_update_only("schedules", "id", "s1", {})
+        fake_conn.assert_not_called()  # never even opens a connection for nothing to write
+
+    def test_merge_upsert_with_only_key_column_in_data_does_not_produce_empty_set(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db._merge_upsert("bot_configs", "client_id", "c1", {"client_id": "c1"})
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        # Implementation choice: with nothing left in `data` after stripping the
+        # key column, the ON CONFLICT clause becomes DO NOTHING rather than an
+        # empty DO UPDATE SET (which would be invalid SQL).
+        assert "DO NOTHING" in sql_text
+        assert "DO UPDATE SET" not in sql_text
+
 
 class TestGetClient:
     def test_found(self):

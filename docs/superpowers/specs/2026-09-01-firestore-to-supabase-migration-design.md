@@ -64,6 +64,8 @@ brainstorming:
   `firebase.json`, and the `firebase`/`reactfire` frontend dependencies are
   removed.
 
+**Known gap, not covered by this plan or its `shared/db.py`:** `firestore_utils.get_db()` itself (the raw Firestore client factory, distinct from the 26 functions this plan's `shared/db.py` replaces) has four live call sites that don't go through any of those 26 functions: `api/main.py`'s health-check ping and a raw `jobs` collection query, `api/main.py`'s `_oauth_states` collection (OAuth flow state), and `shared/currency.py`'s FX-rate cache document (`app_config/currency_rates`). Neither `_oauth_states` nor the currency-rates cache has a Postgres table in `infra/supabase/schema.sql` — they were missed by this plan's schema design. A future plan swapping the 12 `firestore_utils` import sites cannot treat `api/main.py` or `shared/currency.py` as an import-only change until this is resolved: either add Postgres tables for both and rewrite these four call sites' direct `get_db()` usage, or make a deliberate decision to leave them on Firestore (which would mean `firestore_utils.py`/`local_firestore.py` and the Firestore project itself cannot be fully retired per §6 until these are addressed too).
+
 ## Non-goals
 
 - Migrating existing Firestore data. Starting fresh (user decision).
@@ -303,6 +305,13 @@ today: `firestore.rules` currently allows public read on `clients` and
 - Frontend: no existing test file covers `hooks/use-jobs.ts` today: confirm
   during planning whether to add coverage for the new realtime hook, or
   leave it as-is (matching today's coverage level).
+- `tests/test_currency.py` is untouched by this plan — it patches
+  `shared.currency._read_firestore`/`_write_firestore` directly, not a
+  `_mock_firestore` fixture, and stays that way since `shared/currency.py`
+  itself isn't migrated (see the Goals-section gap note on `get_db()`'s four
+  live call sites). `tests/test_api.py` similarly keeps whatever direct
+  Firestore mocking already covers `api/main.py`'s health-check ping and
+  `_oauth_states` handling, for the same reason.
 
 ## Rollout / verification
 
