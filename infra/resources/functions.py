@@ -94,10 +94,6 @@ def create(
                 env_vars["GDRIVE_ROOT_FOLDER_ID"] = gdrive_folder_id
         if fn_name == "ingest-bigquery":
             env_vars["BQ_DATASET"] = f"kalilos_reports_{env}"
-        if fn_name in ("download-upload", "fetch-api", "ingest-bigquery"):
-            supabase_db_url = config.get_secret("supabase-db-url")
-            if supabase_db_url:
-                env_vars["SUPABASE_DB_URL"] = supabase_db_url
         if fn_name == "event-report-scheduler":
             env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"
             env_vars["WORKFLOW_LOCATION"] = region
