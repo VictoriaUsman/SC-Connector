@@ -382,3 +382,193 @@ class TestDeleteSchedule:
         query, params = cur.queries[0]
         assert "DELETE FROM schedules" in str(query)
         assert params == ("s1",)
+
+
+class TestCreateJob:
+    def test_defaults_and_inserts(self):
+        cur = _FakeCursor([(_desc("id"), [("job-uuid",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.create_job({"client_id": "c1"})
+        assert result == "job-uuid"
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO jobs" in sql_text
+        assert "RETURNING" in sql_text.upper()
+
+    def test_caller_supplied_status_is_not_overwritten(self):
+        cur = _FakeCursor([(_desc("id"), [("job-uuid",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.create_job({"client_id": "c1", "status": "running"})
+        _, params = cur.queries[0]
+        assert "running" in params
+        assert "pending" not in params
+
+
+class TestTryClaimJobLaunch:
+    def test_new_key_claims(self):
+        cur = _FakeCursor([(_desc("dedupe_key"), [("k1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.try_claim_job_launch("k1") is True
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO job_launch_dedupe" in sql_text
+        assert "ON CONFLICT" in sql_text.upper() and "DO NOTHING" in sql_text.upper()
+
+    def test_duplicate_key_does_not_claim(self):
+        cur = _FakeCursor([(_desc("dedupe_key"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.try_claim_job_launch("k1") is False
+
+    def test_fails_open_on_exception(self):
+        with patch.object(db, "_get_connection", side_effect=RuntimeError("boom")):
+            assert db.try_claim_job_launch("k1") is True
+
+    def test_metadata_is_passed_as_jsonb(self):
+        cur = _FakeCursor([(_desc("dedupe_key"), [("k1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.try_claim_job_launch("k1", metadata={"schedule_id": "s1"})
+        _, params = cur.queries[0]
+        assert any("Json" in str(type(p)) for p in params)
+
+
+class TestGetJob:
+    def test_found(self):
+        cur = _FakeCursor([(_desc("id", "status"), [("j1", "pending")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_job("j1") == {"id": "j1", "status": "pending"}
+
+    def test_not_found(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_job("missing") is None
+
+
+class TestUpdateJob:
+    def test_updates_given_columns(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.update_job("j1", {"retry_count": 1})
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "UPDATE jobs" in sql_text or "jobs" in sql_text
+        assert "retry_count" in sql_text
+
+
+class TestUpdateJobStatus:
+    def test_non_terminal_status_does_not_set_completed_at_or_touch_schedule(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "_maybe_update_schedule_run_status") as fake_agg:
+            db.update_job_status("j1", "running")
+        _, params = cur.queries[0]
+        assert "running" in params
+        fake_agg.assert_not_called()
+
+    def test_terminal_status_sets_completed_at_and_triggers_aggregation(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "_maybe_update_schedule_run_status") as fake_agg:
+            db.update_job_status("j1", "completed")
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "completed_at" in sql_text
+        fake_agg.assert_called_once_with("j1")
+
+    def test_extra_kwargs_are_included_in_the_update(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "_maybe_update_schedule_run_status"):
+            db.update_job_status("j1", "failed", error_details={"code": "TIMEOUT"})
+        _, params = cur.queries[0]
+        assert any("Json" in str(type(p)) for p in params)
+
+
+class TestMaybeUpdateScheduleRunStatus:
+    def test_no_op_when_job_missing(self):
+        with patch.object(db, "get_job", return_value=None), \
+             patch.object(db, "update_schedule") as fake_update:
+            db._maybe_update_schedule_run_status("j1")
+        fake_update.assert_not_called()
+
+    def test_no_op_when_not_all_siblings_terminal(self):
+        job = {"id": "j1", "schedule_id": "s1", "execution_date": "2026-03-21"}
+        siblings = [{"status": "completed"}, {"status": "pending"}]
+        cur = _FakeCursor([(_desc("status", "gdrive_folder_id"), [("completed", "f1"), ("pending", None)])])
+        with patch.object(db, "get_job", return_value=job), \
+             patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "update_schedule") as fake_update:
+            db._maybe_update_schedule_run_status("j1")
+        fake_update.assert_not_called()
+
+    def test_all_completed_writes_success_aggregate_and_folder_id(self):
+        job = {"id": "j1", "schedule_id": "s1", "execution_date": "2026-03-21"}
+        cur = _FakeCursor([
+            (_desc("status", "gdrive_folder_id"), [("completed", "f1"), ("completed", None)]),
+        ])
+        with patch.object(db, "get_job", return_value=job), \
+             patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "update_schedule") as fake_update:
+            db._maybe_update_schedule_run_status("j1")
+        fake_update.assert_called_once()
+        args, kwargs = fake_update.call_args
+        assert args[0] == "s1"
+        assert args[1]["last_run_status"] == "success"
+        assert args[1]["last_drive_folder_id"] == "f1"
+        assert args[1]["last_run_job_count"] == {"completed": 2, "failed": 0, "total": 2}
+
+    def test_mixed_completed_and_failed_writes_partial(self):
+        job = {"id": "j1", "schedule_id": "s1", "execution_date": "2026-03-21"}
+        cur = _FakeCursor([
+            (_desc("status", "gdrive_folder_id"), [("completed", "f1"), ("failed", None)]),
+        ])
+        with patch.object(db, "get_job", return_value=job), \
+             patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "update_schedule") as fake_update:
+            db._maybe_update_schedule_run_status("j1")
+        args, kwargs = fake_update.call_args
+        assert args[1]["last_run_status"] == "partial"
+
+    def test_all_failed_writes_failed_and_no_folder_id(self):
+        job = {"id": "j1", "schedule_id": "s1", "execution_date": "2026-03-21"}
+        cur = _FakeCursor([
+            (_desc("status", "gdrive_folder_id"), [("failed", None), ("failed", None)]),
+        ])
+        with patch.object(db, "get_job", return_value=job), \
+             patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "update_schedule") as fake_update:
+            db._maybe_update_schedule_run_status("j1")
+        args, kwargs = fake_update.call_args
+        assert args[1]["last_run_status"] == "failed"
+        assert "last_drive_folder_id" not in args[1]
+
+    def test_update_schedule_exception_is_swallowed(self):
+        job = {"id": "j1", "schedule_id": "s1", "execution_date": "2026-03-21"}
+        cur = _FakeCursor([
+            (_desc("status", "gdrive_folder_id"), [("completed", "f1")]),
+        ])
+        with patch.object(db, "get_job", return_value=job), \
+             patch.object(db, "_get_connection", return_value=_FakeConnection(cur)), \
+             patch.object(db, "update_schedule", side_effect=RuntimeError("boom")):
+            db._maybe_update_schedule_run_status("j1")  # must not raise
+
+
+class TestListJobs:
+    def test_no_filters_orders_and_limits(self):
+        cur = _FakeCursor([(_desc("id"), [("j1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.list_jobs()
+        assert result == [{"id": "j1"}]
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "ORDER BY started_at DESC" in sql_text
+        assert "LIMIT" in sql_text
+        assert params[-1] == 50
+
+    def test_all_filters_combine(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.list_jobs(client_id="c1", status="failed", schedule_id="s1", execution_date="2026-03-21", limit=10)
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert all(k in sql_text for k in ("schedule_id", "execution_date", "client_id", "status"))
+        assert params == ("s1", "2026-03-21", "c1", "failed", 10)

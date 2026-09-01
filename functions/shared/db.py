@@ -366,3 +366,211 @@ def delete_schedule(schedule_id: str) -> None:
     conn = _get_connection()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM schedules WHERE id = %s", (schedule_id,))
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+def create_job(job_data: dict[str, Any]) -> str:
+    import psycopg2.sql as sql
+
+    job_data = dict(job_data)
+    job_data.setdefault("status", "pending")
+    job_data.setdefault("started_at", datetime.now(timezone.utc))
+    job_data.setdefault("retry_count", 0)
+    job_data.setdefault("poll_count", 0)
+
+    jsonb_cols = _JSONB_COLUMNS.get("jobs", set())
+    from psycopg2.extras import Json
+
+    columns = list(job_data.keys())
+    values = [Json(v) if c in jsonb_cols and v is not None else v for c, v in job_data.items()]
+
+    insert_cols = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
+    placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
+    query = sql.SQL(
+        "INSERT INTO jobs ({cols}) VALUES ({placeholders}) RETURNING id"
+    ).format(cols=insert_cols, placeholders=placeholders)
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(query, values)
+        row = cur.fetchone()
+        return str(row[0])
+
+
+def try_claim_job_launch(dedupe_key: str, metadata: dict[str, Any] | None = None) -> bool:
+    """Atomically claim a launch dedupe key. Returns ``True`` if newly claimed.
+
+    Idempotency guard for workflow launches: a single logical pull (identified
+    by schedule, execution date, client, marketplace, report type and date
+    range) should only ever be launched once. We record the claim with an
+    atomic ``INSERT ... ON CONFLICT (dedupe_key) DO NOTHING RETURNING``; a
+    duplicate launch attempt for the same key inserts no row (already exists)
+    and returns ``False``, so the caller can skip it and avoid producing a
+    duplicate Drive file. Postgres has no Firestore document-id character
+    restriction, so — unlike the Firestore version — the raw key is usable
+    directly as the primary key; no SHA-256 hashing needed.
+
+    Fails open: if Postgres is unavailable the launch proceeds (returns
+    ``True``) rather than silently dropping a report.
+    """
+    from psycopg2.extras import Json
+
+    try:
+        payload: dict[str, Any] = {"dedupe_key": dedupe_key}
+        if metadata:
+            payload["metadata"] = Json(metadata)
+
+        conn = _get_connection()
+        with conn.cursor() as cur:
+            if "metadata" in payload:
+                cur.execute(
+                    "INSERT INTO job_launch_dedupe (dedupe_key, metadata) VALUES (%s, %s) "
+                    "ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key",
+                    (dedupe_key, payload["metadata"]),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO job_launch_dedupe (dedupe_key) VALUES (%s) "
+                    "ON CONFLICT (dedupe_key) DO NOTHING RETURNING dedupe_key",
+                    (dedupe_key,),
+                )
+            claimed = cur.fetchone() is not None
+    except Exception:
+        logger.warning(
+            "Launch dedupe check failed (non-fatal) — proceeding with launch",
+            extra={"dedupe_key": dedupe_key, "phase": "launch_dedupe"},
+        )
+        return True
+
+    if not claimed:
+        logger.info(
+            "Skipping duplicate workflow launch",
+            extra={"dedupe_key": dedupe_key, "phase": "launch_dedupe"},
+        )
+    return claimed
+
+
+def get_job(job_id: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def update_job(job_id: str, updates: dict[str, Any]) -> None:
+    _merge_upsert_update_only("jobs", "id", job_id, updates)
+
+
+def update_job_status(job_id: str, status: str, **extra: Any) -> None:
+    updates: dict[str, Any] = {"status": status, **extra}
+    if status in ("completed", "failed"):
+        updates["completed_at"] = datetime.now(timezone.utc)
+    update_job(job_id, updates)
+
+    if status in ("completed", "failed"):
+        _maybe_update_schedule_run_status(job_id)
+
+
+_TERMINAL_STATUSES = {"completed", "failed"}
+
+
+def _maybe_update_schedule_run_status(job_id: str) -> None:
+    """When all sibling jobs (same schedule + execution_date) are terminal,
+    compute an aggregate status and write it back on the schedule row.
+    Also stores the Drive folder ID from the first completed sibling."""
+    job = get_job(job_id)
+    if not job:
+        return
+
+    schedule_id = job.get("schedule_id")
+    execution_date = job.get("execution_date")
+    if not schedule_id or not execution_date:
+        return
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, gdrive_folder_id FROM jobs WHERE schedule_id = %s AND execution_date = %s",
+            (schedule_id, execution_date),
+        )
+        sibling_rows = cur.fetchall()
+
+    if not sibling_rows:
+        return
+
+    siblings = [{"status": s, "gdrive_folder_id": f} for s, f in sibling_rows]
+    if not all(d["status"] in _TERMINAL_STATUSES for d in siblings):
+        return
+
+    completed = sum(1 for d in siblings if d["status"] == "completed")
+    failed = sum(1 for d in siblings if d["status"] == "failed")
+    total = len(siblings)
+
+    if failed == total:
+        agg = "failed"
+    elif failed > 0:
+        agg = "partial"
+    else:
+        agg = "success"
+
+    folder_id = next(
+        (d["gdrive_folder_id"] for d in siblings
+         if d["status"] == "completed" and d.get("gdrive_folder_id")),
+        None,
+    )
+
+    patch: dict[str, Any] = {
+        "last_run_status": agg,
+        "last_run_job_count": {"completed": completed, "failed": failed, "total": total},
+    }
+    if folder_id:
+        patch["last_drive_folder_id"] = folder_id
+
+    try:
+        update_schedule(schedule_id, patch)
+    except Exception:
+        logger.warning(
+            "Failed to update schedule run status",
+            extra={"schedule_id": schedule_id, "job_id": job_id},
+        )
+
+
+def list_jobs(
+    client_id: str | None = None,
+    status: str | None = None,
+    schedule_id: str | None = None,
+    execution_date: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    conditions = []
+    params: list[Any] = []
+    if schedule_id:
+        conditions.append("schedule_id = %s")
+        params.append(schedule_id)
+    if execution_date:
+        conditions.append("execution_date = %s")
+        params.append(execution_date)
+    if client_id:
+        conditions.append("client_id = %s")
+        params.append(client_id)
+    if status:
+        conditions.append("status = %s")
+        params.append(status)
+
+    query = "SELECT * FROM jobs"
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY started_at DESC LIMIT %s"
+    params.append(limit)
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        return [_row_to_dict(cur, row) for row in rows]
