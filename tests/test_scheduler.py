@@ -43,12 +43,6 @@ def _make_schedule(
     }
 
 
-@pytest.fixture(autouse=True)
-def _mock_firestore():
-    with patch("shared.firestore_utils.firestore.Client"):
-        yield
-
-
 @pytest.fixture()
 def mock_launch():
     """Mock the shared launch_for_marketplace so no real workflow calls happen."""

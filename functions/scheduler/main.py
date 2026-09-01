@@ -19,7 +19,7 @@ from typing import Any
 
 import flask
 
-from shared.firestore_utils import (
+from shared.db import (
     claim_due_schedule,
     get_client,
     list_due_schedules,
