@@ -728,3 +728,46 @@ class TestThreadAnchors:
             db.set_thread_anchor_ts("e1/x", "C123", "2026-07-08", "1234.5678")
         _, params = cur.queries[0]
         assert "e1_x__C123__2026-07-08" in params
+
+
+class TestDriveFolderLocks:
+    def test_try_claim_new_lock_succeeds(self):
+        cur = _FakeCursor([(_desc("lock_key"), [("p1__Reports",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.try_claim_drive_folder_lock("p1__Reports") is True
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO drive_folder_locks" in sql_text
+        assert "ON CONFLICT" in sql_text.upper() and "DO NOTHING" in sql_text.upper()
+
+    def test_try_claim_existing_lock_fails(self):
+        cur = _FakeCursor([(_desc("lock_key"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.try_claim_drive_folder_lock("p1__Reports") is False
+
+    def test_get_lock_found(self):
+        cur = _FakeCursor([(_desc("lock_key", "folder_id"), [("p1__Reports", "f1")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.get_drive_folder_lock("p1__Reports")
+        assert result == {"lock_key": "p1__Reports", "folder_id": "f1"}
+
+    def test_get_lock_missing(self):
+        cur = _FakeCursor([(_desc("lock_key"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_drive_folder_lock("missing") is None
+
+    def test_set_folder_id_updates_the_row(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.set_drive_folder_lock_folder_id("p1__Reports", "f1")
+        query, params = cur.queries[0]
+        assert "UPDATE drive_folder_locks" in str(query)
+        assert params == ("f1", "p1__Reports")
+
+    def test_delete_lock(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.delete_drive_folder_lock("p1__Reports")
+        query, params = cur.queries[0]
+        assert "DELETE FROM drive_folder_locks" in str(query)
+        assert params == ("p1__Reports",)

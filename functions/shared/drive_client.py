@@ -11,6 +11,7 @@ from google.cloud import firestore as _firestore_module
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
+from shared import db
 from shared.vendor_reports import VENDOR_SP_REPORT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,7 @@ def create_folder(name: str, parent_id: str) -> str:
 def _create_folder_with_dedup(name: str, parent_id: str) -> str:
     """Create a folder with a safety net: sleep, re-check Drive, then deduplicate.
 
-    Used as a last resort when Firestore coordination is unavailable.
+    Used as a last resort when Postgres coordination is unavailable.
     Because Drive's search is eventually consistent, a concurrent caller
     may have already created the folder but it isn't visible yet.  We
     sleep briefly to widen the consistency window, re-check, and if we
@@ -170,18 +171,19 @@ _LOCK_TIMEOUT_SECS = 15
 
 
 def find_or_create_folder(name: str, parent_id: str) -> str:
-    """Find or create a folder, using Firestore to coordinate concurrent callers.
+    """Find or create a folder, using Postgres to coordinate concurrent callers.
 
     Drive allows duplicate folder names and its search API is eventually
     consistent, so concurrent workflow executions can each create their own
-    copy of the same folder.  We solve this with Firestore's strongly-
-    consistent, atomic ``document.create()`` as a distributed lock:
+    copy of the same folder.  We solve this with an atomic
+    ``INSERT ... ON CONFLICT DO NOTHING`` on the ``drive_folder_locks`` table
+    as a distributed lock:
 
       1. Check Drive (fast path — folder already exists).
-      2. Attempt to claim a Firestore lock document.
+      2. Attempt to claim a Postgres lock row.
          - Winner creates the Drive folder and writes its ID to the lock.
          - Losers poll the lock until the folder ID appears.
-      3. If Firestore is unavailable, fall back with dedup safety net.
+      3. If Postgres is unavailable, fall back with dedup safety net.
     """
     existing = find_folder(name, parent_id)
     if existing:
@@ -192,68 +194,63 @@ def find_or_create_folder(name: str, parent_id: str) -> str:
     try:
         return _create_folder_coordinated(name, parent_id)
     except Exception as exc:
-        logger.warning("[folder] Firestore coordination failed for '%s', falling back: %s", name, exc)
+        logger.warning("[folder] Postgres coordination failed for '%s', falling back: %s", name, exc)
         return _create_folder_with_dedup(name, parent_id)
 
 
 def _create_folder_coordinated(name: str, parent_id: str) -> str:
-    from google.api_core.exceptions import AlreadyExists
-
     lock_key = f"{parent_id}__{name}".replace("/", "_")
-    lock_ref = _get_db().collection(_LOCK_COLLECTION).document(lock_key)
 
     logger.info("[folder] Lock key: %s", lock_key)
 
-    try:
-        lock_ref.create({"status": "creating", "name": name, "parent_id": parent_id})
+    claimed = db.try_claim_drive_folder_lock(lock_key)
+    if claimed:
         logger.info("[folder] WON lock for '%s' — I will create it", name)
-    except AlreadyExists:
-        existing_lock = lock_ref.get()
-        if existing_lock.exists:
-            data = existing_lock.to_dict() or {}
-            stale_id = data.get("folder_id")
+    else:
+        existing_lock = db.get_drive_folder_lock(lock_key)
+        if existing_lock:
+            stale_id = existing_lock.get("folder_id")
             if stale_id:
                 if _folder_exists(stale_id):
                     logger.info("[folder] Lock for '%s' has valid folder %s — reusing", name, stale_id)
                     return stale_id
                 logger.warning("[folder] Stale lock for '%s' (folder %s deleted) — deleting lock, using dedup path", name, stale_id)
-                lock_ref.delete()
+                db.delete_drive_folder_lock(lock_key)
                 return _create_folder_with_dedup(name, parent_id)
         logger.info("[folder] LOST lock for '%s' — waiting for creator", name)
-        return _wait_for_folder_id(lock_ref, name, parent_id)
+        return _wait_for_folder_id(lock_key, name, parent_id)
 
     existing = find_folder(name, parent_id)
     if existing:
         logger.info("[folder] Drive propagated '%s' → %s (after lock, before create)", name, existing)
-        lock_ref.delete()
+        db.delete_drive_folder_lock(lock_key)
         return existing
 
     try:
         folder_id = create_folder(name, parent_id)
-        lock_ref.set({"status": "created", "folder_id": folder_id, "name": name, "parent_id": parent_id})
-        logger.info("[folder] CREATED '%s' → %s, wrote to lock doc", name, folder_id)
+        db.set_drive_folder_lock_folder_id(lock_key, folder_id)
+        logger.info("[folder] CREATED '%s' → %s, wrote to lock row", name, folder_id)
         return folder_id
     except Exception:
-        lock_ref.delete()
+        db.delete_drive_folder_lock(lock_key)
         raise
 
 
-def _wait_for_folder_id(lock_ref, name: str, parent_id: str) -> str:
-    """Poll the Firestore lock document until the creator writes the folder ID."""
+def _wait_for_folder_id(lock_key: str, name: str, parent_id: str) -> str:
+    """Poll the drive_folder_locks row until the creator writes the folder ID."""
     deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
     polls = 0
     while time.monotonic() < deadline:
-        doc = lock_ref.get()
+        lock = db.get_drive_folder_lock(lock_key)
         polls += 1
-        if doc.exists:
-            data = doc.to_dict() or {}
-            folder_id = data.get("folder_id")
+        if lock is not None:
+            folder_id = lock.get("folder_id")
             if folder_id:
                 logger.info("[folder] Got folder_id from lock after %d polls: '%s' → %s", polls, name, folder_id)
                 return folder_id
-            logger.info("[folder] Poll %d for '%s': status=%s, no folder_id yet", polls, name, data.get("status"))
+            logger.info("[folder] Poll %d for '%s': no folder_id yet", polls, name)
         else:
-            logger.warning("[folder] Poll %d for '%s': lock doc GONE (creator may have crashed)", polls, name)
+            logger.warning("[folder] Poll %d for '%s': lock row GONE (creator may have crashed)", polls, name)
         time.sleep(_LOCK_POLL_INTERVAL)
 
     logger.warning("[folder] TIMEOUT after %d polls for '%s' under %s", polls, name, parent_id[:12])
@@ -263,7 +260,7 @@ def _wait_for_folder_id(lock_ref, name: str, parent_id: str) -> str:
         return existing
 
     logger.warning("[folder] Lock timed out for '%s' — clearing stale lock and creating with dedup", name)
-    lock_ref.delete()
+    db.delete_drive_folder_lock(lock_key)
     return _create_folder_with_dedup(name, parent_id)
 
 
@@ -293,7 +290,7 @@ def build_folder_path(
     """
     # Normalize every segment by stripping surrounding whitespace. Drive treats
     # "MTD Ads KPIs" and "MTD Ads KPIs " as different names, which silently
-    # creates two visually-identical folders (and two Firestore locks). Stray
+    # creates two visually-identical folders (and two Postgres locks). Stray
     # whitespace in a folder name is never intentional, so we collapse it here.
     parts: list[str] = []
     if folder_name:

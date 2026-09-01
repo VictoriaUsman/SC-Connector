@@ -792,3 +792,44 @@ def set_thread_anchor_ts(
                 created_by_client_id,
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Drive folder locks (used by shared/drive_client.py's find_or_create_folder)
+# ---------------------------------------------------------------------------
+
+def try_claim_drive_folder_lock(lock_key: str) -> bool:
+    """Atomically claim a folder-creation lock. Returns True if newly claimed."""
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO drive_folder_locks (lock_key) VALUES (%s) "
+            "ON CONFLICT (lock_key) DO NOTHING RETURNING lock_key",
+            (lock_key,),
+        )
+        return cur.fetchone() is not None
+
+
+def get_drive_folder_lock(lock_key: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM drive_folder_locks WHERE lock_key = %s", (lock_key,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def set_drive_folder_lock_folder_id(lock_key: str, folder_id: str) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE drive_folder_locks SET folder_id = %s WHERE lock_key = %s",
+            (folder_id, lock_key),
+        )
+
+
+def delete_drive_folder_lock(lock_key: str) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM drive_folder_locks WHERE lock_key = %s", (lock_key,))

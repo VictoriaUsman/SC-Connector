@@ -31,36 +31,10 @@ def mock_service():
         yield svc
 
 
-def _mock_lock_ref(*, create_raises=False, poll_folder_id=None):
-    """Build a mock Firestore lock document reference."""
-    from google.api_core.exceptions import AlreadyExists
-
-    lock_ref = MagicMock()
-    if create_raises:
-        lock_ref.create.side_effect = AlreadyExists("already exists")
-    else:
-        lock_ref.create.return_value = None
-
-    if poll_folder_id:
-        doc_snap = MagicMock()
-        doc_snap.exists = True
-        doc_snap.to_dict.return_value = {"folder_id": poll_folder_id, "status": "created"}
-        lock_ref.get.return_value = doc_snap
-    else:
-        doc_snap = MagicMock()
-        doc_snap.exists = True
-        doc_snap.to_dict.return_value = {"status": "creating"}
-        lock_ref.get.return_value = doc_snap
-
-    return lock_ref
-
-
 @pytest.fixture()
 def mock_db():
-    with patch("shared.drive_client._get_db") as m:
-        db = MagicMock()
-        m.return_value = db
-        yield db
+    with patch("shared.drive_client.db") as m:
+        yield m
 
 
 # ---------------------------------------------------------------------------
@@ -107,14 +81,13 @@ class TestFindOrCreateFolder:
         result = find_or_create_folder("2026-03-20", "root-id")
         assert result == "existing-1"
         mock_service.files().create.assert_not_called()
-        mock_db.collection.assert_not_called()
+        mock_db.try_claim_drive_folder_lock.assert_not_called()
 
     def test_wins_lock_and_creates(self, mock_service, mock_db):
-        """First caller wins the Firestore lock, creates the Drive folder."""
+        """First caller wins the Postgres lock, creates the Drive folder."""
         from shared.drive_client import find_or_create_folder
 
-        lock_ref = _mock_lock_ref(create_raises=False)
-        mock_db.collection().document.return_value = lock_ref
+        mock_db.try_claim_drive_folder_lock.return_value = True
 
         list_responses = [
             {"files": []},  # initial find_folder
@@ -125,25 +98,19 @@ class TestFindOrCreateFolder:
 
         result = find_or_create_folder("2026-03-20", "root-id")
         assert result == "new-1"
-        lock_ref.set.assert_called_once()
-        assert lock_ref.set.call_args[0][0]["folder_id"] == "new-1"
+        mock_db.set_drive_folder_lock_folder_id.assert_called_once_with(
+            "root-id__2026-03-20", "new-1"
+        )
 
     def test_loses_lock_and_waits(self, mock_service, mock_db):
-        """Second caller loses the lock, polls Firestore for the folder ID."""
-        from google.api_core.exceptions import AlreadyExists
+        """Second caller loses the lock, polls Postgres for the folder ID."""
         from shared.drive_client import find_or_create_folder
 
-        lock_ref = MagicMock()
-        lock_ref.create.side_effect = AlreadyExists("already exists")
-
-        creating_snap = MagicMock(exists=True)
-        creating_snap.to_dict.return_value = {"status": "creating"}
-
-        created_snap = MagicMock(exists=True)
-        created_snap.to_dict.return_value = {"folder_id": "winner-folder", "status": "created"}
-
-        lock_ref.get.side_effect = [creating_snap, created_snap]
-        mock_db.collection().document.return_value = lock_ref
+        mock_db.try_claim_drive_folder_lock.return_value = False
+        mock_db.get_drive_folder_lock.side_effect = [
+            {"lock_key": "root-id__2026-03-20"},  # staleness check inside _create_folder_coordinated — no folder_id yet
+            {"lock_key": "root-id__2026-03-20", "folder_id": "winner-folder"},  # first poll in _wait_for_folder_id finds it
+        ]
 
         mock_service.files().list().execute.return_value = {"files": []}
 
@@ -155,8 +122,7 @@ class TestFindOrCreateFolder:
         """Winner's double-check finds the folder (Drive propagated), skips create."""
         from shared.drive_client import find_or_create_folder
 
-        lock_ref = _mock_lock_ref(create_raises=False)
-        mock_db.collection().document.return_value = lock_ref
+        mock_db.try_claim_drive_folder_lock.return_value = True
 
         list_responses = [
             {"files": []},  # initial find_folder
@@ -167,15 +133,15 @@ class TestFindOrCreateFolder:
         result = find_or_create_folder("2026-03-20", "root-id")
         assert result == "appeared"
         mock_service.files().create.assert_not_called()
-        lock_ref.delete.assert_called_once()
+        mock_db.delete_drive_folder_lock.assert_called_once_with("root-id__2026-03-20")
 
     @patch("shared.drive_client.time.sleep")
     def test_lock_timeout_falls_back_to_drive(self, mock_sleep, mock_service, mock_db):
         """If the lock holder never writes folder_id, fall back to Drive search."""
         from shared.drive_client import find_or_create_folder
 
-        lock_ref = _mock_lock_ref(create_raises=True, poll_folder_id=None)
-        mock_db.collection().document.return_value = lock_ref
+        mock_db.try_claim_drive_folder_lock.return_value = False
+        mock_db.get_drive_folder_lock.return_value = {"lock_key": "root-id__2026-03-20"}  # never has folder_id
 
         list_responses = [
             {"files": []},  # initial find_folder
@@ -196,17 +162,10 @@ class TestFindOrCreateFolder:
     @patch("shared.drive_client.time.sleep")
     def test_stale_lock_uses_dedup_not_retry(self, mock_sleep, mock_service, mock_db):
         """When lock references a deleted folder, fall to dedup path (not recursive retry)."""
-        from google.api_core.exceptions import AlreadyExists
         from shared.drive_client import find_or_create_folder
 
-        lock_ref = MagicMock()
-        lock_ref.create.side_effect = AlreadyExists("already exists")
-
-        stale_snap = MagicMock(exists=True)
-        stale_snap.to_dict.return_value = {"folder_id": "deleted-folder", "status": "created"}
-        lock_ref.get.return_value = stale_snap
-
-        mock_db.collection().document.return_value = lock_ref
+        mock_db.try_claim_drive_folder_lock.return_value = False
+        mock_db.get_drive_folder_lock.return_value = {"lock_key": "root-id__2026-03-21", "folder_id": "deleted-folder"}
 
         list_responses = [
             {"files": []},  # initial find_folder
@@ -219,14 +178,14 @@ class TestFindOrCreateFolder:
 
         result = find_or_create_folder("2026-03-21", "root-id")
         assert result == "new-folder"
-        lock_ref.delete.assert_called_once()
+        mock_db.delete_drive_folder_lock.assert_called_once_with("root-id__2026-03-21")
 
     @patch("shared.drive_client.time.sleep")
-    def test_firestore_down_uses_dedup_fallback(self, mock_sleep, mock_service, mock_db):
-        """If Firestore is unavailable, fall back through _create_folder_with_dedup."""
+    def test_postgres_down_uses_dedup_fallback(self, mock_sleep, mock_service, mock_db):
+        """If Postgres is unavailable, fall back through _create_folder_with_dedup."""
         from shared.drive_client import find_or_create_folder
 
-        mock_db.collection.side_effect = RuntimeError("Firestore unavailable")
+        mock_db.try_claim_drive_folder_lock.side_effect = RuntimeError("Postgres unavailable")
 
         list_responses = [
             {"files": []},  # initial find_folder
@@ -310,28 +269,24 @@ class TestConcurrentFolderCreation:
     @patch("shared.drive_client._assert_no_duplicates")
     @patch("shared.drive_client.time.sleep")
     def test_concurrent_callers_with_lock(self, mock_sleep, mock_dedup, mock_service, mock_db):
-        """Two threads call find_or_create_folder — Firestore lock ensures
-        the winner creates the folder and the loser gets the winner's ID."""
+        """Two threads call find_or_create_folder — the Postgres lock ensures
+        the winner creates the folder and the loser converges on the same ID."""
         import threading
-        from google.api_core.exceptions import AlreadyExists
         from shared.drive_client import find_or_create_folder
 
         lock_claimed = threading.Event()
         winner_folder_id = "the-one-folder"
 
-        def mock_lock_create(data):
+        def mock_try_claim(lock_key):
             if lock_claimed.is_set():
-                raise AlreadyExists("lock exists")
+                return False
             lock_claimed.set()
+            return True
 
-        lock_ref = MagicMock()
-        lock_ref.create.side_effect = mock_lock_create
-
-        won_snap = MagicMock(exists=True)
-        won_snap.to_dict.return_value = {"folder_id": winner_folder_id, "status": "created"}
-        lock_ref.get.return_value = won_snap
-
-        mock_db.collection().document.return_value = lock_ref
+        mock_db.try_claim_drive_folder_lock.side_effect = mock_try_claim
+        mock_db.get_drive_folder_lock.return_value = {
+            "lock_key": "root-id__2026-03-21", "folder_id": winner_folder_id,
+        }
 
         mock_service.files().list().execute.return_value = {"files": []}
         mock_service.files().create().execute.return_value = {"id": winner_folder_id}
