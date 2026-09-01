@@ -71,7 +71,7 @@ class TestCleanErrorMessage:
         except_steps = _steps_to_map(main_steps["execute_pipeline"]["except"]["steps"])
         mark_failed = except_steps["mark_job_failed"]
 
-        # Find the branch that patches Firestore (the catch-all condition).
+        # Find the branch that patches the job (the catch-all condition).
         patch_branch = next(
             c for c in mark_failed["switch"] if "steps" in c
         )
@@ -83,10 +83,7 @@ class TestCleanErrorMessage:
 
         # The user-facing error message must be the cleaned message, never the
         # raw json.encode(e) dump of the whole HTTP error object.
-        msg_field = (
-            branch_steps["patch_job_failed"]["args"]["body"]["fields"]
-            ["error_details"]["mapValue"]["fields"]["message"]["stringValue"]
-        )
+        msg_field = branch_steps["patch_job_failed"]["args"]["body"]["error_details"]["message"]
         assert "user_message" in msg_field
         assert "json.encode" not in msg_field
 
@@ -182,3 +179,69 @@ class TestThrottleBudgetRidesOutRateExceeded:
         # A 429 within the retry budget must route to the backoff step, not raise.
         assert "429" in first_branch["condition"]
         assert first_branch["next"] == "throttle_backoff"
+
+
+class TestSupabaseSecretFetch:
+    """§3: the three Firestore PATCH call sites become PostgREST calls
+    authenticated by a Supabase service-role key fetched via the Secret
+    Manager connector, instead of the workflow SA's ambient OAuth2 identity."""
+
+    def test_get_supabase_key_subworkflow_exists(self):
+        doc = _load()
+        assert "get_supabase_key" in doc
+        assert doc["get_supabase_key"]["params"] == []
+
+    def test_get_supabase_key_calls_secretmanager_connector(self):
+        doc = _load()
+        steps = _steps_to_map(doc["get_supabase_key"]["steps"])
+        fetch = steps["fetch_secret"]
+        assert fetch["call"] == "googleapis.secretmanager.v1.projects.secrets.versions.access"
+        name_expr = fetch["args"]["name"]
+        assert "__SUPABASE_SECRET_NAME__" in name_expr
+        assert 'sys.get_env("GOOGLE_CLOUD_PROJECT_ID")' in name_expr
+        assert fetch["result"] == "secret_response"
+
+    def test_get_supabase_key_decodes_the_payload(self):
+        doc = _load()
+        steps = _steps_to_map(doc["get_supabase_key"]["steps"])
+        decode_step = [s for s in steps.values() if "return" in s][0]
+        ret = decode_step["return"]
+        assert "base64.decode" in ret
+        assert "text.decode" in ret
+        assert "secret_response.payload.data" in ret
+
+    def test_patch_job_failed_fetches_key_before_patching(self):
+        doc = _load()
+        main_steps = _steps_to_map(doc["main"]["steps"])
+        except_steps = _steps_to_map(main_steps["execute_pipeline"]["except"]["steps"])
+        mark_failed = except_steps["mark_job_failed"]
+        patch_branch = next(c for c in mark_failed["switch"] if "steps" in c)
+        branch_steps = _steps_to_map(patch_branch["steps"])
+
+        assert "fetch_supabase_key" in branch_steps
+        assert branch_steps["fetch_supabase_key"]["call"] == "get_supabase_key"
+        assert branch_steps["fetch_supabase_key"]["result"] == "supabase_key"
+
+    def test_patch_job_failed_is_postgrest_not_firestore(self):
+        doc = _load()
+        main_steps = _steps_to_map(doc["main"]["steps"])
+        except_steps = _steps_to_map(main_steps["execute_pipeline"]["except"]["steps"])
+        mark_failed = except_steps["mark_job_failed"]
+        patch_branch = next(c for c in mark_failed["switch"] if "steps" in c)
+        branch_steps = _steps_to_map(patch_branch["steps"])
+        args = branch_steps["patch_job_failed"]["args"]
+
+        assert "firestore.googleapis.com" not in args["url"]
+        assert "SUPABASE_URL" in args["url"]
+        assert "/rest/v1/jobs?id=eq." in args["url"]
+        assert args["url"].endswith("args.job_id}'") or "args.job_id" in args["url"]
+        assert "auth" not in args
+        assert args["headers"]["apikey"] == "${supabase_key}"
+        assert "Bearer" in args["headers"]["Authorization"]
+        assert args["headers"]["Prefer"] == "return=minimal"
+
+        body = args["body"]
+        assert body["status"] == "failed"
+        assert "fields" not in body
+        assert "user_message" in body["error_details"]["message"]
+        assert body["error_details"]["phase"] == "workflow_error"

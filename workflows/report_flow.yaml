@@ -35,25 +35,23 @@ main:
                           args:
                             e: ${e}
                           result: user_message
+                      - fetch_supabase_key:
+                          call: get_supabase_key
+                          result: supabase_key
                       - patch_job_failed:
                           call: http.patch
                           args:
-                            url: '${"https://firestore.googleapis.com/v1/projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/databases/(default)/documents/jobs/" + args.job_id + "?updateMask.fieldPaths=status&updateMask.fieldPaths=completed_at&updateMask.fieldPaths=error_details"}'
-                            auth:
-                              type: OAuth2
+                            url: '${sys.get_env("SUPABASE_URL") + "/rest/v1/jobs?id=eq." + args.job_id}'
+                            headers:
+                              apikey: ${supabase_key}
+                              Authorization: '${"Bearer " + supabase_key}'
+                              Prefer: "return=minimal"
                             body:
-                              fields:
-                                status:
-                                  stringValue: "failed"
-                                completed_at:
-                                  timestampValue: ${time.format(sys.now())}
-                                error_details:
-                                  mapValue:
-                                    fields:
-                                      message:
-                                        stringValue: ${user_message}
-                                      phase:
-                                        stringValue: "workflow_error"
+                              status: "failed"
+                              completed_at: ${time.format(sys.now())}
+                              error_details:
+                                message: ${user_message}
+                                phase: "workflow_error"
                       - continue_to_raise:
                           next: raise_final
             - raise_final:
@@ -465,6 +463,21 @@ clean_error:
             return: ${map.get(e, "message")}
     - fallback_encode:
         return: ${text.decode(json.encode(e))}
+
+get_supabase_key:
+  # Fetches the Supabase service-role key from Secret Manager. Called
+  # immediately before each PostgREST write on the workflow's error/ingest
+  # paths — the closest parallel to today's ambient-IAM Firestore writes,
+  # with no new Cloud Function in the loop.
+  params: []
+  steps:
+    - fetch_secret:
+        call: googleapis.secretmanager.v1.projects.secrets.versions.access
+        args:
+          name: '${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/secrets/__SUPABASE_SECRET_NAME__/versions/latest"}'
+        result: secret_response
+    - decode_key:
+        return: ${text.decode(base64.decode(secret_response.payload.data))}
 
 non_throttle_retry:
   params: [e]
