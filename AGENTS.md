@@ -510,7 +510,7 @@ Health endpoints on the API function:
   if degraded. `make health` probes both after deploy.
 
 Optional Pulumi config keys (set with `pulumi config set kalilos:<key> <val>`):
-`log-level` (default `INFO`).
+`log-level` (default `INFO`). `supabase-db-url` — set once per environment as a secret: `pulumi config set --secret kalilos:supabase-db-url <value> --stack <env>`. It is "optional" only in the sense that Pulumi won't fail without it; in practice it is required for `download-upload`, `fetch-api`, and `ingest-bigquery` — these import `functions/shared/drive_client.py`, whose distributed folder-lock and upload-dedup-index logic runs through `functions/shared/db.py`'s Postgres/Supabase connection (`os.environ["SUPABASE_DB_URL"]`). If unset, `db.py`'s connection lookup raises `KeyError`, which `drive_client.py` swallows silently and falls back to a non-locked path — a silent loss of the duplicate-folder/duplicate-upload guarantees, not a deploy-time failure. Don't skip setting this thinking it's genuinely optional.
 
 ### Querying Cloud Function logs
 
