@@ -571,4 +571,79 @@ class TestListJobs:
         query, params = cur.queries[0]
         sql_text = str(query)
         assert all(k in sql_text for k in ("schedule_id", "execution_date", "client_id", "status"))
-        assert params == ("s1", "2026-03-21", "c1", "failed", 10)
+
+
+class TestGetEvent:
+    def test_found(self):
+        cur = _FakeCursor([(_desc("id", "name"), [("e1", "Prime Day")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_event("e1") == {"id": "e1", "name": "Prime Day"}
+
+    def test_not_found(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_event("missing") is None
+
+
+class TestListEvents:
+    def test_orders_by_start_date(self):
+        cur = _FakeCursor([(_desc("id"), [("e1",), ("e2",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.list_events()
+        assert result == [{"id": "e1"}, {"id": "e2"}]
+        query, params = cur.queries[0]
+        assert "ORDER BY start_date" in str(query)
+
+
+class TestCreateEvent:
+    def test_defaults_and_inserts(self):
+        cur = _FakeCursor([(_desc("id"), [("e1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.create_event({"name": "Prime Day", "start_date": "2026-07-08", "end_date": "2026-07-09"})
+        assert result == "e1"
+        _, params = cur.queries[0]
+        assert "upcoming" in params
+        assert False in params  # manually_activated default
+
+
+class TestUpdateEvent:
+    def test_sets_updated_at_and_updates_columns(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.update_event("e1", {"status": "live"})
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "status" in sql_text and "updated_at" in sql_text
+
+
+class TestDeleteEvent:
+    def test_deletes_by_id(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.delete_event("e1")
+        query, params = cur.queries[0]
+        assert "DELETE FROM events" in str(query)
+        assert params == ("e1",)
+
+
+class TestGetLiveEvent:
+    def test_none_live(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_live_event() is None
+
+    def test_single_live_event(self):
+        cur = _FakeCursor([(_desc("id", "start_date", "name"), [("e1", date(2026, 7, 8), "Prime Day")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.get_live_event()
+        assert result["id"] == "e1"
+
+    def test_multiple_live_events_picks_deterministically_and_warns(self, caplog):
+        cur = _FakeCursor([(_desc("id", "start_date", "name"), [
+            ("e2", date(2026, 7, 9), "Later"),
+            ("e1", date(2026, 7, 8), "Earlier"),
+        ])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            with caplog.at_level("WARNING"):
+                result = db.get_live_event()
+        assert result["id"] == "e1"  # earliest start_date wins

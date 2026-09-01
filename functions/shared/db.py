@@ -574,3 +574,101 @@ def list_jobs(
         cur.execute(query, tuple(params))
         rows = cur.fetchall()
         return [_row_to_dict(cur, row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+def get_event(event_id: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM events WHERE id = %s", (event_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def list_events() -> list[dict[str, Any]]:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM events ORDER BY start_date")
+        rows = cur.fetchall()
+        return [_row_to_dict(cur, row) for row in rows]
+
+
+def create_event(data: dict[str, Any]) -> str:
+    import psycopg2.sql as sql
+    from psycopg2.extras import Json
+
+    data = dict(data)
+    data.setdefault("status", "upcoming")
+    data.setdefault("manually_activated", False)
+    data.setdefault("activated_at", None)
+    data.setdefault("created_at", datetime.now(timezone.utc))
+
+    jsonb_cols = _JSONB_COLUMNS.get("events", set())
+    columns = list(data.keys())
+    values = [Json(v) if c in jsonb_cols and v is not None else v for c, v in data.items()]
+
+    insert_cols = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
+    placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
+    query = sql.SQL(
+        "INSERT INTO events ({cols}) VALUES ({placeholders}) RETURNING id"
+    ).format(cols=insert_cols, placeholders=placeholders)
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(query, values)
+        row = cur.fetchone()
+        return str(row[0])
+
+
+def update_event(event_id: str, data: dict[str, Any]) -> None:
+    data = dict(data)
+    data["updated_at"] = datetime.now(timezone.utc)
+    _merge_upsert_update_only("events", "id", event_id, data)
+
+
+def delete_event(event_id: str) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM events WHERE id = %s", (event_id,))
+
+
+def get_live_event() -> dict[str, Any] | None:
+    """Return the single live event, or None.
+
+    Only one event is expected to be ``status == 'live'`` at a time. If several
+    are live simultaneously (e.g. overlapping test events, or a new event
+    activated before the prior one auto-completed), the bots that consume this —
+    the hourly Slack bot and the event report scheduler — would otherwise pick a
+    nondeterministic one and can stamp anchors/reports for the wrong event. We
+    therefore pick deterministically (earliest start_date, then event id) and
+    log a WARNING listing every live event so the overlap is visible in logs.
+    """
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM events WHERE status = 'live'")
+        rows = cur.fetchall()
+        events = [_row_to_dict(cur, row) for row in rows]
+
+    if not events:
+        return None
+
+    events.sort(key=lambda e: (str(e.get("start_date") or ""), e["id"]))
+    if len(events) > 1:
+        logger.warning(
+            "Multiple live events found — picking deterministically; only one "
+            "event should be live at a time",
+            extra={
+                "phase": "live_event_resolution",
+                "error_code": "MULTIPLE_LIVE_EVENTS",
+                "live_event_count": len(events),
+                "selected_event_id": events[0]["id"],
+                "live_event_ids": [e["id"] for e in events],
+                "live_event_names": [e.get("name") for e in events],
+            },
+        )
+    return events[0]
