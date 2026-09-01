@@ -12,8 +12,6 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
-import shared.firestore_utils  # noqa: F401 — register module before patch()
-
 os.environ.setdefault("GCP_PROJECT", "test-project")
 os.environ.setdefault("ENVIRONMENT", "staging")
 os.environ.setdefault("BQ_DATASET", "kalilos_reports_staging")
@@ -42,12 +40,6 @@ def _make_bot_config(
         "base_currency": "USD",
         "use_test_channel": False,
     }
-
-
-@pytest.fixture(autouse=True)
-def _mock_firestore():
-    with patch("shared.firestore_utils.firestore.Client"):
-        yield
 
 
 # ---------------------------------------------------------------------------

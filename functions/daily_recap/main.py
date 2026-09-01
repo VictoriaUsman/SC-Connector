@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 import flask
 from google.cloud import bigquery
 
-from shared.firestore_utils import (
+from shared.db import (
     get_client,
     list_bot_configs,
     log_bot_activity,
