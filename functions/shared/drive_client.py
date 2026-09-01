@@ -7,7 +7,6 @@ import time
 from datetime import date
 
 from google.auth import default
-from google.cloud import firestore as _firestore_module
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
@@ -17,7 +16,6 @@ from shared.vendor_reports import VENDOR_SP_REPORT_TYPES
 logger = logging.getLogger(__name__)
 
 _service = None
-_db = None
 
 
 def get_service():
@@ -27,13 +25,6 @@ def get_service():
         credentials, _ = default(scopes=["https://www.googleapis.com/auth/drive"])
         _service = build("drive", "v3", credentials=credentials, cache_discovery=False)
     return _service
-
-
-def _get_db() -> _firestore_module.Client:
-    global _db
-    if _db is None:
-        _db = _firestore_module.Client()
-    return _db
 
 
 def verify_folder_access(folder_id: str) -> None:
@@ -359,19 +350,10 @@ _SHEETS_CONVERTIBLE_MIMES = {"text/tab-separated-values", "text/csv"}
 _SHEETS_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 _SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 
-# Firestore collection recording the last file uploaded for each
-# (folder_id, stored_name). See _delete_recorded_file for why this exists.
-_FILE_INDEX_COLLECTION = "_drive_file_index"
-
 
 def _strip_extension(filename: str) -> str:
     """Return ``filename`` without its trailing extension (if any)."""
     return filename.rsplit(".", 1)[0] if "." in filename else filename
-
-
-def _file_index_key(folder_id: str, stored_name: str) -> str:
-    """Deterministic Firestore doc id for a (folder, stored file name) pair."""
-    return f"{folder_id}__{stored_name}".replace("/", "_")
 
 
 def _delete_recorded_file(folder_id: str, stored_name: str) -> None:
@@ -386,21 +368,18 @@ def _delete_recorded_file(folder_id: str, stored_name: str) -> None:
     nothing to delete and each attempt stacks another duplicate in the folder.
 
     To replace reliably we record every uploaded file's id in a strongly-
-    consistent Firestore doc keyed by (folder_id, stored_name). Before each
-    upload we read that doc and delete the recorded file by *id*, which is
+    consistent Postgres row keyed by (folder_id, stored_name). Before each
+    upload we read that row and delete the recorded file by *id*, which is
     immune to search propagation lag, so repeated uploads converge to exactly
     one file. Best-effort: never fail an upload over dedupe bookkeeping.
     """
     from googleapiclient.errors import HttpError
 
     try:
-        ref = _get_db().collection(_FILE_INDEX_COLLECTION).document(
-            _file_index_key(folder_id, stored_name)
-        )
-        snap = ref.get()
-        if not snap.exists:
+        recorded = db.get_recorded_drive_file(folder_id, stored_name)
+        if not recorded:
             return
-        prior_id = (snap.to_dict() or {}).get("file_id")
+        prior_id = recorded.get("file_id")
         if not prior_id:
             return
         try:
@@ -425,15 +404,7 @@ def _record_uploaded_file(folder_id: str, stored_name: str, file_id: str) -> Non
     """Record the just-uploaded file's id so the next upload can replace it
     deterministically (see _delete_recorded_file). Best-effort."""
     try:
-        ref = _get_db().collection(_FILE_INDEX_COLLECTION).document(
-            _file_index_key(folder_id, stored_name)
-        )
-        ref.set({
-            "file_id": file_id,
-            "folder_id": folder_id,
-            "name": stored_name,
-            "updated_at": _firestore_module.SERVER_TIMESTAMP,
-        })
+        db.record_uploaded_drive_file(folder_id, stored_name, file_id)
     except Exception as exc:
         logger.warning(
             "[file-dedupe] Could not record uploaded file (non-fatal)",
@@ -469,7 +440,7 @@ def upload_or_replace(
     (a workflow retry after the download-upload http call times out, a duplicate
     trigger, or a concurrent run) may not yet see the file the prior attempt
     created and would stack a duplicate. As a deterministic, search-lag-immune
-    guard we also record each uploaded file's id in Firestore and delete that
+    guard we also record each uploaded file's id in Postgres and delete that
     exact file by id before the new upload, so repeated uploads of the same
     report converge to a single file.
     """
@@ -483,7 +454,7 @@ def upload_or_replace(
     )
 
     # The name the new file is stored under (converted Sheets drop the
-    # extension). Also the key under which we track/replace it in Firestore.
+    # extension). Also the key under which we track/replace it in Postgres.
     stem = _strip_extension(filename)
     stored_name = stem if convert_to_sheets else filename
 

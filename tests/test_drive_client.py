@@ -1,4 +1,4 @@
-"""Tests for Drive client — Firestore-coordinated folder creation, hierarchy, and upload logic."""
+"""Tests for Drive client — Postgres-coordinated folder creation, hierarchy, and upload logic."""
 
 from __future__ import annotations
 
@@ -17,10 +17,8 @@ def _reset_service():
     """Reset cached singletons between tests."""
     import shared.drive_client as dc
     dc._service = None
-    dc._db = None
     yield
     dc._service = None
-    dc._db = None
 
 
 @pytest.fixture()
@@ -442,25 +440,18 @@ class TestBuildFolderPath:
 class TestUploadOrReplace:
     @pytest.fixture(autouse=True)
     def _mock_file_index(self):
-        """Patch the Firestore file-index so upload_or_replace never touches a
-        real Firestore client. By default the index has no prior file recorded
-        (``exists`` is False), so the deterministic dedupe is a no-op unless a
-        test opts in via ``_set_recorded_file``."""
-        with patch("shared.drive_client._get_db") as m:
-            db = MagicMock()
-            snap = MagicMock()
-            snap.exists = False
-            snap.to_dict.return_value = {}
-            db.collection().document().get.return_value = snap
-            m.return_value = db
-            self._index_db = db
-            self._index_snap = snap
-            yield db
+        """Patch the Postgres file-index so upload_or_replace never touches a
+        real Postgres connection. By default the index has no prior file
+        recorded, so the deterministic dedupe is a no-op unless a test opts
+        in via ``_set_recorded_file``."""
+        with patch("shared.drive_client.db") as m:
+            m.get_recorded_drive_file.return_value = None
+            self._index_db = m
+            yield m
 
     def _set_recorded_file(self, file_id: str) -> None:
-        """Make the mocked Firestore index report a previously-uploaded file."""
-        self._index_snap.exists = True
-        self._index_snap.to_dict.return_value = {"file_id": file_id}
+        """Make the mocked Postgres index report a previously-uploaded file."""
+        self._index_db.get_recorded_drive_file.return_value = {"file_id": file_id}
 
     def test_uploads_new_file(self, mock_service):
         from shared.drive_client import upload_or_replace
@@ -578,14 +569,14 @@ class TestUploadOrReplace:
         SB campaigns pull runs for minutes), re-running the whole upload. Drive's
         name search is eventually consistent, so the retry does not yet see the
         Sheet the prior attempt created and the name-based delete finds nothing —
-        every retry stacked another duplicate. The Firestore-recorded file id is
+        every retry stacked another duplicate. The Postgres-recorded file id is
         strongly consistent, so the retry must delete the prior file by id even
         when the name search returns empty."""
         from shared.drive_client import upload_or_replace
 
         # Name search returns nothing (search index has not caught up yet)...
         mock_service.files().list().execute.return_value = {"files": []}
-        # ...but a prior attempt recorded its file id in Firestore.
+        # ...but a prior attempt recorded its file id in Postgres.
         self._set_recorded_file("prior-retry-file")
         mock_service.files().create().execute.return_value = {"id": "new-file"}
 
@@ -603,9 +594,9 @@ class TestUploadOrReplace:
         assert "prior-retry-file" in deleted_ids
 
     def test_records_uploaded_file_id_in_index(self, mock_service):
-        """After uploading, the new file id is written to the Firestore index
-        under the stored (extension-less for Sheets) name so the next upload can
-        delete it deterministically."""
+        """After uploading, the new file id is written to the Postgres index
+        under the stored (extension-less for Sheets) name so the next upload
+        can delete it deterministically."""
         from shared.drive_client import upload_or_replace
 
         mock_service.files().list().execute.return_value = {"files": []}
@@ -617,19 +608,16 @@ class TestUploadOrReplace:
             mime_type="text/tab-separated-values",
         )
 
-        set_calls = self._index_db.collection().document().set.call_args_list
-        assert set_calls, "expected the uploaded file id to be recorded"
-        recorded = set_calls[-1][0][0]
-        assert recorded["file_id"] == "recorded-1"
-        # Sheets-convertible reports are stored (and tracked) without extension.
-        assert recorded["name"] == "spCampaigns_2026-07-05_to_2026-07-18_Rolio_US"
+        self._index_db.record_uploaded_drive_file.assert_called_once_with(
+            "folder-1", "spCampaigns_2026-07-05_to_2026-07-18_Rolio_US", "recorded-1"
+        )
 
     def test_recorded_delete_is_best_effort(self, mock_service):
-        """A Firestore error while deleting the recorded file must never fail the
+        """A Postgres error while deleting the recorded file must never fail the
         upload — the guard fails open."""
         from shared.drive_client import upload_or_replace
 
-        self._index_db.collection().document().get.side_effect = RuntimeError("firestore down")
+        self._index_db.get_recorded_drive_file.side_effect = RuntimeError("postgres down")
         mock_service.files().list().execute.return_value = {"files": []}
         mock_service.files().create().execute.return_value = {"id": "resilient-1"}
 

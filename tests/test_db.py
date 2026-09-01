@@ -771,3 +771,35 @@ class TestDriveFolderLocks:
         query, params = cur.queries[0]
         assert "DELETE FROM drive_folder_locks" in str(query)
         assert params == ("p1__Reports",)
+
+
+class TestDriveFileIndex:
+    def test_get_recorded_file_found(self):
+        cur = _FakeCursor([(_desc("file_key", "file_id"), [("f1__report.tsv", "gdrive-123")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.get_recorded_drive_file("f1", "report.tsv")
+        assert result == {"file_key": "f1__report.tsv", "file_id": "gdrive-123"}
+        _, params = cur.queries[0]
+        assert params == ("f1__report.tsv",)
+
+    def test_get_recorded_file_missing(self):
+        cur = _FakeCursor([(_desc("file_key"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_recorded_drive_file("f1", "report.tsv") is None
+
+    def test_get_recorded_file_replaces_slash_in_key(self):
+        cur = _FakeCursor([(_desc("file_key"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.get_recorded_drive_file("f1", "a/b.tsv")
+        _, params = cur.queries[0]
+        assert params == ("f1__a_b.tsv",)
+
+    def test_record_uploaded_file_upserts(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.record_uploaded_drive_file("f1", "report.tsv", "gdrive-123")
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO drive_file_index" in sql_text
+        assert "ON CONFLICT" in sql_text.upper() and "DO UPDATE" in sql_text.upper()
+        assert "f1__report.tsv" in params and "gdrive-123" in params

@@ -833,3 +833,41 @@ def delete_drive_folder_lock(lock_key: str) -> None:
     conn = _get_connection()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM drive_folder_locks WHERE lock_key = %s", (lock_key,))
+
+
+# ---------------------------------------------------------------------------
+# Drive file index (used by shared/drive_client.py's upload_or_replace)
+# ---------------------------------------------------------------------------
+
+def _drive_file_key(folder_id: str, stored_name: str) -> str:
+    """Deterministic key for a (folder, stored file name) pair.
+
+    Slashes replaced — a holdover from Firestore document-id rules, kept for
+    continuity since existing recorded keys already use this format.
+    """
+    return f"{folder_id}__{stored_name}".replace("/", "_")
+
+
+def get_recorded_drive_file(folder_id: str, stored_name: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM drive_file_index WHERE file_key = %s",
+            (_drive_file_key(folder_id, stored_name),),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def record_uploaded_drive_file(folder_id: str, stored_name: str, file_id: str) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO drive_file_index (file_key, file_id, folder_id, name) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (file_key) DO UPDATE SET "
+            "file_id = EXCLUDED.file_id, updated_at = now()",
+            (_drive_file_key(folder_id, stored_name), file_id, folder_id, stored_name),
+        )
