@@ -17,12 +17,6 @@ os.environ.setdefault("WORKFLOW_NAME", "test-workflow")
 os.environ.setdefault("WORKFLOW_LOCATION", "us-central1")
 
 
-@pytest.fixture(autouse=True)
-def _mock_firestore():
-    with patch("shared.firestore_utils.firestore.Client"):
-        yield
-
-
 @pytest.fixture()
 def client():
     from api.main import app

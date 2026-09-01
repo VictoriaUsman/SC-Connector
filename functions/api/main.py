@@ -30,7 +30,8 @@ from shared.logging_setup import (
     trace_from_cloud_header,
 )
 from shared.schedule_compute import VALID_TIMEFRAME_STRATEGIES, compute_next_run, marketplace_today
-from shared.firestore_utils import (
+from shared.db import (
+    count_active_jobs,
     create_event,
     create_job,
     create_schedule,
@@ -310,12 +311,12 @@ def health():
     checks: dict[str, str] = {}
     healthy = True
     try:
-        from shared.firestore_utils import get_db
-        list(get_db().collection("clients").limit(1).stream())
-        checks["firestore"] = "ok"
+        from shared.db import health_check
+        health_check()
+        checks["database"] = "ok"
     except Exception as exc:
         healthy = False
-        checks["firestore"] = f"error: {str(exc)[:120]}"
+        checks["database"] = f"error: {str(exc)[:120]}"
 
     return flask.jsonify({
         "status": "ok" if healthy else "degraded",
@@ -890,16 +891,8 @@ def on_demand_route():
     if not client or not client.get("is_active", True):
         return flask.jsonify({"error": "Client not found or inactive", "code": "NOT_FOUND"}), 404
 
-    from shared.firestore_utils import get_db
     active_statuses = ["pending", "requesting", "polling", "downloading", "uploading"]
-    active_jobs = (
-        get_db().collection("jobs")
-        .where("client_id", "==", data["client_id"])
-        .where("status", "in", active_statuses)
-        .limit(11)
-        .get()
-    )
-    if len(active_jobs) >= 10:
+    if count_active_jobs(data["client_id"], active_statuses, limit=11) >= 10:
         return flask.jsonify({
             "error": "Too many active reports for this client. Please wait for current jobs to finish.",
             "code": "RATE_LIMITED",
@@ -1252,29 +1245,25 @@ def _get_sm() -> secretmanager.SecretManagerServiceClient:
 
 
 def _save_oauth_state(state: str, data: dict[str, str]) -> None:
-    """Persist OAuth state to Firestore so any Cloud Function instance can read it."""
-    from shared.firestore_utils import get_db
-    get_db().collection("_oauth_states").document(state).set({
-        **data,
-        "created_at": datetime.now(timezone.utc),
-    })
+    """Persist OAuth state to Postgres so any Cloud Function instance can read it."""
+    from shared.db import save_oauth_state
+    save_oauth_state(state, data)
 
 
 def _pop_oauth_state(state: str) -> dict[str, str] | None:
-    """Atomically retrieve and delete an OAuth state from Firestore."""
-    from shared.firestore_utils import get_db
-    ref = get_db().collection("_oauth_states").document(state)
-    doc = ref.get()
-    if not doc.exists:
+    """Atomically retrieve and delete an OAuth state from Postgres."""
+    from shared.db import delete_oauth_state, get_oauth_state
+    row = get_oauth_state(state)
+    if row is None:
         return None
-    data = doc.to_dict()
-    created = data.pop("created_at", None)
-    if created:
-        age = (datetime.now(timezone.utc) - created.replace(tzinfo=timezone.utc)).total_seconds()
+    created_at = row.get("created_at")
+    data = row.get("data") or {}
+    if created_at:
+        age = (datetime.now(timezone.utc) - created_at).total_seconds()
         if age > _OAUTH_STATE_TTL_SECONDS:
-            ref.delete()
+            delete_oauth_state(state)
             return None
-    ref.delete()
+    delete_oauth_state(state)
     return data
 
 

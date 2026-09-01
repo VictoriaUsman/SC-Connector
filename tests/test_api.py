@@ -19,13 +19,6 @@ os.environ.setdefault("WORKFLOW_NAME", "test-workflow")
 os.environ.setdefault("WORKFLOW_LOCATION", "us-central1")
 
 
-@pytest.fixture(autouse=True)
-def _mock_firestore():
-    """Prevent real Firestore connections."""
-    with patch("shared.firestore_utils.firestore.Client"):
-        yield
-
-
 @pytest.fixture()
 def client():
     from api.main import app
@@ -338,10 +331,11 @@ class TestSchedules:
         assert "api_source" in resp.get_json()["error"]
 
     def test_create_schedule_invalid_frequency(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1", "api_source": "sp_api", "report_types": ["X"],
-            "marketplace": "US", "frequency": "biweekly",
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1", "api_source": "sp_api", "report_types": ["X"],
+                "marketplace": "US", "frequency": "biweekly",
+            })
         assert resp.status_code == 400
         assert "frequency" in resp.get_json()["error"]
 
@@ -420,6 +414,7 @@ class TestOnDemand:
 
         with (
             patch("api.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("api.main.count_active_jobs", return_value=0),
             patch("api.main.create_job", return_value="job-123"),
             patch("api.main.launch_execution", return_value=mock_execution),
         ):
@@ -444,6 +439,7 @@ class TestOnDemand:
 
         with (
             patch("api.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("api.main.count_active_jobs", return_value=0),
             patch("api.main.create_job", side_effect=["job-1", "job-2"]),
             patch("api.main.launch_execution", return_value=mock_execution),
         ):
@@ -464,6 +460,7 @@ class TestOnDemand:
     def test_on_demand_workflow_failure(self, client):
         with (
             patch("api.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("api.main.count_active_jobs", return_value=0),
             patch("api.main.create_job", return_value="job-123"),
             patch("api.main.launch_execution", side_effect=RuntimeError("workflow down")),
         ):
@@ -499,6 +496,23 @@ class TestOnDemand:
                 "report_types": ["X"],
             })
         assert resp.status_code == 404
+
+    def test_on_demand_rate_limited(self, client):
+        with (
+            patch("api.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("api.main.count_active_jobs", return_value=10),
+        ):
+            resp = client.post("/on-demand", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "marketplace": "US",
+                "report_types": ["GET_FLAT_FILE_OPEN_LISTINGS_DATA"],
+                "start_date": "2026-03-20",
+                "end_date": "2026-03-20",
+            })
+
+        assert resp.status_code == 429
+        assert resp.get_json()["code"] == "RATE_LIMITED"
 
 
 # ---------------------------------------------------------------------------
@@ -591,86 +605,93 @@ class TestTimeframeValidation:
         assert resp.status_code == 201
 
     def test_create_schedule_invalid_strategy(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"strategy": "next_year"},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "next_year"},
+            })
         assert resp.status_code == 400
         assert "strategy" in resp.get_json()["error"]
 
     def test_create_schedule_missing_strategy(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"days": 30},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"days": 30},
+            })
         assert resp.status_code == 400
         assert "strategy" in resp.get_json()["error"]
 
     def test_create_schedule_last_n_days_missing_days(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"strategy": "last_n_days"},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "last_n_days"},
+            })
         assert resp.status_code == 400
         assert "days" in resp.get_json()["error"]
 
     def test_create_schedule_last_n_days_exceeds_max(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"strategy": "last_n_days", "days": 500},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "last_n_days", "days": 500},
+            })
         assert resp.status_code == 400
         assert "365" in resp.get_json()["error"]
 
     def test_create_schedule_rolling_window_missing_offsets(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"strategy": "rolling_window"},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "rolling_window"},
+            })
         assert resp.status_code == 400
         assert "start_offset" in resp.get_json()["error"]
 
     def test_create_schedule_rolling_window_start_after_end(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"strategy": "rolling_window", "start_offset": -1, "end_offset": -5},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "rolling_window", "start_offset": -1, "end_offset": -5},
+            })
         assert resp.status_code == 400
         assert "start_offset" in resp.get_json()["error"]
 
     def test_create_schedule_calendar_week_invalid_day(self, client):
-        resp = client.post("/schedules", json={
-            "client_id": "c1",
-            "api_source": "sp_api",
-            "report_types": ["X"],
-            "marketplace": "US",
-            "frequency": "daily",
-            "timeframe": {"strategy": "last_calendar_week", "week_start": 9},
-        })
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "last_calendar_week", "week_start": 9},
+            })
         assert resp.status_code == 400
         assert "week_start" in resp.get_json()["error"]
 
