@@ -233,3 +233,152 @@ class TestResolveClient:
 
     def test_empty_identifier_returns_none(self):
         assert db.resolve_client("") is None
+
+
+class TestGetSchedule:
+    def test_found(self):
+        cur = _FakeCursor([(_desc("id", "api_source"), [("s1", "sp_api")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_schedule("s1") == {"id": "s1", "api_source": "sp_api"}
+
+    def test_not_found(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_schedule("missing") is None
+
+
+class TestListSchedules:
+    def test_no_filters(self):
+        cur = _FakeCursor([(_desc("id"), [("s1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.list_schedules()
+        assert result == [{"id": "s1"}]
+        query, params = cur.queries[0]
+        assert "WHERE" not in str(query)
+
+    def test_client_id_filter_uses_array_contains(self):
+        cur = _FakeCursor([(_desc("id"), [("s1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.list_schedules(client_id="c1")
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "client_ids" in sql_text and "@>" in sql_text
+        assert params == (["c1"],)
+
+    def test_active_only_filter(self):
+        cur = _FakeCursor([(_desc("id"), [("s1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.list_schedules(active_only=True)
+        query, params = cur.queries[0]
+        assert "is_active" in str(query)
+
+    def test_both_filters_combine_with_and(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.list_schedules(client_id="c1", active_only=True)
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "client_ids" in sql_text and "is_active" in sql_text and "AND" in sql_text.upper()
+        assert params == (["c1"],)
+
+
+class TestListDueSchedules:
+    def test_filters_active_and_due(self):
+        now = datetime(2026, 3, 21, 3, 0, tzinfo=timezone.utc)
+        cur = _FakeCursor([(_desc("id"), [("s1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.list_due_schedules(now)
+        assert result == [{"id": "s1"}]
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "is_active" in sql_text and "next_run_at" in sql_text
+        assert params == (now,)
+
+    def test_defaults_to_current_time_when_omitted(self):
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.list_due_schedules()
+        query, params = cur.queries[0]
+        assert isinstance(params[0], datetime)
+
+
+class TestCreateSchedule:
+    def test_defaults_is_active_and_created_at_then_inserts(self):
+        cur = _FakeCursor([(_desc("id"), [("new-uuid",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.create_schedule({"api_source": "sp_api", "frequency": "daily"})
+        assert result == "new-uuid"
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO" in sql_text and "schedules" in sql_text
+        assert "RETURNING" in sql_text.upper()
+
+    def test_caller_supplied_is_active_is_not_overwritten(self):
+        cur = _FakeCursor([(_desc("id"), [("s1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.create_schedule({"api_source": "sp_api", "frequency": "daily", "is_active": False})
+        _, params = cur.queries[0]
+        assert False in params
+
+
+class TestUpdateSchedule:
+    def test_updates_only_given_columns(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.update_schedule("s1", {"is_active": False})
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "UPDATE schedules" in sql_text or "UPDATE" in sql_text
+        assert "is_active" in sql_text
+        assert "s1" in params
+
+
+class TestUpdateScheduleRunTimes:
+    def test_sets_both_timestamps(self):
+        cur = _FakeCursor([(None, None)])
+        last = datetime(2026, 3, 20, 3, 0, tzinfo=timezone.utc)
+        nxt = datetime(2026, 3, 21, 3, 0, tzinfo=timezone.utc)
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.update_schedule_run_times("s1", last, nxt)
+        query, params = cur.queries[0]
+        sql_text = str(query)
+        assert "last_run_at" in sql_text and "next_run_at" in sql_text
+        assert last in params and nxt in params and "s1" in params
+
+
+class TestClaimDueSchedule:
+    def test_claims_when_row_returned(self):
+        now = datetime(2026, 3, 21, 3, 0, tzinfo=timezone.utc)
+        nxt = datetime(2026, 3, 22, 3, 0, tzinfo=timezone.utc)
+        cur = _FakeCursor([(_desc("id"), [("s1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            claimed = db.claim_due_schedule("s1", now, nxt)
+        assert claimed is True
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "UPDATE" in sql_text.upper() and "RETURNING" in sql_text.upper()
+        assert "is_active" in sql_text and "next_run_at" in sql_text
+
+    def test_does_not_claim_when_no_row_returned(self):
+        now = datetime(2026, 3, 21, 3, 0, tzinfo=timezone.utc)
+        nxt = datetime(2026, 3, 22, 3, 0, tzinfo=timezone.utc)
+        cur = _FakeCursor([(_desc("id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            claimed = db.claim_due_schedule("s1", now, nxt)
+        assert claimed is False
+
+    def test_exception_is_swallowed_and_returns_false(self):
+        now = datetime(2026, 3, 21, 3, 0, tzinfo=timezone.utc)
+        nxt = datetime(2026, 3, 22, 3, 0, tzinfo=timezone.utc)
+        with patch.object(db, "_get_connection", side_effect=RuntimeError("boom")):
+            assert db.claim_due_schedule("s1", now, nxt) is False
+
+
+class TestDeleteSchedule:
+    def test_deletes_by_id(self):
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.delete_schedule("s1")
+        query, params = cur.queries[0]
+        assert "DELETE FROM schedules" in str(query)
+        assert params == ("s1",)

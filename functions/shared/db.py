@@ -117,6 +117,37 @@ def _merge_upsert(table: str, key_col: str, key_val: Any, data: dict[str, Any]) 
         cur.execute(query, values)
 
 
+def _merge_upsert_update_only(table: str, key_col: str, key_val: Any, data: dict[str, Any]) -> None:
+    """UPDATE ... SET <only the columns in data> WHERE key_col = key_val.
+
+    Unlike _merge_upsert, never inserts — matches Firestore's `.update()`
+    (as opposed to `.set(merge=True)`), which raises NotFound on a missing
+    document rather than creating one. The Postgres equivalent of "raises on
+    missing" is simply a 0-row UPDATE, which every caller of this helper
+    already treats as a silent no-op today (mirroring the original code,
+    none of which checked `.update()`'s implicit existence requirement).
+    """
+    import psycopg2.sql as sql
+    from psycopg2.extras import Json
+
+    jsonb_cols = _JSONB_COLUMNS.get(table, set())
+    set_clause = sql.SQL(", ").join(
+        sql.SQL("{} = %s").format(sql.Identifier(c)) for c in data.keys()
+    )
+    values = [Json(v) if c in jsonb_cols and v is not None else v for c, v in data.items()]
+    values.append(key_val)
+
+    query = sql.SQL("UPDATE {table} SET {set_clause} WHERE {key} = %s").format(
+        table=sql.Identifier(table),
+        set_clause=set_clause,
+        key=sql.Identifier(key_col),
+    )
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(query, values)
+
+
 # ---------------------------------------------------------------------------
 # Clients
 # ---------------------------------------------------------------------------
@@ -194,3 +225,144 @@ def delete_client(client_id: str) -> None:
     conn = _get_connection()
     with conn.cursor() as cur:
         cur.execute("DELETE FROM clients WHERE id = %s", (client_id,))
+
+
+# ---------------------------------------------------------------------------
+# Schedules
+# ---------------------------------------------------------------------------
+
+def get_schedule(schedule_id: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM schedules WHERE id = %s", (schedule_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def list_schedules(
+    client_id: str | None = None,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    conn = _get_connection()
+    conditions = []
+    params: list[Any] = []
+    if client_id:
+        conditions.append("client_ids @> %s")
+        params.append([client_id])
+    if active_only:
+        conditions.append("is_active = true")
+    query = "SELECT * FROM schedules"
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    with conn.cursor() as cur:
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        return [_row_to_dict(cur, row) for row in rows]
+
+
+def list_due_schedules(now: datetime | None = None) -> list[dict[str, Any]]:
+    """Active schedules whose next_run_at <= now."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM schedules WHERE is_active = true AND next_run_at <= %s",
+            (now,),
+        )
+        rows = cur.fetchall()
+        return [_row_to_dict(cur, row) for row in rows]
+
+
+def create_schedule(data: dict[str, Any]) -> str:
+    import psycopg2.sql as sql
+    from psycopg2.extras import Json
+
+    data = dict(data)
+    data.setdefault("is_active", True)
+    data.setdefault("created_at", datetime.now(timezone.utc))
+
+    jsonb_cols = _JSONB_COLUMNS.get("schedules", set())
+    columns = list(data.keys())
+    values = [Json(v) if c in jsonb_cols and v is not None else v for c, v in data.items()]
+
+    insert_cols = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
+    placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
+    query = sql.SQL(
+        "INSERT INTO schedules ({cols}) VALUES ({placeholders}) RETURNING id"
+    ).format(cols=insert_cols, placeholders=placeholders)
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(query, values)
+        row = cur.fetchone()
+        return str(row[0])
+
+
+def update_schedule(schedule_id: str, data: dict[str, Any]) -> None:
+    _merge_upsert_update_only("schedules", "id", schedule_id, data)
+
+
+def update_schedule_run_times(
+    schedule_id: str,
+    last_run_at: datetime,
+    next_run_at: datetime,
+) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE schedules SET last_run_at = %s, next_run_at = %s WHERE id = %s",
+            (last_run_at, next_run_at, schedule_id),
+        )
+
+
+def claim_due_schedule(
+    schedule_id: str,
+    now: datetime,
+    next_run_at: datetime,
+) -> bool:
+    """Atomically claim a due schedule for this run, advancing its run times.
+
+    The scheduler reads all schedules whose ``next_run_at <= now`` and fans out
+    workflows for each. Because Cloud Scheduler delivers at-least-once and a
+    slow run can overlap the next cron tick, two scheduler invocations could
+    both observe the same schedule as due and fan out duplicate workflows —
+    producing duplicate report files in Drive.
+
+    To make the claim exactly-once, the UPDATE's WHERE clause re-checks
+    ``is_active AND next_run_at <= now`` in the same statement that advances
+    ``next_run_at`` — Postgres's row-level locking makes this atomic without
+    an explicit transaction. The first caller's UPDATE matches the row and
+    returns it; a concurrent or retried caller's UPDATE runs against the
+    already-advanced ``next_run_at`` and matches nothing, so ``RETURNING``
+    yields no row and this returns ``False``.
+
+    Returns ``True`` if this caller claimed the schedule, ``False`` otherwise.
+    """
+    try:
+        conn = _get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE schedules SET last_run_at = %s, next_run_at = %s "
+                "WHERE id = %s AND is_active = true AND next_run_at <= %s "
+                "RETURNING id",
+                (now, next_run_at, schedule_id, now),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        # A transient Postgres error means we could not safely claim the
+        # schedule; treat it as "someone else has it" so we never
+        # double-fan-out on error.
+        logger.warning(
+            "Failed to claim schedule — skipping to avoid duplicate fan-out",
+            extra={"schedule_id": schedule_id},
+        )
+        return False
+
+
+def delete_schedule(schedule_id: str) -> None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM schedules WHERE id = %s", (schedule_id,))
