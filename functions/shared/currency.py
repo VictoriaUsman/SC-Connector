@@ -5,8 +5,8 @@ Rates are USD-based and fetched from a free, no-key endpoint
 hit the network on every run:
 
   1. An in-process cache for the lifetime of the warm function instance.
-  2. A Firestore document (``app_config/currency_rates``) shared across
-     instances, holding ``{rates, base, fetched_at}``.
+  2. A Postgres row (``app_config`` table, key ``currency_rates``) shared
+     across instances, holding ``{rates, base, fetched_at}``.
 
 Both layers honour a ~24h TTL and refresh lazily on read. On any fetch failure
 the last cached rates are reused (logged as a WARNING); if no cache exists at
@@ -22,7 +22,7 @@ from typing import Any
 
 import requests
 
-from shared.firestore_utils import get_db
+from shared.db import get_app_config, set_app_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ _BASE_CURRENCY = "USD"
 _TTL_SECONDS = 24 * 60 * 60
 _FETCH_TIMEOUT_SECONDS = 10
 
-_CONFIG_COLLECTION = "app_config"
 _RATES_DOC_ID = "currency_rates"
 
 # Process-wide cache: {"rates": {...}, "base": "USD", "fetched_at": <epoch>}.
@@ -52,26 +51,22 @@ def _is_fresh(entry: dict[str, Any] | None) -> bool:
 
 
 def _read_firestore() -> dict[str, Any] | None:
+    """Name kept for backward compatibility with existing test patches
+    (`patch("shared.currency._read_firestore", ...)`) — now Postgres-backed."""
     try:
-        doc = (
-            get_db()
-            .collection(_CONFIG_COLLECTION)
-            .document(_RATES_DOC_ID)
-            .get()
-        )
+        return get_app_config(_RATES_DOC_ID)
     except Exception:
-        logger.warning("Failed to read cached FX rates from Firestore", extra={"phase": "currency"})
+        logger.warning("Failed to read cached FX rates from Postgres", extra={"phase": "currency"})
         return None
-    if not doc.exists:
-        return None
-    return doc.to_dict()
 
 
 def _write_firestore(entry: dict[str, Any]) -> None:
+    """Name kept for backward compatibility with existing test patches
+    (`patch("shared.currency._write_firestore", ...)`) — now Postgres-backed."""
     try:
-        get_db().collection(_CONFIG_COLLECTION).document(_RATES_DOC_ID).set(entry)
+        set_app_config(_RATES_DOC_ID, entry)
     except Exception:
-        logger.warning("Failed to persist FX rates to Firestore", extra={"phase": "currency"})
+        logger.warning("Failed to persist FX rates to Postgres", extra={"phase": "currency"})
 
 
 def _fetch_live() -> dict[str, float] | None:
