@@ -656,3 +656,75 @@ class TestGetLiveEvent:
         assert record.selected_event_id == "e1"
         assert record.live_event_ids == ["e1", "e2"]  # sorted by start_date then id
         assert record.live_event_names == ["Earlier", "Later"]  # sorted by start_date then id
+
+
+class TestGetBotConfig:
+    def test_found(self):
+        cur = _FakeCursor([(_desc("client_id", "slack_channel_id"), [("c1", "C123")])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_bot_config("c1") == {"client_id": "c1", "slack_channel_id": "C123"}
+
+    def test_not_found(self):
+        cur = _FakeCursor([(_desc("client_id"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_bot_config("missing") is None
+
+
+class TestListBotConfigs:
+    def test_all(self):
+        cur = _FakeCursor([(_desc("client_id"), [("c1",), ("c2",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.list_bot_configs()
+        assert result == [{"client_id": "c1"}, {"client_id": "c2"}]
+
+
+class TestUpsertBotConfig:
+    def test_sets_updated_at_and_delegates_to_merge_upsert(self):
+        with patch.object(db, "_merge_upsert") as fake_merge:
+            db.upsert_bot_config("c1", {"slack_channel_id": "C123"})
+        args, kwargs = fake_merge.call_args
+        assert args[0] == "bot_configs"
+        assert args[1] == "client_id"
+        assert args[2] == "c1"
+        assert "updated_at" in args[3]
+
+
+class TestLogBotActivity:
+    def test_defaults_timestamp_and_inserts(self):
+        cur = _FakeCursor([(_desc("id"), [("a1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.log_bot_activity({"type": "hourly_post"})
+        assert result == "a1"
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO bot_activity" in sql_text
+        assert any("Json" in str(type(p)) for p in params)  # payload wrapped
+
+
+class TestThreadAnchors:
+    def test_get_returns_none_when_absent(self):
+        cur = _FakeCursor([(_desc("parent_ts"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_thread_anchor_ts("e1", "C123", "2026-07-08") is None
+
+    def test_get_returns_stored_ts(self):
+        cur = _FakeCursor([(_desc("parent_ts"), [("1234.5678",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            assert db.get_thread_anchor_ts("e1", "C123", "2026-07-08") == "1234.5678"
+
+    def test_set_uses_deterministic_id_and_insert_on_conflict_do_nothing(self):
+        cur = _FakeCursor([(_desc("id"), [("e1__C123__2026-07-08",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.set_thread_anchor_ts("e1", "C123", "2026-07-08", "1234.5678", created_by_client_id="c1")
+        query, params = cur.queries[0]
+        sql_text = str(query)  # psycopg2.sql.Composable has no as_string() without a connection/cursor; str() falls back to repr(), which is sufficient to check which identifiers/clauses were included
+        assert "INSERT INTO slack_thread_anchors" in sql_text
+        assert "ON CONFLICT" in sql_text.upper() and "DO NOTHING" in sql_text.upper()
+        assert "e1__C123__2026-07-08" in params
+
+    def test_set_replaces_slash_in_id(self):
+        cur = _FakeCursor([(_desc("id"), [("x",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.set_thread_anchor_ts("e1/x", "C123", "2026-07-08", "1234.5678")
+        _, params = cur.queries[0]
+        assert "e1_x__C123__2026-07-08" in params

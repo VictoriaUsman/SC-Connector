@@ -672,3 +672,123 @@ def get_live_event() -> dict[str, Any] | None:
             },
         )
     return events[0]
+
+
+# ---------------------------------------------------------------------------
+# Bot Configs
+# ---------------------------------------------------------------------------
+
+def get_bot_config(client_id: str) -> dict[str, Any] | None:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM bot_configs WHERE client_id = %s", (client_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_dict(cur, row)
+
+
+def list_bot_configs() -> list[dict[str, Any]]:
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM bot_configs")
+        rows = cur.fetchall()
+        return [_row_to_dict(cur, row) for row in rows]
+
+
+def upsert_bot_config(client_id: str, data: dict[str, Any]) -> None:
+    data = dict(data)
+    data["updated_at"] = datetime.now(timezone.utc)
+    _merge_upsert("bot_configs", "client_id", client_id, data)
+
+
+# ---------------------------------------------------------------------------
+# Bot Activity
+# ---------------------------------------------------------------------------
+
+def log_bot_activity(data: dict[str, Any]) -> str:
+    import psycopg2.sql as sql
+    from psycopg2.extras import Json
+
+    data = dict(data)
+    data.setdefault("timestamp", datetime.now(timezone.utc))
+    payload = {k: v for k, v in data.items() if k != "timestamp"}
+    ts = data["timestamp"]
+
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO bot_activity (payload, "timestamp") VALUES (%s, %s) RETURNING id',
+            (Json(payload), ts),
+        )
+        row = cur.fetchone()
+        return str(row[0])
+
+
+# ---------------------------------------------------------------------------
+# Slack Thread Anchors
+# ---------------------------------------------------------------------------
+# Per-event-day parent ("anchor") message that the hourly event bot threads its
+# updates under. Keyed deterministically on (event, channel, local date) — one
+# anchor per channel per day. See the original Firestore version's full
+# rationale (unchanged): the key deliberately excludes the client so several
+# accounts posting to the same channel share one daily parent.
+
+def _thread_anchor_id(event_id: str, channel_id: str, event_date: str) -> str:
+    """Deterministic id for a per-channel, per-day thread anchor.
+
+    Slashes are replaced — a holdover from Firestore document-id rules, kept
+    for continuity since existing anchor ids already use this format.
+    """
+    raw = f"{event_id}__{channel_id}__{event_date}"
+    return raw.replace("/", "_")
+
+
+def get_thread_anchor_ts(event_id: str, channel_id: str, event_date: str) -> str | None:
+    """Return the stored parent message ts for an (event, channel, day), or None."""
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT parent_ts FROM slack_thread_anchors WHERE id = %s",
+            (_thread_anchor_id(event_id, channel_id, event_date),),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def set_thread_anchor_ts(
+    event_id: str,
+    channel_id: str,
+    event_date: str,
+    parent_ts: str,
+    *,
+    created_by_client_id: str | None = None,
+) -> None:
+    """Persist the parent message ts for an (event, channel, day) (create-if-absent).
+
+    Uses ``INSERT ... ON CONFLICT (id) DO NOTHING`` so a concurrent run that
+    already wrote the anchor wins — the second writer's insert is silently
+    dropped rather than overwriting the ts (mirroring the Firestore version's
+    ``create()``, which failed loudly with ``AlreadyExists``; here the caller
+    doesn't need to distinguish "I wrote it" from "someone else already did",
+    since neither case calls for further action).
+    ``created_by_client_id`` records which account first posted the day's anchor
+    (purely for debugging — the anchor itself is shared across all accounts in
+    the channel).
+    """
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO slack_thread_anchors "
+            "(id, event_id, channel_id, event_date, parent_ts, created_by_client_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (id) DO NOTHING",
+            (
+                _thread_anchor_id(event_id, channel_id, event_date),
+                event_id,
+                channel_id,
+                event_date,
+                parent_ts,
+                created_by_client_id,
+            ),
+        )
