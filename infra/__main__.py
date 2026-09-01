@@ -12,7 +12,7 @@ Resource creation order:
 
 import pulumi
 
-from resources import apis, iam, firestore, secrets, storage, bigquery, functions, workflow, scheduler, mcp_server
+from resources import apis, iam, secrets, storage, bigquery, functions, workflow, scheduler, mcp_server
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -37,7 +37,6 @@ sas = iam.create_service_accounts(env, project, enabled_apis)
 # ---------------------------------------------------------------------------
 # 3. Foundation resources (independent of each other)
 # ---------------------------------------------------------------------------
-db = firestore.create(env, project, enabled_apis)
 secret_resources = secrets.create(env, project, enabled_apis)
 source_bucket = storage.create_source_bucket(env, project, region, enabled_apis)
 
