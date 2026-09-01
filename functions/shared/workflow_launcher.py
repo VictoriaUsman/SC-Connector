@@ -21,7 +21,7 @@ from google.cloud.workflows.executions_v1.types import Execution
 
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES
 from shared.api_operations import get_api_operation, is_api_operation
-from shared.firestore_utils import create_job, try_claim_job_launch, update_job_status
+from shared.db import create_job, try_claim_job_launch, update_job_status
 from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import (
     SALES_TRAFFIC_REPORT_TYPE,

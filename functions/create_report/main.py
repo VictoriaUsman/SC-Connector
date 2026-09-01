@@ -17,7 +17,7 @@ from shared import ads_api_client, sp_api_client
 from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, get_all_columns
 from shared.credentials import get_ads_credentials, get_sp_credentials
-from shared.firestore_utils import create_job, update_job_status
+from shared.db import create_job, update_job_status
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.removed_reports import removed_report_reason
 from shared.schedule_compute import marketplace_yesterday
