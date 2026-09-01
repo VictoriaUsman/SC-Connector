@@ -163,6 +163,18 @@ CREATE TABLE IF NOT EXISTS drive_file_index (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state text PRIMARY KEY,
+    data jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS app_config (
+    key text PRIMARY KEY,
+    value jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- ---------------------------------------------------------------------
 -- Row Level Security — only `jobs` is readable by the anon/PostgREST
 -- role (the frontend's realtime dashboard). Every other table is
@@ -177,6 +189,8 @@ ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE job_launch_dedupe ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drive_folder_locks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drive_file_index ENABLE ROW LEVEL SECURITY;
+ALTER TABLE oauth_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bot_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bot_activity ENABLE ROW LEVEL SECURITY;

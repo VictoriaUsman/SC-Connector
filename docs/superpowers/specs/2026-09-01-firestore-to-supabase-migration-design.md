@@ -43,7 +43,7 @@ brainstorming:
 - Every Firestore collection moves to a Postgres table in the existing
   Supabase project: `clients`, `schedules`, `jobs`, `job_launch_dedupe`,
   `drive_folder_locks`, `drive_file_index`, `events`, `bot_configs`, `bot_activity`,
-  `slack_thread_anchors`.
+  `slack_thread_anchors`, `oauth_states`, `app_config`.
 - `functions/shared/firestore_utils.py` is rewritten against `psycopg2` as
   `functions/shared/db.py`, **preserving every function's name, signature,
   and return shape** (dicts keyed by `"id"`), so the 12 files that import it
@@ -64,7 +64,7 @@ brainstorming:
   `firebase.json`, and the `firebase`/`reactfire` frontend dependencies are
   removed.
 
-**Known gap, not covered by this plan or its `shared/db.py`:** `firestore_utils.get_db()` itself (the raw Firestore client factory, distinct from the 26 functions this plan's `shared/db.py` replaces) has four live call sites that don't go through any of those 26 functions: `api/main.py`'s health-check ping and a raw `jobs` collection query, `api/main.py`'s `_oauth_states` collection (OAuth flow state), and `shared/currency.py`'s FX-rate cache document (`app_config/currency_rates`). Neither `_oauth_states` nor the currency-rates cache has a Postgres table in `infra/supabase/schema.sql` — they were missed by this plan's schema design. A future plan swapping the 12 `firestore_utils` import sites cannot treat `api/main.py` or `shared/currency.py` as an import-only change until this is resolved: either add Postgres tables for both and rewrite these four call sites' direct `get_db()` usage, or make a deliberate decision to leave them on Firestore (which would mean `firestore_utils.py`/`local_firestore.py` and the Firestore project itself cannot be fully retired per §6 until these are addressed too).
+**Resolved: `get_db()`'s 4 remaining call sites are in scope for the §7 import-swap plan.** `firestore_utils.get_db()` itself (the raw Firestore client factory, distinct from the 26 functions `shared/db.py` already replaces) has four live call sites: `api/main.py`'s health-check ping and a raw `jobs` collection query (both against collections that already have Postgres tables — `clients`, `jobs` — so these just need new `shared/db.py` functions, no schema change), plus `api/main.py`'s `_oauth_states` collection and `shared/currency.py`'s FX-rate cache (`app_config/currency_rates`) — both of which now have dedicated tables (`oauth_states`, `app_config`) in `infra/supabase/schema.sql`. The decision is to migrate all four rather than leave any permanent Firestore holdout, so `firestore_utils.py`/`local_firestore.py` and the Firestore project itself can eventually be fully retired per §6. The §7 import-swap plan must include: a `db.py` health-check helper and an active-jobs-count helper (for call sites 1-2), plus `get_oauth_state`/`save_oauth_state`/`pop_oauth_state`-style functions backed by `oauth_states` and `get_app_config`/`set_app_config`-style functions backed by `app_config` (for call sites 3-4, replacing `currency.py`'s direct Firestore calls).
 
 ## Non-goals
 
@@ -126,6 +126,8 @@ what drive the design:
 - **`drive_folder_locks`** — `lock_key text PRIMARY KEY`, `folder_id text`,
   `created_at timestamptz DEFAULT now()`.
 - **`drive_file_index`** — `file_key text PRIMARY KEY` (deterministic `folder_id__stored_name`, slashes replaced — same construction as today's Firestore doc id), `file_id text`, `folder_id text`, `name text`, `updated_at timestamptz DEFAULT now()`. Backs `drive_client.py`'s upload-dedup: before each upload, look up the prior recorded file id for `(folder_id, stored_name)` and delete it by id (immune to Drive's eventually-consistent name search), then record the new file's id after upload.
+- **`oauth_states`** — `state text PRIMARY KEY` (a random CSRF-style token), `data jsonb` (arbitrary fields set per OAuth flow — `client_id`, `api_source`, `account_type`, or `selling_partner_id`, varying by caller), `created_at timestamptz DEFAULT now()`. Backs `api/main.py`'s OAuth CSRF-state save/pop, replacing its two Firestore `_oauth_states` calls; TTL expiry is checked in application code against `created_at`, same as today.
+- **`app_config`** — `key text PRIMARY KEY`, `value jsonb NOT NULL`, `updated_at timestamptz DEFAULT now()`. A generic key-value config table; today's only user is `shared/currency.py`'s FX-rate cache (`key = "currency_rates"`, `value = {rates, base, fetched_at}`), replacing its Firestore `app_config/currency_rates` document.
 - **`events`** — `id uuid PRIMARY KEY DEFAULT gen_random_uuid()`, `name`,
   `start_date date`, `end_date date`, `status`, `prior_event_id`,
   `manual_ads jsonb`, `manually_activated boolean`, `activated_at
