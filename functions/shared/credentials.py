@@ -14,7 +14,7 @@ import logging
 from google.cloud import secretmanager
 
 from shared.config import get_environment, get_project
-from shared.firestore_utils import get_client
+from shared.db import get_client
 from shared.local_secrets import is_local_mode, resolve_secret
 
 logger = logging.getLogger(__name__)
