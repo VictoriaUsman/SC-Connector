@@ -18,7 +18,7 @@ import flask
 
 from shared.api_operations import get_api_operation
 from shared.drive_client import find_or_create_folder, upload_report
-from shared.firestore_utils import get_client, update_job_status
+from shared.db import get_client, update_job_status
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.report_converter import rows_to_tsv
 from shared.sp_api_rest import SPAPIRequestError

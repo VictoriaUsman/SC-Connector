@@ -20,7 +20,7 @@ from shared.ads_api_errors import AdsProfileUnauthorizedError
 from shared.ads_sb_legacy import augment_sb_campaigns_content
 from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
-from shared.firestore_utils import get_client, update_job_status
+from shared.db import get_client, update_job_status
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 from shared.report_converter import maybe_convert_to_tsv
 from shared.sp_api_errors import SPAPIForbiddenError
