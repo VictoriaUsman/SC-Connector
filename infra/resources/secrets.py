@@ -8,6 +8,7 @@ import pulumi_gcp as gcp
 SECRET_SHELLS = [
     "sp-api-app-credentials",
     "ads-api-app-credentials",
+    "supabase-service-key",
 ]
 
 
