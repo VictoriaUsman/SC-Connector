@@ -237,7 +237,7 @@ def main() -> None:
     os.environ["GCP_PROJECT"] = args.project
     os.environ["ENVIRONMENT"] = env
 
-    if not args.dry_run and not os.environ.get("SUPABASE_DB_URL"):
+    if not os.environ.get("SUPABASE_DB_URL"):
         print("Error: SUPABASE_DB_URL is not set.", file=sys.stderr)
         sys.exit(1)
 
