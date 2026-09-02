@@ -57,9 +57,11 @@ def create_service_accounts(
         )
 
     # --- Project-level roles for the workflow SA ---
+    # (roles/datastore.user removed — report_flow.yaml no longer touches
+    # Firestore; see bind_workflow_secret_access below for its replacement,
+    # a resource-scoped grant on just the Supabase service-role key.)
     for role in [
         "roles/logging.logWriter",
-        "roles/datastore.user",
     ]:
         role_short = role.split("/")[-1]
         gcp.projects.IAMMember(
@@ -75,6 +77,27 @@ def create_service_accounts(
         "workflow": workflow_sa,
         "scheduler": scheduler_sa,
     }
+
+
+def bind_workflow_secret_access(
+    env: str,
+    project: str,
+    workflow_sa: gcp.serviceaccount.Account,
+    supabase_secret: gcp.secretmanager.Secret,
+) -> None:
+    """Grant the workflow SA read access to the Supabase service-role key —
+    scoped to just this one secret, not project-wide (unlike the functions
+    SA's roles/secretmanager.admin, which manages the connect-flow secrets
+    across the whole project). Replaces the workflow SA's former
+    roles/datastore.user now that report_flow.yaml no longer touches
+    Firestore."""
+    gcp.secretmanager.SecretIamMember(
+        f"kalilos-{env}-workflow-supabase-key-accessor",
+        secret_id=supabase_secret.secret_id,
+        project=project,
+        role="roles/secretmanager.secretAccessor",
+        member=pulumi.Output.concat("serviceAccount:", workflow_sa.email),
+    )
 
 
 def bind_invokers(
