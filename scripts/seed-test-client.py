@@ -14,6 +14,12 @@ import argparse
 import os
 import sys
 
+# Windows' default console codepage (cp1252) can't encode the ✓/⚠ symbols
+# below — reconfigure stdout to UTF-8 so this runs the same on Windows as
+# it does on macOS/Linux.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
 from shared.db import upsert_client

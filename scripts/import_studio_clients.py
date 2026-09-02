@@ -18,6 +18,12 @@ import json
 import os
 import re
 import sys
+
+# Windows' default console codepage (cp1252) can't encode the ⚠ symbol used
+# below — reconfigure stdout to UTF-8 so this runs the same on Windows as
+# it does on macOS/Linux.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 from typing import Any
 from urllib.parse import urlparse
 
