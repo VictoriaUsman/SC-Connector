@@ -2,7 +2,7 @@
 """Bulk-onboard existing clients with their SP API refresh tokens.
 
 Reads a CSV file and for each row:
-  1. Creates (or updates) a Firestore client document
+  1. Creates (or updates) a Supabase `clients` row
   2. Stores the refresh token in Secret Manager
 
 CSV format (with header row):
@@ -14,10 +14,10 @@ CSV format (with header row):
   - sp_api_refresh_token:   the Atzr|... token
 
 Usage:
-    python scripts/bulk-onboard.py --csv clients.csv [--project kalilos-connector-staging] [--env staging] [--dry-run]
+    SUPABASE_DB_URL=postgresql://... python scripts/bulk-onboard.py --csv clients.csv [--project kalilos-connector-staging] [--env staging] [--dry-run]
 
 Requires:
-    pip install google-cloud-firestore google-cloud-secret-manager
+    pip install google-cloud-secret-manager psycopg2-binary
 """
 
 from __future__ import annotations
@@ -27,10 +27,13 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timezone
 
-from google.api_core.exceptions import AlreadyExists, NotFound
-from google.cloud import firestore, secretmanager
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
+
+from google.api_core.exceptions import NotFound
+from google.cloud import secretmanager
+
+from shared.db import upsert_client
 
 
 def slugify(name: str) -> str:
@@ -38,7 +41,6 @@ def slugify(name: str) -> str:
 
 
 def onboard_client(
-    db: firestore.Client,
     sm: secretmanager.SecretManagerServiceClient,
     project: str,
     env: str,
@@ -49,7 +51,6 @@ def onboard_client(
     dry_run: bool = False,
 ) -> None:
     secret_name = f"kalilos-{env}-sp-api-{client_id}"
-    now = datetime.now(timezone.utc)
 
     print(f"\n{'[DRY RUN] ' if dry_run else ''}Processing: {client_name} ({client_id})")
     print(f"  Marketplaces: {marketplaces}")
@@ -78,21 +79,15 @@ def onboard_client(
     sm.add_secret_version(request={"parent": full_name, "payload": {"data": payload}})
     print(f"  Stored refresh token in Secret Manager")
 
-    # --- Firestore ---
+    # --- Supabase ---
     client_data = {
         "name": client_name,
         "marketplaces": marketplaces,
         "is_active": True,
         "sp_api_secret_name": secret_name,
-        "updated_at": now,
     }
-
-    doc_ref = db.collection("clients").document(client_id)
-    if not doc_ref.get().exists:
-        client_data["created_at"] = now
-
-    doc_ref.set(client_data, merge=True)
-    print(f"  Upserted Firestore client document")
+    upsert_client(client_id, client_data)
+    print(f"  Upserted Supabase clients row")
 
 
 def main() -> None:
@@ -102,6 +97,10 @@ def main() -> None:
     parser.add_argument("--env", default=os.environ.get("ENVIRONMENT", "staging"))
     parser.add_argument("--dry-run", action="store_true", help="Preview without making changes")
     args = parser.parse_args()
+
+    if not args.dry_run and not os.environ.get("SUPABASE_DB_URL"):
+        print("Error: SUPABASE_DB_URL is not set.", file=sys.stderr)
+        sys.exit(1)
 
     if not os.path.isfile(args.csv):
         print(f"Error: CSV file not found: {args.csv}", file=sys.stderr)
@@ -125,8 +124,7 @@ def main() -> None:
     if args.dry_run:
         print("\n*** DRY RUN — no changes will be made ***")
 
-    db = firestore.Client(project=args.project)
-    sm = secretmanager.SecretManagerServiceClient()
+    sm = None if args.dry_run else secretmanager.SecretManagerServiceClient()
 
     success = 0
     errors = 0
@@ -142,7 +140,7 @@ def main() -> None:
             continue
 
         try:
-            onboard_client(db, sm, args.project, args.env, client_id, client_name, marketplaces, refresh_token, args.dry_run)
+            onboard_client(sm, args.project, args.env, client_id, client_name, marketplaces, refresh_token, args.dry_run)
             success += 1
         except Exception as exc:
             print(f"\n  ERROR: {client_name} — {exc}")
