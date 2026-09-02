@@ -2,13 +2,13 @@
 """Import clients from a Studio JSON export into the Kalilos connector.
 
 Reads studio_results_*.json, maps each entry to the Kalilos Client model,
-creates or validates existing clients in Firestore, and stores SP API
+creates or validates existing clients in Supabase, and stores SP API
 refresh tokens in Secret Manager.
 
 Usage:
-    python3 scripts/import_studio_clients.py --dry-run
-    python3 scripts/import_studio_clients.py --project kalilos-connector-staging
-    python3 scripts/import_studio_clients.py --project kalilos-connector-prod
+    SUPABASE_DB_URL=postgresql://... python3 scripts/import_studio_clients.py --dry-run
+    SUPABASE_DB_URL=postgresql://... python3 scripts/import_studio_clients.py --project kalilos-connector-staging
+    SUPABASE_DB_URL=postgresql://... python3 scripts/import_studio_clients.py --project kalilos-connector-prod
 """
 
 from __future__ import annotations
@@ -28,7 +28,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 import subprocess
 import google.auth.credentials
 import google.oauth2.credentials
-from google.cloud import firestore, secretmanager
+from google.cloud import secretmanager
+
+from shared.db import get_client, upsert_client
 
 SOURCE_FILE = os.path.join(
     os.path.dirname(__file__), "..", "studio_results_20260414_0951.json"
@@ -37,12 +39,13 @@ SOURCE_FILE = os.path.join(
 GCP_ACCOUNT = "nivbraz90@gmail.com"
 
 _credentials: google.auth.credentials.Credentials | None = None
-_db: firestore.Client | None = None
 _sm: secretmanager.SecretManagerServiceClient | None = None
 
 
 def _get_credentials() -> google.auth.credentials.Credentials:
-    """Get OAuth2 credentials from a specific gcloud account."""
+    """Get OAuth2 credentials from a specific gcloud account — still needed
+    for Secret Manager access; Supabase auth is via SUPABASE_DB_URL, not
+    GCP IAM credentials, so this no longer backs any datastore client."""
     global _credentials
     if _credentials is None:
         token = subprocess.check_output(
@@ -51,31 +54,6 @@ def _get_credentials() -> google.auth.credentials.Credentials:
         ).strip()
         _credentials = google.oauth2.credentials.Credentials(token=token)
     return _credentials
-
-
-def get_db(project: str) -> firestore.Client:
-    global _db
-    if _db is None:
-        _db = firestore.Client(project=project, credentials=_get_credentials())
-    return _db
-
-
-def get_client(db: firestore.Client, client_id: str) -> dict[str, Any] | None:
-    doc = db.collection("clients").document(client_id).get()
-    if not doc.exists:
-        return None
-    return {"id": doc.id, **doc.to_dict()}
-
-
-def upsert_client(db: firestore.Client, client_id: str, data: dict[str, Any]) -> None:
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-    data["updated_at"] = now
-    doc_ref = db.collection("clients").document(client_id)
-    if not doc_ref.get().exists:
-        data.setdefault("created_at", now)
-        data.setdefault("is_active", True)
-    doc_ref.set(data, merge=True)
 
 
 def _get_sm() -> secretmanager.SecretManagerServiceClient:
@@ -138,7 +116,6 @@ def diff_fields(existing: dict[str, Any], expected: dict[str, Any]) -> dict[str,
 
 def process_entry(
     entry: dict[str, Any],
-    db: firestore.Client,
     project: str,
     env: str,
     dry_run: bool,
@@ -177,7 +154,7 @@ def process_entry(
     if not has_ads:
         summary["ads_status"] = "skip:invalid" if raw_ads else "skip:empty"
 
-    existing = get_client(db, client_id)
+    existing = get_client(client_id)
 
     if existing:
         diffs = diff_fields(existing, client_data)
@@ -186,7 +163,7 @@ def process_entry(
             for field, (old, new) in diffs.items():
                 print(f"  {client_id}: {field} differs: {old!r} -> {new!r}")
             if update and not dry_run:
-                upsert_client(db, client_id, client_data)
+                upsert_client(client_id, client_data)
                 summary["action"] = "UPDATED"
         else:
             summary["action"] = "EXISTS"
@@ -198,7 +175,7 @@ def process_entry(
                 summary["sp_status"] = "new"
                 if not dry_run:
                     sec = store_sp_secret(project, env, client_id, raw_key)
-                    upsert_client(db, client_id, {"sp_api_secret_name": sec})
+                    upsert_client(client_id, {"sp_api_secret_name": sec})
                     summary["sp_status"] = "stored"
 
         if has_ads:
@@ -208,16 +185,16 @@ def process_entry(
             else:
                 summary["ads_status"] = f"update({old_ads}->{raw_ads})"
                 if not dry_run:
-                    upsert_client(db, client_id, {"ads_profile_id": raw_ads})
+                    upsert_client(client_id, {"ads_profile_id": raw_ads})
 
     else:
         summary["action"] = "NEW"
         if not dry_run:
-            upsert_client(db, client_id, client_data)
+            upsert_client(client_id, client_data)
 
             if has_sp:
                 sec = store_sp_secret(project, env, client_id, raw_key)
-                upsert_client(db, client_id, {"sp_api_secret_name": sec})
+                upsert_client(client_id, {"sp_api_secret_name": sec})
                 summary["sp_status"] = "stored"
             if has_ads:
                 summary["ads_status"] = "stored"
@@ -260,6 +237,10 @@ def main() -> None:
     os.environ["GCP_PROJECT"] = args.project
     os.environ["ENVIRONMENT"] = env
 
+    if not args.dry_run and not os.environ.get("SUPABASE_DB_URL"):
+        print("Error: SUPABASE_DB_URL is not set.", file=sys.stderr)
+        sys.exit(1)
+
     if env == "prod" and not args.dry_run:
         confirm = input(f"⚠ You are about to write to PRODUCTION ({args.project}). Type 'yes' to confirm: ")
         if confirm.strip().lower() != "yes":
@@ -276,12 +257,10 @@ def main() -> None:
         print("Update: will apply diffs to existing clients")
     print()
 
-    db = get_db(args.project)
-
     results: list[dict[str, str]] = []
     for entry in entries:
         try:
-            r = process_entry(entry, db, args.project, env, args.dry_run, args.update)
+            r = process_entry(entry, args.project, env, args.dry_run, args.update)
             results.append(r)
         except Exception as exc:
             name = entry.get("name", "???")
