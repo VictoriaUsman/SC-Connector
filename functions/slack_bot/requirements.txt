@@ -1,5 +1,5 @@
 functions-framework==3.*
 google-cloud-bigquery==3.*
-google-cloud-firestore==2.*
 google-cloud-secret-manager==2.*
 requests>=2.31,<3
+psycopg2-binary==2.*
