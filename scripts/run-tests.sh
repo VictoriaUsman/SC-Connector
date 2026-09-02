@@ -24,7 +24,7 @@ case "$COMMAND" in
   all)
     log "Running all tests..."
     echo ""
-    python -m pytest functions/ -v --tb=short
+    python -m pytest tests/ -v --tb=short
     ;;
 
   test-fn|function)
@@ -34,21 +34,28 @@ case "$COMMAND" in
       exit 1
     fi
 
-    TEST_DIR="$PROJECT_ROOT/functions/$FUNCTION_NAME"
-    if [[ ! -d "$TEST_DIR" ]]; then
-      error "Function directory not found: $TEST_DIR"
+    # Tests live in the top-level tests/ directory, not colocated under
+    # functions/ — this is a best-effort exact-name match (test_<name>.py),
+    # not a guaranteed 1:1 mapping: several functions (create_report,
+    # poll_status, download_upload, fetch_api) are covered indirectly by
+    # differently-named test files instead of a dedicated test_<name>.py.
+    TEST_FILE="$PROJECT_ROOT/tests/test_$FUNCTION_NAME.py"
+    if [[ ! -f "$TEST_FILE" ]]; then
+      error "No tests/test_$FUNCTION_NAME.py found."
+      echo "This function may be covered by a differently-named test file instead."
+      echo "Try: python -m pytest tests/ -k $FUNCTION_NAME -v"
       exit 1
     fi
 
     log "Running tests for function '$FUNCTION_NAME'..."
     echo ""
-    python -m pytest "$TEST_DIR" -v --tb=short
+    python -m pytest "$TEST_FILE" -v --tb=short
     ;;
 
   integration)
     log "Running integration tests..."
     echo ""
-    python -m pytest functions/ -v --tb=short -m integration
+    python -m pytest tests/ -v --tb=short -m integration
     ;;
 
   *)
