@@ -52,20 +52,16 @@ check "Pulumi stack is configured" \
 check "GCP project is accessible" \
   gcloud projects describe "$GCP_PROJECT"
 
-# 3. Firestore
-check "Firestore is accessible" \
-  gcloud firestore databases describe --project="$GCP_PROJECT"
-
-# 4. Cloud Scheduler
+# 3. Cloud Scheduler
 check "Cloud Scheduler jobs exist" \
   bash -c "gcloud scheduler jobs list --project='$GCP_PROJECT' --location='$GCP_REGION' --format='value(name)' 2>/dev/null | head -1 | grep -q ."
 
-# 5. Cloud Workflow
+# 4. Cloud Workflow
 WORKFLOW_NAME="kalilos-${STACK}-report-flow"
 check "Cloud Workflow '$WORKFLOW_NAME' is deployed" \
   gcloud workflows describe "$WORKFLOW_NAME" --project="$GCP_PROJECT" --location="$GCP_REGION"
 
-# 6. Cloud Functions (all deployed functions — keep in sync with infra FUNCTION_DEFS)
+# 5. Cloud Functions (all deployed functions — keep in sync with infra FUNCTION_DEFS)
 EXPECTED_FUNCTIONS=(
   "auth" "scheduler" "create-report" "poll-status" "download-upload" "api"
   "ingest-bigquery" "event-report-scheduler" "slack-bot" "daily-recap"
@@ -76,12 +72,12 @@ for fn in "${EXPECTED_FUNCTIONS[@]}"; do
     gcloud functions describe "$FULL_NAME" --project="$GCP_PROJECT" --region="$GCP_REGION" --gen2
 done
 
-# 6b. API actually responds over HTTP (deploy can "pass" while the app is broken)
+# 5b. API actually responds over HTTP (deploy can "pass" while the app is broken)
 API_URL="$(pulumi stack output api_url 2>/dev/null || true)"
 if [[ -n "$API_URL" ]]; then
   check "API /health responds 200" \
     bash -c "curl -fsS --max-time 15 -o /dev/null '${API_URL%/}/health'"
-  check "API /health?deep=1 readiness (Firestore reachable)" \
+  check "API /health?deep=1 readiness (Postgres/Supabase reachable)" \
     bash -c "curl -fsS --max-time 20 -o /dev/null '${API_URL%/}/health?deep=1'"
 else
   CHECKS+=("  ✗  API /health responds 200 (could not resolve api_url)")

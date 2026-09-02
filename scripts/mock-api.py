@@ -2,7 +2,7 @@
 """Lightweight mock backend for local frontend dev/demo.
 
 Implements the REST surface `frontend/src/lib/api.ts` calls against
-`VITE_API_URL`, backed by a JSON file instead of real Firestore/GCP.
+`VITE_API_URL`, backed by a JSON file instead of real Supabase/GCP.
 No Google Cloud credentials, no emulator, no Java required.
 
 Usage:
@@ -12,8 +12,8 @@ Then in frontend/.env:
     VITE_API_URL=http://localhost:8080
     VITE_API_KEY=
 
-Note: the dashboard's live job table uses a direct Firestore listener
-(firebase/firestore `onSnapshot`), not this REST API, so it will stay
+Note: the dashboard's live job table uses a direct Supabase Realtime
+subscription (`postgres_changes`), not this REST API, so it will stay
 empty/erroring under the mock backend. Everything routed through
 `src/lib/api.ts` (Clients, Schedules, Events, Bot Configs, Ads
 profiles, On-Demand) is covered here.

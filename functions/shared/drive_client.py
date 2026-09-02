@@ -156,7 +156,6 @@ def _folder_exists(folder_id: str) -> bool:
         raise
 
 
-_LOCK_COLLECTION = "_drive_folder_locks"
 _LOCK_POLL_INTERVAL = 1.0
 _LOCK_TIMEOUT_SECS = 15
 
