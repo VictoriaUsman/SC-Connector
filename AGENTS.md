@@ -115,9 +115,9 @@ kalilos-connector/
 │   ├── deploy-frontend.sh            # Firebase deploy wrapper
 │   ├── deploy-mcp.sh                 # Build + deploy MCP server to Cloud Run
 │   ├── health-check.sh               # Post-deploy verification (12 checks)
-│   ├── seed-firestore.sh             # Seed test data
+│   ├── seed-test-client.py           # Seed test data
 │   ├── rotate-secrets.sh             # Secret rotation helper
-│   └── wipe-firestore.py             # Wipe all Firestore collections
+│   └── wipe-supabase.py              # Wipe Supabase tables (schedules/jobs/locks)
 ├── infra/
 │   ├── __main__.py                   # Pulumi entry point
 │   ├── Pulumi.yaml                   # Pulumi project config
@@ -445,7 +445,7 @@ Re-running is idempotent — removes existing test schedules and recreates from 
 
 ### Add a new client
 
-Use the frontend Clients page, or seed via `make seed-firestore`. The create form accepts name, marketplace IDs, and optionally SP API Refresh Token and Ads API Profile ID (auto-connected on creation). Credentials can also be added later via the row dropdown menu.
+Use the frontend Clients page, or seed via `make seed-test-client`. The create form accepts name, marketplace IDs, and optionally SP API Refresh Token and Ads API Profile ID (auto-connected on creation). Credentials can also be added later via the row dropdown menu.
 
 ### Deploy to staging
 

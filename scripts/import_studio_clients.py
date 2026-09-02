@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 os.environ.setdefault("GCP_PROJECT", "kalilos-connector-staging")
 os.environ.setdefault("ENVIRONMENT", "staging")
@@ -112,6 +113,13 @@ def diff_fields(existing: dict[str, Any], expected: dict[str, Any]) -> dict[str,
         if old_val != new_val:
             diffs[key] = (old_val, new_val)
     return diffs
+
+
+def _redacted_db_target(url: str) -> str:
+    """Host + database name only, no credentials — safe to print before a
+    destructive confirmation prompt or in status output."""
+    parsed = urlparse(url)
+    return f"{parsed.hostname}{parsed.path}"
 
 
 def process_entry(
@@ -237,12 +245,21 @@ def main() -> None:
     os.environ["GCP_PROJECT"] = args.project
     os.environ["ENVIRONMENT"] = env
 
-    if not os.environ.get("SUPABASE_DB_URL"):
+    db_url = os.environ.get("SUPABASE_DB_URL")
+    if not db_url:
         print("Error: SUPABASE_DB_URL is not set.", file=sys.stderr)
         sys.exit(1)
 
-    if env == "prod" and not args.dry_run:
-        confirm = input(f"⚠ You are about to write to PRODUCTION ({args.project}). Type 'yes' to confirm: ")
+    db_target = _redacted_db_target(db_url)
+
+    if not args.dry_run:
+        # There is no staging/prod split for the Supabase database itself
+        # (one shared project for the whole app) — --project only controls
+        # which GCP project Secret Manager calls hit, so it can't be used
+        # to distinguish a "safe" write from a real one. Always confirm
+        # before a live write instead, and show the actual database being
+        # touched rather than the GCP project string.
+        confirm = input(f"⚠ You are about to write to Supabase ({db_target}). Type 'yes' to confirm: ")
         if confirm.strip().lower() != "yes":
             print("Aborted.")
             sys.exit(1)
@@ -251,7 +268,8 @@ def main() -> None:
         entries: list[dict[str, Any]] = json.load(f)
 
     print(f"Source: {args.source} ({len(entries)} entries)")
-    print(f"Target: {args.project} (env={env})")
+    print(f"Secret Manager project: {args.project} (env={env})")
+    print(f"Supabase target: {db_target}")
     print(f"Mode:   {'DRY RUN' if args.dry_run else 'LIVE'}")
     if args.update:
         print("Update: will apply diffs to existing clients")

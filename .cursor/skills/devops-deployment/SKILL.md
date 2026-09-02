@@ -147,8 +147,8 @@ make local-fn NAME=create_report PORT=8080
 # Run the React frontend dev server
 make local-frontend
 
-# Seed Firestore with test data
-make seed-firestore
+# Seed Supabase with test data
+make seed-test-client
 ```
 
 ### Testing a Function Locally

@@ -21,7 +21,7 @@ Key targets:
 | `make deploy-frontend` | Build and deploy frontend to Firebase    |
 | `make deploy-all`  | Deploy infra then frontend, in order         |
 | `make health`      | Run post-deploy health checks (12 checks)    |
-| `make seed-firestore` | Seed test data into Firestore             |
+| `make seed-test-client` | Seed test data into Supabase              |
 
 ## Pulumi Backend
 

@@ -16,6 +16,7 @@ import os
 import sys
 
 import psycopg2
+from urllib.parse import urlparse
 
 # Every table this script is allowed to target — validated before any SQL is
 # built, so a typo'd or malicious --tables value can never reach a query.
@@ -26,7 +27,11 @@ ALLOWED_TABLES = {
 }
 
 DEFAULT_TABLES = ["schedules", "jobs", "drive_folder_locks"]
-ALL_TABLES = DEFAULT_TABLES + ["clients"]
+# clients cascades ON DELETE to bot_configs (bot_configs.client_id
+# REFERENCES clients(id) ON DELETE CASCADE in schema.sql) — list it
+# explicitly so it's named in the confirmation prompt and counted in the
+# output, instead of vanishing silently as a side effect of wiping clients.
+ALL_TABLES = DEFAULT_TABLES + ["bot_configs", "clients"]
 
 
 def delete_table(conn, name: str) -> int:
@@ -36,6 +41,13 @@ def delete_table(conn, name: str) -> int:
         deleted = cur.rowcount
     conn.commit()
     return deleted
+
+
+def _redacted_db_target(url: str) -> str:
+    """Host + database name only, no credentials — safe to print before a
+    destructive confirmation prompt."""
+    parsed = urlparse(url)
+    return f"{parsed.hostname}{parsed.path}"
 
 
 def main() -> None:
@@ -67,11 +79,16 @@ def main() -> None:
         print("SUPABASE_DB_URL is not set.", file=sys.stderr)
         sys.exit(1)
 
+    db_target = _redacted_db_target(db_url)
+
+    print(f"Target: {db_target}")
     print(f"Tables: {', '.join(tables)}")
+    if args.all:
+        print("(--all includes bot_configs — clients cascades to it via a foreign key)")
     print()
 
     if not args.yes:
-        answer = input("Delete ALL rows in these tables? [y/N] ")
+        answer = input(f"Delete ALL rows in these tables on {db_target}? [y/N] ")
         if answer.lower() != "y":
             print("Aborted.")
             sys.exit(0)

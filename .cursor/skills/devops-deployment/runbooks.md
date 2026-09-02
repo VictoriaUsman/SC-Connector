@@ -28,7 +28,7 @@
 
 4. **Or seed via CLI:**
    ```bash
-   make seed-firestore
+   make seed-test-client
    ```
 
 5. **Create schedules:**
@@ -221,7 +221,7 @@
 
 1. Client configs and schedules must be re-entered via the frontend or seed script.
 2. Job history is lost but reports in Google Drive are unaffected.
-3. Run `make seed-firestore` if test data scripts are up to date.
+3. Run `make seed-test-client` if test data scripts are up to date.
 
 ### If Google Drive Files Are Deleted
 
