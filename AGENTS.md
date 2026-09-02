@@ -410,8 +410,8 @@ Not all reports support all timeframe strategies. Key constraints:
 `tests/seed_report_test_schedules.py` creates test schedules covering all report types:
 
 ```bash
-python3 tests/seed_report_test_schedules.py                    # staging (default)
-python3 tests/seed_report_test_schedules.py --project kalilos-connector-prod --client acme
+python3 tests/seed_report_test_schedules.py
+python3 tests/seed_report_test_schedules.py --client acme
 python3 tests/seed_report_test_schedules.py --dry-run          # preview without writing
 ```
 

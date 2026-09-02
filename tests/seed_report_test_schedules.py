@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create (or update) test schedules in Firestore that cover every report type.
+"""Create (or update) test schedules in Supabase that cover every report type.
 
 Reports are grouped by their timeframe requirements:
   - "daily"   → yesterday strategy (most SP API reports, all Ads reports)
@@ -9,7 +9,7 @@ Reports are grouped by their timeframe requirements:
 Each group becomes one test schedule per API source (sp_api / ads_api).
 
 Usage:
-    python tests/seed_report_test_schedules.py [--project PROJECT] [--client CLIENT_ID] [--dry-run]
+    python tests/seed_report_test_schedules.py [--client CLIENT_ID] [--dry-run]
 
 Re-running the script is idempotent — it deletes any existing "test-report-*"
 schedules and recreates them from scratch based on the current report registry.
@@ -20,13 +20,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime, timezone
 
 # Allow imports from functions/
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
 from shared.ads_report_config import ADS_REPORT_TYPES
 from shared.api_operations import API_OPERATIONS
+from shared.db import create_schedule, delete_schedule, list_schedules
 from shared.removed_reports import REMOVED_SP_REPORT_TYPES
 from shared.vendor_reports import VENDOR_SP_REPORT_TYPES
 
@@ -114,7 +114,6 @@ def _base_schedule(
     timeframe: dict,
     folder_name: str,
 ) -> dict:
-    now = datetime.now(timezone.utc)
     return {
         "name": name,
         "client_ids": client_ids,
@@ -129,8 +128,6 @@ def _base_schedule(
         "reconciliation_days": [],
         "report_params": {},
         "is_active": False,
-        "created_at": now,
-        "updated_at": now,
     }
 
 
@@ -203,38 +200,32 @@ def build_test_schedules(
 
 
 # ---------------------------------------------------------------------------
-# Firestore operations
+# Supabase operations
 # ---------------------------------------------------------------------------
 
 TEST_SCHEDULE_PREFIX = "test-report-"
 
 
-def sync_to_firestore(
-    project: str,
+def sync_to_supabase(
     schedules: list[dict],
     dry_run: bool = False,
 ) -> None:
-    from google.cloud import firestore
-
-    db = firestore.Client(project=project)
-    coll = db.collection("schedules")
-
     existing = [
-        doc for doc in coll.stream()
-        if (doc.to_dict().get("folder_name") or "").startswith("test-reports-")
+        s for s in list_schedules()
+        if (s.get("folder_name") or "").startswith("test-reports-")
     ]
 
     if existing:
         print(f"  Removing {len(existing)} existing test schedule(s)...")
         if not dry_run:
-            for doc in existing:
-                doc.reference.delete()
+            for s in existing:
+                delete_schedule(s["id"])
 
     for sched in schedules:
         report_count = len(sched["report_types"])
         print(f"  + {sched['name']}  ({report_count} report types, {sched['timeframe']['strategy']})")
         if not dry_run:
-            coll.add(sched)
+            create_schedule(sched)
 
     skipped = classify_sp_reports()["skip"]
     if skipped:
@@ -247,11 +238,7 @@ def sync_to_firestore(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Seed Firestore with test schedules covering all report types",
-    )
-    parser.add_argument(
-        "--project",
-        default=os.environ.get("GCP_PROJECT", "kalilos-connector-staging"),
+        description="Seed Supabase with test schedules covering all report types",
     )
     parser.add_argument(
         "--client",
@@ -270,7 +257,10 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print without writing")
     args = parser.parse_args()
 
-    print(f"Project:     {args.project}")
+    if not os.environ.get("SUPABASE_DB_URL"):
+        print("Error: SUPABASE_DB_URL is not set.", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Client:      {args.client}")
     print(f"Marketplace: {args.marketplace}")
     print()
@@ -284,7 +274,7 @@ def main() -> None:
     total_reports = sum(len(s["report_types"]) for s in schedules)
     print(f"Creating {len(schedules)} test schedule(s) covering {total_reports} report types:\n")
 
-    sync_to_firestore(args.project, schedules, dry_run=args.dry_run)
+    sync_to_supabase(schedules, dry_run=args.dry_run)
 
     if args.dry_run:
         print("\n  (dry run — no changes written)")
