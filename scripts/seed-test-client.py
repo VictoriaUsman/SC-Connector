@@ -1,47 +1,47 @@
 #!/usr/bin/env python3
-"""Seed Firestore with a test client for e2e testing.
+"""Seed Supabase with a test client for e2e testing.
 
 Usage:
-    python scripts/seed-firestore.py [--project PROJECT] [--client-id ID] [--client-name NAME]
+    SUPABASE_DB_URL=postgresql://... python scripts/seed-test-client.py [--client-id ID] [--client-name NAME] [--env staging]
 
-Requires: google-cloud-firestore
-    pip install google-cloud-firestore
+Requires: psycopg2-binary
+    pip install psycopg2-binary
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timezone
+import sys
 
-from google.cloud import firestore
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
+
+from shared.db import upsert_client
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed Firestore with test data")
-    parser.add_argument("--project", default=os.environ.get("GCP_PROJECT", "kalilos-connector-staging"))
+    parser = argparse.ArgumentParser(description="Seed Supabase with test client data")
     parser.add_argument("--client-id", default="test-client")
     parser.add_argument("--client-name", default="Test Client")
     parser.add_argument("--env", default=os.environ.get("ENVIRONMENT", "staging"))
     args = parser.parse_args()
 
-    db = firestore.Client(project=args.project)
-    now = datetime.now(timezone.utc)
+    if not os.environ.get("SUPABASE_DB_URL"):
+        print("SUPABASE_DB_URL is not set.", file=sys.stderr)
+        sys.exit(1)
+
     env = args.env
 
     # --- Test client ---
-    client_ref = db.collection("clients").document(args.client_id)
     client_data = {
         "name": args.client_name,
         "marketplaces": ["US"],
         "is_active": True,
         "sp_api_secret_name": f"kalilos-{env}-sp-api-{args.client_id}",
         "ads_api_secret_name": f"kalilos-{env}-ads-api-{args.client_id}",
-        "created_at": now,
-        "updated_at": now,
     }
-    client_ref.set(client_data, merge=True)
-    print(f"✓ Client '{args.client_id}' upserted in clients collection")
+    upsert_client(args.client_id, client_data)
+    print(f"✓ Client '{args.client_id}' upserted in Supabase clients table")
     print(f"  SP API secret ref: kalilos-{env}-sp-api-{args.client_id}")
     print(f"  Ads API secret ref: kalilos-{env}-ads-api-{args.client_id}")
 

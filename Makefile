@@ -104,8 +104,8 @@ test-fn:  ## Test a specific function. Usage: make test-fn NAME=create_report
 test-integration:  ## Run integration tests against current environment
 	@./scripts/run-tests.sh integration
 
-seed-firestore:  ## Seed Firestore with test client. Usage: make seed-firestore [CLIENT_ID=test-client]
-	@python3 ./scripts/seed-firestore.py --client-id $(or $(CLIENT_ID),test-client)
+seed-test-client:  ## Seed Supabase with test client. Usage: make seed-test-client [CLIENT_ID=test-client]
+	@python3 ./scripts/seed-test-client.py --client-id $(or $(CLIENT_ID),test-client)
 
 wipe-firestore:  ## Wipe Firestore data (schedules, jobs, locks). Add ALL=1 to also wipe clients
 	@python3 ./scripts/wipe-firestore.py $(if $(ALL),--all,)
@@ -125,5 +125,5 @@ health:  ## Run health checks against current environment
 	local-secret-set local-secret-get local-secret-list \
 	logs-fn logs-workflow workflows-status workflows-cancel \
 	local-fn local-frontend local-mcp local-mcp-http local-daily-recap \
-	test test-fn test-integration seed-firestore wipe-firestore workflow-trigger \
+	test test-fn test-integration seed-test-client wipe-firestore workflow-trigger \
 	health

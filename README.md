@@ -134,7 +134,7 @@ Run `make help` to see all available targets. Key commands:
 | `make deploy-all` | Deploy infrastructure + frontend |
 | `make health` | Run post-deploy health checks |
 | `make test` | Run all tests |
-| `make seed-firestore` | Seed test data |
+| `make seed-test-client` | Seed test data |
 | `make logs-fn NAME=x` | Tail function logs |
 
 ## Schedule Configuration
