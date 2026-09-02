@@ -8,6 +8,7 @@ type JobsFilter = {
   clientId?: string;
   scheduleId?: string;
   status?: string;
+  executionDate?: string;
   max?: number;
 };
 
@@ -16,11 +17,27 @@ async function fetchJobs(filter: JobsFilter): Promise<Job[]> {
   if (filter.clientId) query = query.eq("client_id", filter.clientId);
   if (filter.scheduleId) query = query.eq("schedule_id", filter.scheduleId);
   if (filter.status) query = query.eq("status", filter.status);
-  query = query.limit(filter.max ?? 100);
+  if (filter.executionDate) query = query.eq("execution_date", filter.executionDate);
+  // No default limit: every current caller passes `max` explicitly. Leaving
+  // it unset (rather than defaulting to 100) lets useRunJobs reuse this
+  // function without an artificial cap on an unbounded query.
+  if (filter.max) query = query.limit(filter.max);
 
   const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as Job[];
+}
+
+/** Normalize a Supabase/PostgREST error (a plain {message, details, hint,
+ * code} object, not an Error instance) into a real Error so `error instanceof
+ * Error` and `.stack` behave as callers of these hooks would expect. */
+function toError(err: unknown): Error {
+  if (err instanceof Error) return err;
+  const message =
+    typeof err === "object" && err !== null && "message" in err
+      ? String((err as { message: unknown }).message)
+      : String(err);
+  return new Error(message, { cause: err });
 }
 
 /**
@@ -48,6 +65,7 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
     }
 
     let cancelled = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
     async function load(showLoading: boolean) {
       if (showLoading) setLoading(true);
@@ -55,11 +73,12 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
         const data = await fetchJobs({ clientId, scheduleId, status, max });
         if (!cancelled) {
           setJobs(data);
+          setError(null);
           setLoading(false);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err as Error);
+          setError(toError(err));
           setLoading(false);
         }
       }
@@ -75,6 +94,9 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
     // extra refetch when an unrelated job row changes (acceptable at this
     // table's scale). `showLoading` is false on these refetches so a
     // realtime event doesn't flash the whole list back to a loading state.
+    // A short trailing debounce collapses a burst of events (e.g. a run's
+    // several status transitions landing within milliseconds of each
+    // other) into a single refetch instead of one per row change.
     //
     // The channel topic uses `useId()` alone (not the filter values) so
     // each mounted hook instance gets its own channel — Supabase's
@@ -84,7 +106,8 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
     const channel = supabase
       .channel(`jobs-realtime-${instanceId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => {
-        load(false);
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => load(false), 200);
       })
       .subscribe((subStatus, err) => {
         if (err) {
@@ -96,6 +119,7 @@ export function useRealtimeJobs(opts?: JobsFilter | undefined) {
 
     return () => {
       cancelled = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
   }, [enabled, clientId, scheduleId, status, max, instanceId]);
@@ -121,23 +145,23 @@ export function useRunJobs(scheduleId: string | undefined, executionDate: string
     }
 
     let cancelled = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
     async function load(showLoading: boolean) {
       if (showLoading) setLoading(true);
-      const { data, error: err } = await supabase
-        .from("jobs")
-        .select("*")
-        .eq("schedule_id", scheduleId)
-        .eq("execution_date", executionDate)
-        .order("started_at", { ascending: false });
-
-      if (cancelled) return;
-      if (err) {
-        setError(err as unknown as Error);
-      } else {
-        setJobs((data ?? []) as Job[]);
+      try {
+        const data = await fetchJobs({ scheduleId, executionDate });
+        if (!cancelled) {
+          setJobs(data);
+          setError(null);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(toError(err));
+          setLoading(false);
+        }
       }
-      setLoading(false);
     }
 
     load(true);
@@ -145,7 +169,8 @@ export function useRunJobs(scheduleId: string | undefined, executionDate: string
     const channel = supabase
       .channel(`run-jobs-realtime-${instanceId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, () => {
-        load(false);
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => load(false), 200);
       })
       .subscribe((subStatus, err) => {
         if (err) {
@@ -157,6 +182,7 @@ export function useRunJobs(scheduleId: string | undefined, executionDate: string
 
     return () => {
       cancelled = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
   }, [scheduleId, executionDate, instanceId]);

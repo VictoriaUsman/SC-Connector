@@ -98,6 +98,8 @@ export interface Job {
   report_date?: string;
   report_end_date?: string;
   trigger?: string;
+  ingest_status?: string;
+  ingest_error?: string;
   started_at?: string;
   completed_at?: string;
 }
