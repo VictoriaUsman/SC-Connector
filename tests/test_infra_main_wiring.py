@@ -33,21 +33,40 @@ def _calls_named(func_name: str) -> list[ast.Call]:
 
 class TestSupabaseSecretWiring:
     def test_workflow_create_receives_the_supabase_secret(self):
+        """workflow.create(...) specifically (not any other .create(...)
+        call in this file) must receive secret_resources["supabase-service-key"]."""
         calls = _calls_named("create")
         matches = [
             c for c in calls
-            if any(
+            if isinstance(c.func, ast.Attribute)
+            and isinstance(c.func.value, ast.Name)
+            and c.func.value.id == "workflow"
+            and any(
                 isinstance(arg, ast.Subscript)
                 and isinstance(arg.value, ast.Name)
                 and arg.value.id == "secret_resources"
+                and isinstance(arg.slice, ast.Constant)
+                and arg.slice.value == "supabase-service-key"
                 for arg in c.args
             )
         ]
-        assert matches, "workflow.create(...) must receive secret_resources[...]"
+        assert matches, 'workflow.create(...) must receive secret_resources["supabase-service-key"]'
 
-    def test_bind_workflow_secret_access_is_called(self):
+    def test_bind_workflow_secret_access_receives_the_same_secret(self):
+        """bind_workflow_secret_access(...) must be called with
+        secret_resources["supabase-service-key"] — the SAME key
+        workflow.create(...) receives, not a different secret."""
         calls = _calls_named("bind_workflow_secret_access")
         assert len(calls) == 1
+        matches = [
+            arg for arg in calls[0].args
+            if isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Name)
+            and arg.value.id == "secret_resources"
+            and isinstance(arg.slice, ast.Constant)
+            and arg.slice.value == "supabase-service-key"
+        ]
+        assert matches, 'bind_workflow_secret_access(...) must receive secret_resources["supabase-service-key"]'
 
 
 class TestTouchedInfraFilesCompile:

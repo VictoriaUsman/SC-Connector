@@ -60,7 +60,7 @@ def create(
         # isn't a GCP-provided built-in — it has to be configured
         # explicitly. Set it with: pulumi config set kalilos:supabase-url <url>
         user_env_vars={
-            "SUPABASE_URL": config.get("supabase-url") or "",
+            "SUPABASE_URL": config.require("supabase-url"),
         },
         opts=pulumi.ResourceOptions(depends_on=depends_on),
     )

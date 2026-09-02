@@ -57,4 +57,15 @@ class TestSupabaseUrlEnvVarWired:
 
     def test_supabase_url_read_from_kalilos_config(self):
         source = _WORKFLOW_PY.read_text()
-        assert 'config.get("supabase-url")' in source
+        assert 'config.require("supabase-url")' in source
+
+    def test_secret_name_placeholder_sourced_from_secret_id(self):
+        """The Output.all(...) kwarg feeding the __SUPABASE_SECRET_NAME__
+        replace call must read supabase_secret.secret_id (the short id
+        report_flow.yaml's placeholder expects), not .name (the fully
+        qualified projects/.../secrets/... path, which would double up
+        the prefix when substituted into the YAML's own
+        "projects/" + ... + "/secrets/" + placeholder string)."""
+        source = _WORKFLOW_PY.read_text()
+        assert "secret_name=supabase_secret.secret_id" in source
+        assert "secret_name=supabase_secret.name" not in source
