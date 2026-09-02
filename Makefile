@@ -107,8 +107,8 @@ test-integration:  ## Run integration tests against current environment
 seed-test-client:  ## Seed Supabase with test client. Usage: make seed-test-client [CLIENT_ID=test-client]
 	@python3 ./scripts/seed-test-client.py --client-id $(or $(CLIENT_ID),test-client)
 
-wipe-firestore:  ## Wipe Firestore data (schedules, jobs, locks). Add ALL=1 to also wipe clients
-	@python3 ./scripts/wipe-firestore.py $(if $(ALL),--all,)
+wipe-supabase:  ## Wipe Supabase data (schedules, jobs, locks). Add ALL=1 to also wipe clients
+	@python3 ./scripts/wipe-supabase.py $(if $(ALL),--all,)
 
 workflow-trigger: check-auth  ## Trigger a workflow. Usage: make workflow-trigger API_SOURCE=sp_api CLIENT_ID=test-client MARKETPLACE=US REPORT_TYPE=GET_FLAT_FILE_OPEN_LISTINGS_DATA [START_DATE=2026-03-01] [END_DATE=2026-03-15]
 	@./scripts/trigger-workflow.sh $(API_SOURCE) $(CLIENT_ID) $(MARKETPLACE) $(REPORT_TYPE) $(START_DATE) $(END_DATE)
@@ -125,5 +125,5 @@ health:  ## Run health checks against current environment
 	local-secret-set local-secret-get local-secret-list \
 	logs-fn logs-workflow workflows-status workflows-cancel \
 	local-fn local-frontend local-mcp local-mcp-http local-daily-recap \
-	test test-fn test-integration seed-test-client wipe-firestore workflow-trigger \
+	test test-fn test-integration seed-test-client wipe-supabase workflow-trigger \
 	health
