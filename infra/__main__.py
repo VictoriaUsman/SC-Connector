@@ -53,7 +53,10 @@ fns = functions.create(env, project, region, source_bucket, sas["functions"], en
 # ---------------------------------------------------------------------------
 # 5. Cloud Workflow (needs function URLs for templating)
 # ---------------------------------------------------------------------------
-wf = workflow.create(env, project, region, sas["workflow"], fns, enabled_apis)
+wf = workflow.create(
+    env, project, region, sas["workflow"], fns,
+    secret_resources["supabase-service-key"], enabled_apis,
+)
 
 # ---------------------------------------------------------------------------
 # 6. Cloud Scheduler (triggers the scheduler function on a cron)
@@ -67,6 +70,7 @@ scheduler_jobs = scheduler.create(
 # 7. Function-level IAM (who can invoke what)
 # ---------------------------------------------------------------------------
 iam.bind_invokers(env, project, region, fns, sas)
+iam.bind_workflow_secret_access(env, project, sas["workflow"], secret_resources["supabase-service-key"])
 
 # ---------------------------------------------------------------------------
 # 8. MCP Server (Cloud Run)
