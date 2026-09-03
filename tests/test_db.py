@@ -644,6 +644,30 @@ class TestCreateEvent:
         assert "upcoming" in params
         assert False in params  # manually_activated default
 
+    def test_empty_prior_event_id_becomes_null(self):
+        """Regression: the frontend's "no prior event" state sends '', which
+        Postgres rejects for the uuid column ("invalid input syntax for type
+        uuid") — this used to 500 every create with no prior event picked."""
+        cur = _FakeCursor([(_desc("id"), [("e1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.create_event({
+                "name": "Prime Day", "start_date": "2026-07-08", "end_date": "2026-07-09",
+                "prior_event_id": "",
+            })
+        _, params = cur.queries[0]
+        assert "" not in params
+        assert None in params
+
+    def test_real_prior_event_id_passes_through(self):
+        cur = _FakeCursor([(_desc("id"), [("e1",)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.create_event({
+                "name": "Prime Day", "start_date": "2026-07-08", "end_date": "2026-07-09",
+                "prior_event_id": "prime_day_2025",
+            })
+        _, params = cur.queries[0]
+        assert "prime_day_2025" in params
+
 
 class TestUpdateEvent:
     def test_sets_updated_at_and_updates_columns(self):
@@ -653,6 +677,16 @@ class TestUpdateEvent:
         query, params = cur.queries[0]
         sql_text = str(query)
         assert "status" in sql_text and "updated_at" in sql_text
+
+    def test_empty_prior_event_id_becomes_null(self):
+        """Regression: clearing the prior-event link (frontend sends '')
+        used to 500 the same way a create with no prior event did."""
+        cur = _FakeCursor([(None, None)])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.update_event("e1", {"prior_event_id": ""})
+        _, params = cur.queries[0]
+        assert "" not in params
+        assert None in params
 
 
 class TestDeleteEvent:

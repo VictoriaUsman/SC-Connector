@@ -76,53 +76,60 @@ def _row_to_dict(cur, row) -> dict[str, Any]:
 
 
 def _merge_upsert(table: str, key_col: str, key_val: Any, data: dict[str, Any]) -> None:
-    """INSERT ... ON CONFLICT (key_col) DO UPDATE using only the columns
-    present in `data`, mirroring Firestore's `.set(data, merge=True)`:
-    an existing row's other columns (including created_at) are left
-    untouched, and a brand-new row picks up the schema's own DEFAULTs
-    (created_at now(), is_active true, etc.) for every column `data`
-    doesn't specify — replacing the original's Python-side
-    `if not doc_ref.get().exists: data.setdefault(...)` pre-check, which a
-    schema DEFAULT makes unnecessary.
+    """UPDATE the given columns if the row exists, else INSERT it — mirroring
+    Firestore's `.set(data, merge=True)`: an existing row's other columns
+    (including created_at) are left untouched, and a brand-new row picks up
+    the schema's own DEFAULTs (created_at now(), is_active true, etc.) for
+    every column `data` doesn't specify.
+
+    This used to be a single `INSERT ... ON CONFLICT (key_col) DO UPDATE`,
+    which reads as equivalent but isn't: Postgres validates NOT NULL/CHECK
+    constraints on the *proposed* INSERT tuple before it ever evaluates
+    ON CONFLICT, so any partial update omitting a NOT-NULL column with no
+    default (e.g. clients.name) raised even though the row already existed
+    and the update itself never touched that column. An explicit existence
+    check + real UPDATE avoids proposing a tuple for the other columns at
+    all. This does reopen a narrow INSERT/INSERT race for a genuinely new
+    key under concurrent writers — acceptable here (low-volume admin
+    writes, not a high-concurrency path).
     """
     import psycopg2.sql as sql
     from psycopg2.extras import Json
 
     data = {k: v for k, v in data.items() if k != key_col}
-
     jsonb_cols = _JSONB_COLUMNS.get(table, set())
-    columns = [key_col] + list(data.keys())
-    values: list[Any] = [key_val]
-    for col, val in data.items():
-        values.append(Json(val) if col in jsonb_cols and val is not None else val)
 
-    insert_cols = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
-    placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
+    def _prepared(col: str, val: Any) -> Any:
+        return Json(val) if col in jsonb_cols and val is not None else val
 
-    if data:
-        conflict_action = sql.SQL("DO UPDATE SET {updates}").format(
-            updates=sql.SQL(", ").join(
-                sql.SQL("{} = EXCLUDED.{}").format(sql.Identifier(c), sql.Identifier(c))
-                for c in data.keys()
-            )
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT 1 FROM {table} WHERE {key} = %s").format(
+                table=sql.Identifier(table), key=sql.Identifier(key_col)
+            ),
+            [key_val],
+        )
+        exists = cur.fetchone() is not None
+
+    if exists:
+        if not data:
+            return  # nothing to change — true no-op
+        set_clause = sql.SQL(", ").join(
+            sql.SQL("{} = %s").format(sql.Identifier(c)) for c in data.keys()
+        )
+        values = [_prepared(c, v) for c, v in data.items()] + [key_val]
+        query = sql.SQL("UPDATE {table} SET {set_clause} WHERE {key} = %s").format(
+            table=sql.Identifier(table), set_clause=set_clause, key=sql.Identifier(key_col)
         )
     else:
-        # Nothing besides the key column to write. A brand-new key still needs
-        # the INSERT (to create the row with schema DEFAULTs); an existing key
-        # has nothing to update, so DO NOTHING avoids emitting an empty
-        # `DO UPDATE SET` clause, which is invalid SQL.
-        conflict_action = sql.SQL("DO NOTHING")
-
-    query = sql.SQL(
-        "INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
-        "ON CONFLICT ({key}) {conflict_action}"
-    ).format(
-        table=sql.Identifier(table),
-        cols=insert_cols,
-        placeholders=placeholders,
-        key=sql.Identifier(key_col),
-        conflict_action=conflict_action,
-    )
+        columns = [key_col] + list(data.keys())
+        values = [key_val] + [_prepared(c, v) for c, v in data.items()]
+        insert_cols = sql.SQL(", ").join(sql.Identifier(c) for c in columns)
+        placeholders = sql.SQL(", ").join(sql.Placeholder() * len(columns))
+        query = sql.SQL("INSERT INTO {table} ({cols}) VALUES ({placeholders})").format(
+            table=sql.Identifier(table), cols=insert_cols, placeholders=placeholders
+        )
 
     conn = _get_connection()
     with conn.cursor() as cur:
@@ -633,6 +640,12 @@ def create_event(data: dict[str, Any]) -> str:
     data.setdefault("manually_activated", False)
     data.setdefault("activated_at", None)
     data.setdefault("created_at", datetime.now(timezone.utc))
+    # prior_event_id is a nullable uuid column, but the frontend's "no prior
+    # event" / "clear the link" state is the empty string, not None/absent
+    # (see frontend/src/lib/api.test.ts). Postgres rejects '' outright for a
+    # uuid column ("invalid input syntax for type uuid"), so normalize here.
+    if data.get("prior_event_id") == "":
+        data["prior_event_id"] = None
 
     jsonb_cols = _JSONB_COLUMNS.get("events", set())
     columns = list(data.keys())
@@ -654,6 +667,10 @@ def create_event(data: dict[str, Any]) -> str:
 def update_event(event_id: str, data: dict[str, Any]) -> None:
     data = dict(data)
     data["updated_at"] = datetime.now(timezone.utc)
+    # See the matching comment in create_event: '' means "clear the link",
+    # not a literal uuid.
+    if data.get("prior_event_id") == "":
+        data["prior_event_id"] = None
     _merge_upsert_update_only("events", "id", event_id, data)
 
 

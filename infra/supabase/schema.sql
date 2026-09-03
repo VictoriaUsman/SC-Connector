@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS clients (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Column additions (CREATE TABLE IF NOT EXISTS above doesn't detect drift —
+-- see note at the top of this file).
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS selling_partner_id text;
+
 CREATE TABLE IF NOT EXISTS schedules (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text,
@@ -121,6 +125,13 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_status ON events (status);
+
+-- event_id attributes a job to the live event that triggered it (event_report_scheduler's
+-- hourly/half-hourly Orders and Ads pulls, plus the prior-year backfill). Added after the
+-- jobs table above since it references events, which is defined here — this column was
+-- missing from the original migration even though event_report_scheduler has always written
+-- it, so every event-triggered job insert failed outright (UndefinedColumn) until this was added.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS event_id uuid REFERENCES events(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS bot_configs (
     client_id text PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
