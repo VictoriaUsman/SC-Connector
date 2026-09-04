@@ -73,9 +73,10 @@ def create(
             hourly_bot = gcp.cloudscheduler.Job(
                 f"kalilos-{env}-hourly-bot",
                 name=f"kalilos-{env}-hourly-bot",
-                # 5 minutes past the hour (PM request). The event data sync runs
-                # at :00/:30, so :05 posts shortly after the top-of-hour pull
-                # kicks off — numbers reflect the most recent completed ingest.
+                # 5 minutes past the hour (PM request). The event data pull runs
+                # at :20/:50 (see event_report_scheduler below) — :05 lands 45min
+                # after the :20 ads+orders pull and 15min after the :50 orders-only
+                # pull, so numbers reflect the most recent completed ingest.
                 schedule="5 * * * *",
                 time_zone="UTC",
                 region=region,
