@@ -133,39 +133,49 @@ class TestGetConnection:
 
 
 class TestMergeUpsert:
+    """_merge_upsert does an explicit SELECT existence-check before branching
+    into a plain UPDATE or INSERT (see the docstring in db.py for why this
+    replaced a single `INSERT ... ON CONFLICT DO UPDATE`) — every test here
+    supplies one canned response for that SELECT plus one for the write."""
+
     def test_insert_wraps_only_jsonb_columns(self):
-        cur = _FakeCursor([(None, None)])
+        # SELECT finds no existing row -> takes the INSERT branch.
+        cur = _FakeCursor([(_desc("id"), []), (None, None)])
         with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
             db._merge_upsert(
                 "schedules", "id", "s1",
                 {"schedule_config": {"time": "03:00"}, "marketplaces": ["US", "CA"]},
             )
-        query, params = cur.queries[0]
+        query, params = cur.queries[-1]
         sql_text = str(query)
         assert "INSERT INTO" in sql_text
-        assert "ON CONFLICT" in sql_text
         # jsonb column value must be wrapped (has an adapter, isn't the bare dict)
-        from psycopg2.extras import Json as _RealJson  # only needed to check the wrapper type name
         assert params[1].__class__.__name__ in ("Json",) or "Json" in str(type(params[1]))
         # array column value must be passed through as a bare list, not wrapped
         assert params[2] == ["US", "CA"]
 
     def test_update_only_touches_columns_present_in_data(self):
-        cur = _FakeCursor([(None, None)])
+        # SELECT finds an existing row -> takes the UPDATE branch.
+        cur = _FakeCursor([(_desc("id"), [("c1",)]), (None, None)])
         with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
             db._merge_upsert("clients", "id", "c1", {"sp_api_secret_name": "kalilos-staging-sp-api-c1"})
-        query, params = cur.queries[0]
+        query, params = cur.queries[-1]
         sql_text = str(query)
+        assert "UPDATE" in sql_text
         assert "sp_api_secret_name" in sql_text
         assert "created_at" not in sql_text  # never touched — not in `data`
 
     def test_key_column_in_data_is_not_duplicated(self):
-        cur = _FakeCursor([(None, None)])
+        # SELECT finds no existing row -> takes the INSERT branch. `data` still
+        # carries `client_id` (the key column) alongside a real column — it must
+        # be stripped before building the column list, not inserted twice.
+        cur = _FakeCursor([(_desc("client_id"), []), (None, None)])
         with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
             db._merge_upsert("bot_configs", "client_id", "c1", {"client_id": "c1", "slack_channel_id": "C123"})
-        query, params = cur.queries[0]
+        query, params = cur.queries[-1]
         sql_text = str(query)
-        assert sql_text.count("client_id") == 2  # one INSERT column + one ON CONFLICT target, never a 3rd
+        assert sql_text.count("client_id") == 1  # only the INSERT column list, never duplicated
+        assert "slack_channel_id" in sql_text
 
     def test_empty_data_update_only_is_a_no_op(self):
         with patch.object(db, "_get_connection") as fake_conn:
@@ -173,16 +183,13 @@ class TestMergeUpsert:
         fake_conn.assert_not_called()  # never even opens a connection for nothing to write
 
     def test_merge_upsert_with_only_key_column_in_data_does_not_produce_empty_set(self):
-        cur = _FakeCursor([(None, None)])
+        # SELECT finds an existing row; `data` reduces to empty once the key
+        # column is stripped out, so this must be a true no-op — no UPDATE
+        # (which would otherwise need an invalid empty SET clause) is issued.
+        cur = _FakeCursor([(_desc("client_id"), [("c1",)])])
         with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
             db._merge_upsert("bot_configs", "client_id", "c1", {"client_id": "c1"})
-        query, params = cur.queries[0]
-        sql_text = str(query)
-        # Implementation choice: with nothing left in `data` after stripping the
-        # key column, the ON CONFLICT clause becomes DO NOTHING rather than an
-        # empty DO UPDATE SET (which would be invalid SQL).
-        assert "DO NOTHING" in sql_text
-        assert "DO UPDATE SET" not in sql_text
+        assert len(cur.queries) == 1  # only the existence SELECT — no write followed it
 
 
 class TestGetClient:

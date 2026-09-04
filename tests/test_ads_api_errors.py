@@ -296,7 +296,6 @@ class TestPollStatusUnauthorizedHandler:
             patch.object(poll_status_main, "ads_api_client") as mock_client_module,
             patch.object(poll_status_main, "get_ads_credentials", return_value={"profile_id": "319903939"}),
             patch.object(poll_status_main, "update_job_status") as mock_update,
-            patch.object(poll_status_main, "update_job"),
         ):
             mock_client_module.get_report.side_effect = AdsProfileUnauthorizedError(
                 unauthorized_message(
