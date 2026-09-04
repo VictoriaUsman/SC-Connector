@@ -169,6 +169,24 @@ def _validate_timeframe(timeframe: dict) -> str | None:
         if int(anchor_offset) > 30:
             return "timeframe.anchor_offset_days cannot exceed 30"
 
+    elif strategy == "custom_range":
+        start_date = timeframe.get("start_date")
+        end_date = timeframe.get("end_date")
+        if not start_date or not isinstance(start_date, str):
+            return "timeframe.start_date is required (YYYY-MM-DD) for custom_range"
+        if not end_date or not isinstance(end_date, str):
+            return "timeframe.end_date is required (YYYY-MM-DD) for custom_range"
+        try:
+            parsed_start = date.fromisoformat(start_date)
+        except ValueError:
+            return "timeframe.start_date must be a valid YYYY-MM-DD date"
+        try:
+            parsed_end = date.fromisoformat(end_date)
+        except ValueError:
+            return "timeframe.end_date must be a valid YYYY-MM-DD date"
+        if parsed_start > parsed_end:
+            return "timeframe.start_date must be <= end_date"
+
     return None
 
 

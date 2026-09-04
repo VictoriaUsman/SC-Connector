@@ -53,9 +53,17 @@ export function formatReportType(type: string): string {
 }
 
 const DOW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Format a "YYYY-MM-DD" string as "Mon D" without any timezone conversion. */
+function formatIsoDateShort(isoDate: string): string {
+  const [, month, day] = isoDate.split("-").map(Number);
+  if (!month || !day) return isoDate;
+  return `${MONTH_LABELS[month - 1]} ${day}`;
+}
 
 export function formatTimeframeLabel(
-  tf: { strategy: string; days?: number; end_offset_days?: number; start_offset?: number; end_offset?: number; week_start?: number; days_before?: number; days_after?: number; years_back?: number; anchor_offset_days?: number } | undefined,
+  tf: { strategy: string; days?: number; end_offset_days?: number; start_offset?: number; end_offset?: number; week_start?: number; days_before?: number; days_after?: number; years_back?: number; anchor_offset_days?: number; start_date?: string; end_date?: string } | undefined,
 ): string {
   if (!tf) return "Yesterday";
   switch (tf.strategy) {
@@ -83,6 +91,11 @@ export function formatTimeframeLabel(
       const offset = tf.anchor_offset_days ?? 0;
       const offsetStr = offset > 0 ? ` -${offset}d` : "";
       return `${yrs}yr ago \u00b1${before}/${after}d${offsetStr}`;
+    }
+    case "custom_range": {
+      if (!tf.start_date || !tf.end_date) return "Custom range";
+      if (tf.start_date === tf.end_date) return formatIsoDateShort(tf.start_date);
+      return `${formatIsoDateShort(tf.start_date)} \u2013 ${formatIsoDateShort(tf.end_date)}`;
     }
     default:
       return "Yesterday";

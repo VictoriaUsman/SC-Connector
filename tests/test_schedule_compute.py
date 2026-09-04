@@ -290,6 +290,41 @@ class TestComputeDateRange:
         )
         assert no_offset == zero_offset
 
+    # -- custom_range ----------------------------------------------------------
+
+    def test_custom_range_basic(self):
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 21)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "custom_range", "start_date": "2026-01-01", "end_date": "2026-01-15"},
+            now,
+        )
+        assert start == date(2026, 1, 1)
+        assert end == date(2026, 1, 15)
+
+    def test_custom_range_single_day(self):
+        from shared.schedule_compute import compute_date_range
+
+        now = self._utc(2026, 5, 21)
+        start, end = compute_date_range(
+            "US",
+            {"strategy": "custom_range", "start_date": "2026-01-01", "end_date": "2026-01-01"},
+            now,
+        )
+        assert start == date(2026, 1, 1)
+        assert end == date(2026, 1, 1)
+
+    def test_custom_range_ignores_today(self):
+        """The range is fixed regardless of when 'today' falls."""
+        from shared.schedule_compute import compute_date_range
+
+        tf = {"strategy": "custom_range", "start_date": "2025-06-01", "end_date": "2025-06-30"}
+        early = compute_date_range("US", tf, self._utc(2026, 1, 1))
+        late = compute_date_range("US", tf, self._utc(2027, 12, 31))
+        assert early == late == (date(2025, 6, 1), date(2025, 6, 30))
+
     # -- unknown strategy fallback -------------------------------------------
 
     def test_unknown_strategy_falls_back_to_yesterday(self):
@@ -428,6 +463,18 @@ class TestComputeSalesTrafficDateRange:
         assert (
             compute_sales_traffic_date_range("US", tf, now)
             == compute_date_range("US", tf, now)
+        )
+
+    def test_custom_range_falls_back_to_marketplace_range(self):
+        """A fixed absolute range must not be shifted by the S&T data lag."""
+        from shared.schedule_compute import compute_date_range, compute_sales_traffic_date_range
+
+        now = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
+        tf = {"strategy": "custom_range", "start_date": "2026-01-01", "end_date": "2026-01-15"}
+        assert (
+            compute_sales_traffic_date_range("US", tf, now)
+            == compute_date_range("US", tf, now)
+            == (date(2026, 1, 1), date(2026, 1, 15))
         )
 
 

@@ -682,6 +682,72 @@ class TestTimeframeValidation:
         assert resp.status_code == 400
         assert "start_offset" in resp.get_json()["error"]
 
+    def test_create_schedule_with_valid_custom_range(self, client):
+        with (
+            patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}),
+            patch("api.main.create_schedule", return_value="sched-1"),
+        ):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {
+                    "strategy": "custom_range",
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-15",
+                },
+            })
+        assert resp.status_code == 201
+
+    def test_create_schedule_custom_range_missing_dates(self, client):
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {"strategy": "custom_range"},
+            })
+        assert resp.status_code == 400
+        assert "start_date" in resp.get_json()["error"]
+
+    def test_create_schedule_custom_range_invalid_date_format(self, client):
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {
+                    "strategy": "custom_range",
+                    "start_date": "01/01/2026",
+                    "end_date": "2026-01-15",
+                },
+            })
+        assert resp.status_code == 400
+        assert "start_date" in resp.get_json()["error"]
+
+    def test_create_schedule_custom_range_start_after_end(self, client):
+        with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
+            resp = client.post("/schedules", json={
+                "client_id": "c1",
+                "api_source": "sp_api",
+                "report_types": ["X"],
+                "marketplace": "US",
+                "frequency": "daily",
+                "timeframe": {
+                    "strategy": "custom_range",
+                    "start_date": "2026-01-15",
+                    "end_date": "2026-01-01",
+                },
+            })
+        assert resp.status_code == 400
+        assert "start_date" in resp.get_json()["error"]
+
     def test_create_schedule_calendar_week_invalid_day(self, client):
         with patch("api.main.get_client", return_value={"id": "c1", "name": "Acme"}):
             resp = client.post("/schedules", json={

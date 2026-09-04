@@ -16,6 +16,7 @@ VALID_TIMEFRAME_STRATEGIES = {
     "last_calendar_week",
     "last_calendar_month",
     "prior_year_window",
+    "custom_range",
 }
 
 # Sales & Traffic is the only daily SP report whose end date must be identical
@@ -99,6 +100,7 @@ def compute_date_range(
       last_calendar_week — most recent completed week, configurable week_start
       last_calendar_month — first to last day of previous calendar month
       prior_year_window — window around today's date shifted back N years
+      custom_range      — fixed absolute start_date/end_date, ignores "today"
 
     When ``anchor_tz`` is provided, "today" is resolved in that timezone instead
     of the marketplace's local timezone. This is used to compute a single,
@@ -166,6 +168,11 @@ def compute_date_range(
             # Feb 29 in a non-leap year — fall back to Feb 28
             anchor = ref_date.replace(year=ref_date.year - years_back, day=28)
         return anchor - timedelta(days=days_before), anchor + timedelta(days=days_after)
+
+    if strategy == "custom_range":
+        start = date.fromisoformat(timeframe["start_date"])
+        end = date.fromisoformat(timeframe["end_date"])
+        return start, end
 
     d = today - timedelta(days=1)
     return d, d

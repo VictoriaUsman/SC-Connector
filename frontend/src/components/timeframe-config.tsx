@@ -43,7 +43,18 @@ const STRATEGY_META: Record<
       "Pull a window around today\u2019s date shifted back N years. Great for year-over-year comparisons.",
     example: "30d before/after, 1yr back: Apr 21 \u2013 Jun 20 last year",
   },
+  custom_range: {
+    description:
+      "Pull a fixed start\u2013end date range. The same dates every run \u2014 best for one-off backfills, not recurring schedules.",
+    example: "Jan 1 \u2013 Jan 15, 2026 (unchanged on future runs)",
+  },
 };
+
+function yesterdayIso(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
 
 export function TimeframeConfig({
   value,
@@ -69,6 +80,9 @@ export function TimeframeConfig({
       base.days_after = value.days_after ?? 30;
       base.years_back = value.years_back ?? 1;
       base.anchor_offset_days = value.anchor_offset_days ?? 0;
+    } else if (s === "custom_range") {
+      base.start_date = value.start_date ?? yesterdayIso();
+      base.end_date = value.end_date ?? yesterdayIso();
     }
     onChange(base);
   };
@@ -287,6 +301,34 @@ export function TimeframeConfig({
           </div>
           <p className="col-span-4 text-[11px] text-muted-foreground">
             Window centered on today&apos;s date shifted back by the specified years. Data delay shifts the anchor back for delayed Amazon data.
+          </p>
+        </div>
+      )}
+
+      {strategy === "custom_range" && (
+        <div className="grid grid-cols-2 gap-4 rounded-md border border-dashed p-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Start date</Label>
+            <Input
+              type="date"
+              value={value.start_date ?? yesterdayIso()}
+              max={value.end_date ?? undefined}
+              onChange={(e) => onChange({ ...value, start_date: e.target.value })}
+              className="h-8"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">End date</Label>
+            <Input
+              type="date"
+              value={value.end_date ?? yesterdayIso()}
+              min={value.start_date ?? undefined}
+              onChange={(e) => onChange({ ...value, end_date: e.target.value })}
+              className="h-8"
+            />
+          </div>
+          <p className="col-span-2 text-[11px] text-muted-foreground">
+            This range is fixed — it will not shift on future runs. Deactivate the schedule after it runs once, or use it for a manual backfill.
           </p>
         </div>
       )}

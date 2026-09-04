@@ -39,7 +39,8 @@ export type TimeframeStrategy =
   | "rolling_window"
   | "last_calendar_week"
   | "last_calendar_month"
-  | "prior_year_window";
+  | "prior_year_window"
+  | "custom_range";
 
 export interface Timeframe {
   strategy: TimeframeStrategy;
@@ -52,6 +53,8 @@ export interface Timeframe {
   days_after?: number;
   years_back?: number;
   anchor_offset_days?: number;
+  start_date?: string;
+  end_date?: string;
 }
 
 export interface Schedule {
@@ -147,6 +150,7 @@ export const TIMEFRAME_STRATEGIES = [
   { value: "last_calendar_week", label: "Last Calendar Week" },
   { value: "last_calendar_month", label: "Last Calendar Month" },
   { value: "prior_year_window", label: "Prior Year Window" },
+  { value: "custom_range", label: "Custom Range" },
 ] as const;
 
 export const MARKETPLACE_TO_REGION: Record<string, string> = {
