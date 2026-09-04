@@ -41,18 +41,19 @@ Each schedule has `folder_name` (custom Drive folder) and `subfolder_strategy` (
 
 | Environment | GCP Project | Pulumi Stack |
 |----|---|-----|
+| Dev (CI auto-deploys here on merge to `main`) | `kalilos-connector-dev` | `dev` |
 | Staging | `kalilos-connector-staging` | `staging` |
 | Production | `kalilos-connector-prod` | `prod` |
 
 ## Key Conventions
 
-- GCP account: `nivbraz90@gmail.com`. Scripts auto-verify before any operation
+- GCP account: `ian@kalilos.com`. Scripts auto-verify before any operation
 - API source branching: functions accept `api_source` ("sp_api", "ads_api", or "both") and branch accordingly
 - Resource naming: `kalilos-{env}-{resource}` (e.g., `kalilos-staging-create-report`)
 - Secret naming: `kalilos-{env}-{service}-{client}` (e.g., `kalilos-prod-sp-api-acme`)
 - ALL operations via Makefile — never raw gcloud, pulumi, or firebase commands
 - Deploy: `make env-staging && make deploy-all` or `make env-prod && make deploy-all`
-- Pulumi backend: shared GCS bucket (`gs://kalilos-connector-pulumi-state`), configured in `scripts/_common.sh`
+- Pulumi backend: shared GCS bucket (`gs://sc-connector-pulumi-state`), configured in `scripts/_common.sh`
 
 ## Key Shared Modules
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time CI/CD bootstrap for the Kalilos Connector.
 #
-# Run this ONCE, locally, with your owner credentials (nivbraz90@gmail.com).
+# Run this ONCE, locally, with your owner credentials (ian@kalilos.com).
 # It is idempotent — safe to re-run. It performs:
 #   1. Creates a GCS bucket to hold shared Pulumi state.
 #   2. Migrates the existing local-file Pulumi state (staging + prod) into it.
@@ -20,8 +20,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INFRA_DIR="$PROJECT_ROOT/infra"
 
 # --- Configuration -----------------------------------------------------------
-STATE_PROJECT="kalilos-connector-staging"   # project that owns the state bucket + WIF + deploy SA
-STATE_BUCKET="gs://kalilos-connector-pulumi-state"
+STATE_PROJECT="kalilos-connector-dev"       # project that owns the state bucket + WIF + deploy SA
+STATE_BUCKET="gs://sc-connector-pulumi-state"
 GCS_BACKEND_URL="$STATE_BUCKET"
 LOCAL_BACKEND_URL="file://~/.pulumi-local"
 
@@ -30,7 +30,7 @@ DEPLOY_SA="${DEPLOY_SA_NAME}@${STATE_PROJECT}.iam.gserviceaccount.com"
 
 WIF_POOL="github-pool"
 WIF_PROVIDER="github"
-GITHUB_REPO="NivOclear/kalilos-connector"
+GITHUB_REPO="VictoriaUsman/SC-Connector"
 
 # Roles granted to the deploy SA on the staging project. Pragmatic
 # least-privilege: roles/editor covers most resource CRUD, plus the IAM /
@@ -188,18 +188,24 @@ echo "  GCP_DEPLOY_SA    = ${DEPLOY_SA}"
 echo "  GCP_PROJECT      = ${STATE_PROJECT}"
 echo "  GCP_REGION       = us-central1"
 echo ""
-echo "Set these as GitHub repository SECRETS (scoped to the 'staging' Environment):"
+echo "Set these as GitHub repository SECRETS (scoped to the 'dev' Environment):"
 echo ""
-echo "  PULUMI_CONFIG_PASSPHRASE = <your Pulumi passphrase>"
-echo "  GDRIVE_ROOT_FOLDER_ID    = <staging Drive root folder id>"
-echo "  VITE_API_URL             = <staging API URL>"
-echo "  VITE_API_KEY             = <staging API key>"
-echo "  VITE_FIREBASE_API_KEY    = <staging Firebase web API key>"
-echo "  VITE_FIREBASE_AUTH_DOMAIN  = kalilos-connector-staging.firebaseapp.com"
-echo "  VITE_FIREBASE_PROJECT_ID   = kalilos-connector-staging"
+echo "  PULUMI_CONFIG_PASSPHRASE = <new passphrase for the 'dev' stack>"
+echo "  GDRIVE_ROOT_FOLDER_ID    = <dev Drive root folder id>"
+echo "  VITE_API_URL             = <dev API URL, e.g. https://us-central1-${STATE_PROJECT}.cloudfunctions.net/kalilos-dev-api>"
+echo "  VITE_API_KEY             = <dev API key>"
+echo "  VITE_SUPABASE_URL        = <Supabase project URL>"
+echo "  VITE_SUPABASE_ANON_KEY   = <Supabase anon key>"
+echo ""
+echo "This also needs a Pulumi secret (not a GitHub secret) for Cloud Functions"
+echo "to reach Postgres — set it once against the 'dev' stack:"
+echo ""
+echo "  cd infra && pulumi stack select dev"
+echo "  pulumi config set --secret kalilos:supabase-db-url <postgresql://...>"
 echo ""
 echo "Next steps:"
-echo "  1. make env-staging && make preview   # confirm zero drift after migration"
-echo "  2. Configure the GitHub vars/secrets above."
-echo "  3. Merge a PR to main to trigger the deploy."
+echo "  1. ./scripts/init-stack.sh dev         # one-time: create the 'dev' Pulumi stack"
+echo "  2. make env-dev && make preview        # confirm the plan before first deploy"
+echo "  3. Configure the GitHub vars/secrets above."
+echo "  4. Merge a PR to main to trigger the deploy."
 echo ""

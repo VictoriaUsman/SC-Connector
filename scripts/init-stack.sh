@@ -10,12 +10,12 @@ check_gcp_account
 ENV="${1:-}"
 
 if [[ -z "$ENV" ]]; then
-  error "Usage: init-stack.sh <staging|prod>"
+  error "Usage: init-stack.sh <dev|staging|prod>"
   exit 1
 fi
 
-if [[ "$ENV" != "staging" && "$ENV" != "prod" ]]; then
-  error "Invalid environment '$ENV'. Must be 'staging' or 'prod'."
+if [[ "$ENV" != "dev" && "$ENV" != "staging" && "$ENV" != "prod" ]]; then
+  error "Invalid environment '$ENV'. Must be 'dev', 'staging', or 'prod'."
   exit 1
 fi
 

@@ -75,6 +75,13 @@ def create(
             "ENVIRONMENT": env,
             "LOG_LEVEL": config.get("log-level") or "INFO",
         }
+        # Every function except ingest-bigquery talks to Postgres directly
+        # (functions/shared/db.py reads SUPABASE_DB_URL from the environment).
+        # Set with: pulumi config set --secret kalilos:supabase-db-url <url>
+        if fn_name != "ingest-bigquery":
+            supabase_db_url = config.get_secret("supabase-db-url")
+            if supabase_db_url:
+                env_vars["SUPABASE_DB_URL"] = supabase_db_url
         if fn_name in ("scheduler", "api"):
             env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"
             env_vars["WORKFLOW_LOCATION"] = region

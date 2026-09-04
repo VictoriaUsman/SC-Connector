@@ -1,6 +1,6 @@
 # Kalilos Amazon Reports Connector
 
-> **GCP Identity**: This project uses `nivbraz90@gmail.com`. All deployment scripts verify the active gcloud account and abort if wrong. Use gcloud named configurations to avoid switching: `gcloud config configurations activate kalilos`. The Makefile `check-auth` target runs automatically before any deploy. When Pulumi fails with permission errors, set `export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token --account=nivbraz90@gmail.com)` before running `make deploy-infra`.
+> **GCP Identity**: This project uses `ian@kalilos.com`. All deployment scripts verify the active gcloud account and abort if wrong. Use gcloud named configurations to avoid switching: `gcloud config configurations activate kalilos`. The Makefile `check-auth` target runs automatically before any deploy. When Pulumi fails with permission errors, set `export GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token --account=ian@kalilos.com)` before running `make deploy-infra`.
 
 ## Purpose
 
@@ -42,7 +42,7 @@ The system is fully serverless on GCP, organized around one Cloud Workflow with 
 
 Replenishment uses offset pagination (`pagination.limit` + `pagination.offset`) and requires request fields nested under `filters` for `offers/metrics/search`. Amazon's `WEEK` aggregation is Sunday-Saturday; `replenishment_client.py` aligns requested windows to those Amazon weeks.
 
-**Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Shared GCS state backend (`gs://kalilos-connector-pulumi-state`, versioned) so local and CI deploys share one source of truth. Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
+**Infrastructure as Code**: Pulumi (Python) manages all GCP resources. Shared GCS state backend (`gs://sc-connector-pulumi-state`, versioned) so local and CI deploys share one source of truth. Two stacks: `staging` and `prod`, mapping to separate GCP projects (`kalilos-connector-staging` and `kalilos-connector-prod`).
 
 ## Data Model
 
@@ -211,7 +211,7 @@ kalilos-connector/
 
 All operations go through the Makefile. Never run raw `gcloud`, `pulumi`, or `firebase` commands.
 
-Pulumi uses a shared GCS backend (`gs://kalilos-connector-pulumi-state`), configured automatically by `scripts/_common.sh`. Local and CI deploys read/write the same state. (Override with `PULUMI_BACKEND_URL` if needed.)
+Pulumi uses a shared GCS backend (`gs://sc-connector-pulumi-state`), configured automatically by `scripts/_common.sh`. Local and CI deploys read/write the same state. (Override with `PULUMI_BACKEND_URL` if needed.)
 
 ```bash
 # Deploy to staging
@@ -227,32 +227,34 @@ To deploy the MCP server independently: `make deploy-mcp`.
 
 ### CI/CD (GitHub Actions)
 
-`.github/workflows/deploy-staging.yml` runs on every PR and on merge to `main`:
+`.github/workflows/deploy-staging.yml` (deploys to the `dev` environment/stack, despite the filename) runs on every PR and on merge to `main`:
 
 - **PRs and pushes** run the `checks` job: Python tests (`pytest tests/`) plus a frontend typecheck/build (`npm run build`).
-- **Merges to `main`** additionally run `deploy-staging`, which authenticates to GCP via **Workload Identity Federation** (keyless — no SA JSON keys), then runs `make env-staging && make deploy-all`.
+- **Merges to `main`** additionally run `deploy-dev`, which authenticates to GCP via **Workload Identity Federation** (keyless — no SA JSON keys), then runs `make env-dev && make deploy-all`.
 
-Auth: CI impersonates a least-privilege deploy service account (`kalilos-cicd-deployer@kalilos-connector-staging`). The `check_gcp_account` guard in `_common.sh` is skipped when `CI` is set (it uses Application Default Credentials from the WIF step instead). Production is **never** auto-deployed — it stays manual.
+Auth: CI impersonates a least-privilege deploy service account (`kalilos-cicd-deployer@kalilos-connector-dev`). The `check_gcp_account` guard in `_common.sh` is skipped when `CI` is set (it uses Application Default Credentials from the WIF step instead). Production is **never** auto-deployed — it stays manual.
 
-**One-time setup**: run `./scripts/bootstrap-cicd.sh` locally (with owner creds). It migrates Pulumi state to GCS, creates the deploy SA + roles, sets up the WIF pool/provider for the `NivOclear/kalilos-connector` repo, and prints the GitHub config values to set.
+**One-time setup**: run `./scripts/bootstrap-cicd.sh` locally (with owner creds). It migrates Pulumi state to GCS, creates the deploy SA + roles, sets up the WIF pool/provider for the `VictoriaUsman/SC-Connector` repo, and prints the GitHub config values to set.
 
 **GitHub repository variables** (Settings → Secrets and variables → Actions → Variables):
 
 | Variable | Example |
 |----------|---------|
 | `GCP_WIF_PROVIDER` | `projects/<num>/locations/global/workloadIdentityPools/github-pool/providers/github` |
-| `GCP_DEPLOY_SA` | `kalilos-cicd-deployer@kalilos-connector-staging.iam.gserviceaccount.com` |
-| `GCP_PROJECT` | `kalilos-connector-staging` |
+| `GCP_DEPLOY_SA` | `kalilos-cicd-deployer@kalilos-connector-dev.iam.gserviceaccount.com` |
+| `GCP_PROJECT` | `kalilos-connector-dev` |
 | `GCP_REGION` | `us-central1` |
 
-**GitHub repository secrets** (scoped to the `staging` Environment):
+**GitHub repository secrets** (scoped to the `dev` Environment):
 
 | Secret | Purpose |
 |--------|---------|
 | `PULUMI_CONFIG_PASSPHRASE` | Decrypts the Pulumi config secrets |
-| `GDRIVE_ROOT_FOLDER_ID` | Staging Drive root folder id |
+| `GDRIVE_ROOT_FOLDER_ID` | Dev Drive root folder id |
 | `VITE_API_URL`, `VITE_API_KEY` | Frontend build-time API config |
-| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID` | Frontend Firebase config |
+| `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | Frontend Supabase config |
+
+Separately (not a GitHub secret — a Pulumi secret, set once against the `dev` stack so Cloud Functions can reach Postgres): `cd infra && pulumi stack select dev && pulumi config set --secret kalilos:supabase-db-url <postgresql://...>`.
 
 ## Conventions
 

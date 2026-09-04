@@ -28,15 +28,15 @@ Key targets:
 Uses a shared GCS bucket backend configured in `scripts/_common.sh`:
 
 ```bash
-export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-gs://kalilos-connector-pulumi-state}"
+export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-gs://sc-connector-pulumi-state}"
 export PULUMI_CONFIG_PASSPHRASE="${PULUMI_CONFIG_PASSPHRASE:-}"
 ```
 
-State lives in `gs://kalilos-connector-pulumi-state` (versioned), shared by local and CI deploys. No Pulumi Cloud account needed. The bucket and one-time state migration are handled by `scripts/bootstrap-cicd.sh`.
+State lives in `gs://sc-connector-pulumi-state` (versioned), shared by local and CI deploys. No Pulumi Cloud account needed. The bucket and one-time state migration are handled by `scripts/bootstrap-cicd.sh`.
 
 ## GCP Account Guard
 
-Every deployment script sources `scripts/_common.sh` which verifies the active GCP account is `nivbraz90@gmail.com`. If the check fails, the script aborts with instructions to re-authenticate. The Makefile `check-auth` target is a prerequisite of all deploy/preview/destroy targets.
+Every deployment script sources `scripts/_common.sh` which verifies the active GCP account is `ian@kalilos.com`. If the check fails, the script aborts with instructions to re-authenticate. The Makefile `check-auth` target is a prerequisite of all deploy/preview/destroy targets.
 
 In CI (GitHub Actions sets `CI=true`), the account guard is skipped — auth comes from Workload Identity Federation via Application Default Credentials, not the local gcloud named configuration.
 

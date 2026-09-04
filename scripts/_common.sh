@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-REQUIRED_GCP_ACCOUNT="nivbraz90@gmail.com"
+REQUIRED_GCP_ACCOUNT="ian@kalilos.com"
 GCLOUD_CONFIG_NAME="kalilos-connector"
 
 # Detect CI (GitHub Actions sets CI=true). In CI, auth comes from Workload
@@ -19,7 +19,7 @@ if ! is_ci; then
 fi
 
 # Shared Pulumi state lives in GCS so local and CI share one source of truth.
-export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-gs://kalilos-connector-pulumi-state}"
+export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-gs://sc-connector-pulumi-state}"
 export PULUMI_CONFIG_PASSPHRASE="${PULUMI_CONFIG_PASSPHRASE:-}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
@@ -38,7 +38,7 @@ check_gcp_account() {
     error "Create it once with:"
     error "  gcloud config configurations create $GCLOUD_CONFIG_NAME"
     error "  gcloud auth login $REQUIRED_GCP_ACCOUNT --configuration=$GCLOUD_CONFIG_NAME"
-    error "  gcloud config set project kalilos-connector-staging --configuration=$GCLOUD_CONFIG_NAME"
+    error "  gcloud config set project kalilos-connector-dev --configuration=$GCLOUD_CONFIG_NAME"
     exit 1
   fi
 

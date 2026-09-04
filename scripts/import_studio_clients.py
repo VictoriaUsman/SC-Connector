@@ -43,7 +43,7 @@ SOURCE_FILE = os.path.join(
     os.path.dirname(__file__), "..", "studio_results_20260414_0951.json"
 )
 
-GCP_ACCOUNT = "nivbraz90@gmail.com"
+GCP_ACCOUNT = "ian@kalilos.com"
 
 _credentials: google.auth.credentials.Credentials | None = None
 _sm: secretmanager.SecretManagerServiceClient | None = None

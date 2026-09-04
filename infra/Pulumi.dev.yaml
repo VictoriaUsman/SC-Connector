@@ -1,0 +1,11 @@
+encryptionsalt: v1:4a0gKtmtwlM=:v1:0gV7OCH6zaofXNJL:LXrMhbrxkYlntx7fuJ7Hnilxe+38Yg==
+config:
+  gcp:project: kalilos-connector-dev
+  gcp:region: us-central1
+  kalilos:supabase-db-url:
+    secure: v1:yBgZidedPlGs6CGu:ZR2BsgLdZB8T9cDof/GKTiTGnfKhcFrblCGNp/LKmnztgd9F77ETlAG8Ldp7JCzENDpEbwSmoSPGl0loc7LxXLWAOM2Bkkf7nBvRUbPiJLk+s6NdUJonTk139Lxb70cpwt71eNM2
+  kalilos:supabase-url: https://ckrbkeljuevemzclcpod.supabase.co
+  kalilos:api-key:
+    secure: v1:0VtP9Qj4Wsm+G8/r:LVtsyfgjHRLPAKMzPiv6ZHSroYB+Zf8ClURMNOJNEmtHy/ypVGBqq8IDNiP0r+2vBxmS3Mr8vOKupL4=
+  kalilos:mcp-api-key:
+    secure: v1:UjsF4sV7X5zY40bl:ktriH/wcGXKpjDQzjc2isL4KW4S/8VQeRZeuGuZ6P9JB2wQcDgiUigqxH9hm0zNyiDjSmu3uRttYjZo=

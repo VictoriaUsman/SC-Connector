@@ -5,10 +5,13 @@ help:  ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 # --- Auth ---
-check-auth:  ## Verify correct GCP account (niv@kalilos.com) is active
+check-auth:  ## Verify correct GCP account (ian@kalilos.com) is active
 	@./scripts/_common.sh check
 
 # --- Environment ---
+env-dev:  ## Switch to dev environment
+	@./scripts/switch-env.sh dev
+
 env-staging:  ## Switch to staging environment
 	@./scripts/switch-env.sh staging
 
@@ -19,6 +22,9 @@ env-status:  ## Show current environment and configuration
 	@./scripts/env-status.sh
 
 # --- Initialization ---
+init-dev:  ## Initialize dev stack (one-time setup)
+	@./scripts/init-stack.sh dev
+
 init-staging:  ## Initialize staging stack (one-time setup)
 	@./scripts/init-stack.sh staging
 
