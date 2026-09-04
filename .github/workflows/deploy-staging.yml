@@ -129,5 +129,9 @@ jobs:
           EOF
           cp .env.dev .env.active
 
-      - name: Deploy all to dev
-        run: make env-dev && make deploy-all
+      - name: Deploy backend to dev
+        # Frontend hosting moved to Vercel (frontend/vercel.json), which
+        # deploys on push via its own GitHub integration — not this
+        # workflow. `make deploy-all` still includes a Firebase Hosting
+        # step left over from before that migration; skip it here.
+        run: make env-dev && make deploy-infra && make deploy-mcp
