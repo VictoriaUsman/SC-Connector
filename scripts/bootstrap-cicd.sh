@@ -35,10 +35,11 @@ GITHUB_REPO="VictoriaUsman/SC-Connector"
 # Roles granted to the deploy SA on the staging project. Pragmatic
 # least-privilege: roles/editor covers most resource CRUD, plus the IAM /
 # service-enablement / hosting roles editor lacks. Tighten later if desired.
-# Note: roles/editor deliberately excludes Secret Manager's IAM-management
-# permissions (secretmanager.secrets.setIamPolicy) even though it covers
-# most other CRUD — Pulumi's SecretIamMember resources (granting the
-# workflow SA read access to secret shells) need secretmanager.admin.
+# Note: roles/editor deliberately excludes several services' IAM-management
+# permissions even though it covers most other CRUD — each Pulumi resource
+# that calls SetIamPolicy on a per-resource basis needs its own admin role:
+#   - SecretIamMember (workflow SA -> Supabase key secret)  needs secretmanager.admin
+#   - ServiceIamMember (workflow SA -> Cloud Run invoker)   needs run.admin
 DEPLOY_SA_ROLES=(
   "roles/editor"
   "roles/resourcemanager.projectIamAdmin"
@@ -47,6 +48,7 @@ DEPLOY_SA_ROLES=(
   "roles/firebasehosting.admin"
   "roles/iam.serviceAccountUser"
   "roles/secretmanager.admin"
+  "roles/run.admin"
 )
 
 # Stacks to migrate from the local backend into GCS.
