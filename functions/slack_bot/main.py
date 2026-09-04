@@ -1233,8 +1233,11 @@ def _maybe_add_total_row(
     ACoS/TACoS — showing only the converted number (no rate annotation). If any
     required FX pair is unavailable the Total is skipped (logged
     ``MISSING_FX_RATE``) rather than mixing currencies or assuming 1:1.
+
+    A single-marketplace account has nothing to total — its Total would just
+    repeat that one marketplace's own numbers — so this is a no-op below 2.
     """
-    if not metrics:
+    if len(metrics) <= 1:
         return
 
     currencies = {m.currency for m in metrics}

@@ -150,6 +150,19 @@ class TestBuildMessageBlocks:
         all_text = " ".join(b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section")
         assert "*Total*" not in all_text
 
+    def test_no_total_row_single_marketplace(self):
+        """A single-marketplace account's Total would just repeat its own
+        numbers — skip it instead of posting a redundant row."""
+        from slack_bot.main import _maybe_add_total_row, MarketplaceMetrics
+
+        metrics = [
+            MarketplaceMetrics(marketplace="US", currency="USD", total_sales=1000, units=10, spend=100, ppc_sales=500),
+        ]
+        blocks: list[dict] = []
+        _maybe_add_total_row(blocks, metrics, base_currency="USD")
+
+        assert blocks == []
+
 
 # ---------------------------------------------------------------------------
 # Metrics dataclass
