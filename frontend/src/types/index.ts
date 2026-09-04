@@ -211,6 +211,7 @@ export const SP_REPORT_TYPES = [
   "SNS_OFFER_METRICS",
   "SNS_SP_METRICS",
   "SNS_OFFERS",
+  "SP_FINANCE_TRANSACTIONS",
   "GET_VENDOR_SALES_REPORT",
   "GET_VENDOR_TRAFFIC_REPORT",
   "GET_VENDOR_INVENTORY_REPORT",
@@ -310,6 +311,14 @@ export interface Event {
 export interface SlackChannel {
   id: string;
   name?: string;
+  /**
+   * Slack user IDs (e.g. "U0123ABC") to @-mention on every message posted to
+   * this channel. Notification routing is scoped per channel since a
+   * client's channels can belong to different pods — posting alone doesn't
+   * guarantee anyone sees it, since channel notification settings vary per
+   * person; an explicit mention pings them regardless.
+   */
+  tag_user_ids?: string[];
 }
 
 export interface BotConfig {

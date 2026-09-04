@@ -563,6 +563,16 @@ function BotConfigDialog({
   const updateChannel = (index: number, field: keyof SlackChannel, value: string) => {
     setChannels((prev) => prev.map((c, i) => (i === index ? { ...c, [field]: value } : c)));
   };
+
+  const updateChannelTags = (index: number, rawValue: string) => {
+    const tagUserIds = rawValue
+      .split(/[,\s]+/)
+      .map((id) => id.trim())
+      .filter(Boolean);
+    setChannels((prev) =>
+      prev.map((c, i) => (i === index ? { ...c, tag_user_ids: tagUserIds } : c)),
+    );
+  };
   const addChannel = () => setChannels((prev) => [...prev, { id: "", name: "" }]);
   const removeChannel = (index: number) =>
     setChannels((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
@@ -609,28 +619,36 @@ function BotConfigDialog({
             </p>
             <div className="space-y-2">
               {channels.map((channel, index) => (
-                <div key={index} className="flex items-center gap-2">
+                <div key={index} className="space-y-1.5 rounded-md border p-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={channel.id}
+                      onChange={(e) => updateChannel(index, "id", e.target.value)}
+                      placeholder="C07XXXXXX"
+                      className="flex-1"
+                    />
+                    <Input
+                      value={channel.name ?? ""}
+                      onChange={(e) => updateChannel(index, "name", e.target.value)}
+                      placeholder="#acme-reports"
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      disabled={channels.length === 1}
+                      onClick={() => removeChannel(index)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
                   <Input
-                    value={channel.id}
-                    onChange={(e) => updateChannel(index, "id", e.target.value)}
-                    placeholder="C07XXXXXX"
-                    className="flex-1"
+                    value={(channel.tag_user_ids ?? []).join(", ")}
+                    onChange={(e) => updateChannelTags(index, e.target.value)}
+                    placeholder="Tag on notify: U0123ABC, U0456DEF (Slack user IDs)"
+                    className="text-xs"
                   />
-                  <Input
-                    value={channel.name ?? ""}
-                    onChange={(e) => updateChannel(index, "name", e.target.value)}
-                    placeholder="#acme-reports"
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    disabled={channels.length === 1}
-                    onClick={() => removeChannel(index)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
                 </div>
               ))}
             </div>

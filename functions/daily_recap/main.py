@@ -37,6 +37,7 @@ from shared.logging_setup import init_logging
 from shared.slack_client import (
     format_currency,
     format_percentage,
+    get_channel_tag_block,
     post_message,
     resolve_target_channels,
 )
@@ -151,7 +152,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         # channel's failure doesn't block delivery to the others.
         for channel_id in target_channels:
             try:
-                result = post_message(channel_id, blocks, text_fallback)
+                tag_block = get_channel_tag_block(config, channel_id)
+                channel_blocks = [tag_block] + blocks if tag_block else blocks
+                result = post_message(channel_id, channel_blocks, text_fallback)
                 log_bot_activity({
                     "client_id": client_id,
                     "bot": "daily_recap",

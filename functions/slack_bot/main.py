@@ -40,6 +40,7 @@ from shared.slack_client import (
     format_delta,
     format_delta_bps,
     format_percentage,
+    get_channel_tag_block,
     post_message,
     resolve_target_channels,
 )
@@ -501,7 +502,9 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     event_date=anchor_date,
                     day_index=anchor_day,
                 )
-                result = post_message(channel_id, blocks, text_fallback, thread_ts=parent_ts)
+                tag_block = get_channel_tag_block(config, channel_id)
+                channel_blocks = [tag_block] + blocks if tag_block else blocks
+                result = post_message(channel_id, channel_blocks, text_fallback, thread_ts=parent_ts)
 
                 log_bot_activity({
                     "client_id": anchor_client_id,

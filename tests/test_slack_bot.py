@@ -612,6 +612,52 @@ class TestHandlerIntegration:
         mock_post.assert_called_once()
         assert mock_post.call_args.kwargs.get("thread_ts") == "999.000"
 
+    def test_tags_configured_channel_users(self):
+        """A channel with tag_user_ids gets a leading mention block so those
+        people are notified regardless of their own channel settings."""
+        from slack_bot.main import handler
+
+        config = _make_bot_config()
+        del config["slack_channel_id"]
+        config["channels"] = [{"id": "C123", "tag_user_ids": ["U111", "U222"]}]
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[config]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=[]),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        assert blocks[0]["text"]["text"] == "<@U111> <@U222>"
+
+    def test_no_tag_block_when_channel_has_no_tag_user_ids(self):
+        from slack_bot.main import handler
+
+        with (
+            patch("slack_bot.main.get_live_event", return_value={
+                "id": "e1", "name": "Prime Day", "start_date": "2026-07-13",
+            }),
+            patch("slack_bot.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("slack_bot.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("slack_bot.main._query_metrics", return_value=[]),
+            patch("slack_bot.main.get_thread_anchor_ts", return_value="999.000"),
+            patch("slack_bot.main.set_thread_anchor_ts"),
+            patch("slack_bot.main.post_message", return_value={"ok": True, "ts": "123.456"}) as mock_post,
+            patch("slack_bot.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        assert "<@" not in blocks[0]["text"]["text"]
+
     def test_midnight_slot_posts_recap_not_hourly(self):
         from slack_bot.main import handler, MarketplaceMetrics
 

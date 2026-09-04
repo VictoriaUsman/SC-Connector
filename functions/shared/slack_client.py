@@ -80,6 +80,30 @@ def resolve_target_channels(config: dict) -> list[str]:
     return [legacy_channel] if legacy_channel else []
 
 
+def get_channel_tag_block(config: dict, channel_id: str) -> dict | None:
+    """Build a leading mention block for one channel's configured tag list.
+
+    Bot notification routing is scoped per channel — a client's channels can
+    belong to different pods, and posting to a channel alone doesn't
+    guarantee anyone actually sees it (channel notification settings vary
+    per person). ``tag_user_ids`` on a channel entry names the Slack user
+    IDs who should be @-mentioned, which pings them regardless of their own
+    channel notification settings. Only ``channel_id``'s own tag list is
+    used — other channels in the same broadcast are unaffected. Returns
+    None when the channel isn't found or has no tags configured (including
+    the legacy single-channel shape, which predates per-channel tagging).
+    """
+    for channel in config.get("channels") or []:
+        if channel.get("id") != channel_id:
+            continue
+        user_ids = channel.get("tag_user_ids") or []
+        if not user_ids:
+            return None
+        mentions = " ".join(f"<@{uid}>" for uid in user_ids)
+        return {"type": "section", "text": {"type": "mrkdwn", "text": mentions}}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Currency formatting
 # ---------------------------------------------------------------------------

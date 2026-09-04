@@ -231,6 +231,42 @@ class TestHandlerDelivery:
 
         assert mock_post.call_args[0][0] == "CTEST"
 
+    def test_tags_configured_channel_users(self):
+        """A channel with tag_user_ids gets a leading mention block so those
+        people are notified regardless of their own channel settings."""
+        from daily_recap.main import handler, AccountTotals
+
+        config = _make_bot_config()
+        del config["slack_channel_id"]
+        config["channels"] = [{"id": "C123", "tag_user_ids": ["U111", "U222"]}]
+
+        with (
+            patch("daily_recap.main.list_bot_configs", return_value=[config]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        assert blocks[0]["text"]["text"] == "<@U111> <@U222>"
+
+    def test_no_tag_block_when_channel_has_no_tag_user_ids(self):
+        from daily_recap.main import handler, AccountTotals
+
+        with (
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        assert "<@" not in blocks[0]["text"]["text"]
+
     def test_logs_failure(self):
         from daily_recap.main import handler
 

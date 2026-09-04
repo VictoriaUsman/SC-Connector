@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
 
-from shared.slack_client import resolve_target_channels
+from shared.slack_client import get_channel_tag_block, resolve_target_channels
 
 
 class TestResolveTargetChannels:
@@ -42,6 +42,44 @@ class TestResolveTargetChannels:
     def test_channels_entries_missing_id_are_skipped(self):
         config = {"channels": [{"id": "C1"}, {"name": "no id"}, {"id": "C2"}]}
         assert resolve_target_channels(config) == ["C1", "C2"]
+
+
+class TestGetChannelTagBlock:
+    def test_builds_mention_block_for_single_user(self):
+        config = {"channels": [{"id": "C1", "tag_user_ids": ["U111"]}]}
+        block = get_channel_tag_block(config, "C1")
+        assert block == {"type": "section", "text": {"type": "mrkdwn", "text": "<@U111>"}}
+
+    def test_builds_mention_block_for_multiple_users(self):
+        config = {"channels": [{"id": "C1", "tag_user_ids": ["U111", "U222"]}]}
+        block = get_channel_tag_block(config, "C1")
+        assert block == {"type": "section", "text": {"type": "mrkdwn", "text": "<@U111> <@U222>"}}
+
+    def test_only_tags_the_matching_channel(self):
+        config = {
+            "channels": [
+                {"id": "C1", "tag_user_ids": ["U111"]},
+                {"id": "C2"},
+            ]
+        }
+        assert get_channel_tag_block(config, "C1") is not None
+        assert get_channel_tag_block(config, "C2") is None
+
+    def test_returns_none_when_channel_has_no_tag_user_ids(self):
+        config = {"channels": [{"id": "C1"}]}
+        assert get_channel_tag_block(config, "C1") is None
+
+    def test_returns_none_when_tag_user_ids_is_empty_list(self):
+        config = {"channels": [{"id": "C1", "tag_user_ids": []}]}
+        assert get_channel_tag_block(config, "C1") is None
+
+    def test_returns_none_when_channel_id_not_found(self):
+        config = {"channels": [{"id": "C1", "tag_user_ids": ["U111"]}]}
+        assert get_channel_tag_block(config, "C999") is None
+
+    def test_returns_none_for_legacy_config_without_channels_list(self):
+        config = {"slack_channel_id": "C123"}
+        assert get_channel_tag_block(config, "C123") is None
 
 
 class TestGetSlackToken:
