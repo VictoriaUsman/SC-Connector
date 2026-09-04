@@ -321,6 +321,13 @@ export interface SlackChannel {
   tag_user_ids?: string[];
 }
 
+/** Known Slack users selectable in the bot config "tag on notify" dropdown. */
+export const SLACK_USERS: { id: string; name: string }[] = [
+  { id: "U05RAQ83DHD", name: "AC" },
+  { id: "U057S30DQ9M", name: "Kris" },
+  { id: "U0BR6DMF8KE", name: "Ian" },
+];
+
 export interface BotConfig {
   id: string;
   client_id: string;

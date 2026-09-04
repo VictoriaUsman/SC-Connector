@@ -49,7 +49,9 @@ import {
   MARKETPLACES,
   CURRENCIES,
   CLIENT_TIMEZONES,
+  SLACK_USERS,
 } from "@/types";
+import { MultiSelectDropdown } from "@/components/multi-select-dropdown";
 import type { Event, BotConfig, Client, EventStatus, ManualAds, SlackChannel } from "@/types";
 import {
   Loader2,
@@ -564,11 +566,7 @@ function BotConfigDialog({
     setChannels((prev) => prev.map((c, i) => (i === index ? { ...c, [field]: value } : c)));
   };
 
-  const updateChannelTags = (index: number, rawValue: string) => {
-    const tagUserIds = rawValue
-      .split(/[,\s]+/)
-      .map((id) => id.trim())
-      .filter(Boolean);
+  const updateChannelTagIds = (index: number, tagUserIds: string[]) => {
     setChannels((prev) =>
       prev.map((c, i) => (i === index ? { ...c, tag_user_ids: tagUserIds } : c)),
     );
@@ -643,11 +641,11 @@ function BotConfigDialog({
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
-                  <Input
-                    value={(channel.tag_user_ids ?? []).join(", ")}
-                    onChange={(e) => updateChannelTags(index, e.target.value)}
-                    placeholder="Tag on notify: U0123ABC, U0456DEF (Slack user IDs)"
-                    className="text-xs"
+                  <MultiSelectDropdown
+                    label="Tag on notify"
+                    options={SLACK_USERS.map((u) => ({ id: u.id, label: u.name }))}
+                    selected={channel.tag_user_ids ?? []}
+                    onChange={(ids) => updateChannelTagIds(index, ids)}
                   />
                 </div>
               ))}
