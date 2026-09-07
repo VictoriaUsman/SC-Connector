@@ -399,6 +399,31 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
     ],
   },
 
+  SP_FINANCE_TRANSACTIONS: {
+    description: "Line-item financial transactions for a custom date range (Finances API v2024-06-19) — one row per breakdown line",
+    format: "tsv",
+    columns: [
+      "transactionId", "transactionType", "transactionStatus", "postedDate",
+      "description", "marketplaceId", "marketplaceName", "accountType",
+      "relatedOrderId", "settlementId", "releaseDate", "currencyCode",
+      "totalAmount", "breakdownType", "breakdownAmount", "lineIndex",
+      "sku", "quantityShipped", "fulfillmentNetwork",
+    ],
+    options: [
+      {
+        key: "transactionStatus",
+        label: "Transaction Status",
+        choices: [
+          { value: "", label: "All" },
+          { value: "RELEASED", label: "Released" },
+          { value: "DEFERRED", label: "Deferred" },
+          { value: "DEFERRED_RELEASED", label: "Deferred, Released" },
+        ],
+        default: "",
+      },
+    ],
+  },
+
   GET_FBA_ESTIMATED_FBA_FEES_TXT_DATA: {
     description: "Estimated Amazon selling and fulfillment fees per FBA product",
     format: "tsv",

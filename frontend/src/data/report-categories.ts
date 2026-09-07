@@ -153,6 +153,12 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
         description: "Financial ledger summary by ASIN",
       },
       {
+        id: "SP_FINANCE_TRANSACTIONS",
+        label: "Financial Transactions (Finances API)",
+        description: "Line-item financial transactions (sales, refunds, fees, reimbursements, adjustments) for a custom date range — replaces the Date Range Transaction Report, which Amazon no longer allows the API to request",
+        constraint: "Amazon returns at most 180 days per request (auto-chunked for wider ranges). Data may lag up to ~48h.",
+      },
+      {
         id: "GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2",
         label: "Settlement Report",
         description: "Settlement report with transaction details",
