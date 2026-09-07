@@ -1,17 +1,19 @@
-name: Deploy to dev
+name: Deploy to staging
 
 # On merge to main: run checks, then full deploy-all (infra + MCP + frontend)
-# to the dev environment (kalilos-connector-dev). Pull requests run checks
-# only (no deploy).
+# to the staging environment (project kalilos-connector-dev, Pulumi/env
+# stack "staging" -- this is the stack the live app (kalilos-staging-api,
+# vercel.app frontend) actually runs on; "dev" is a separate, unused stack
+# in the same GCP project). Pull requests run checks only (no deploy).
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
-# Avoid overlapping dev deploys; let an in-flight PR check be superseded.
+# Avoid overlapping staging deploys; let an in-flight PR check be superseded.
 concurrency:
-  group: deploy-dev-${{ github.ref }}
+  group: deploy-staging-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -54,12 +56,12 @@ jobs:
           npm ci
           npm run build
 
-  deploy-dev:
-    name: Deploy all to dev
+  deploy-staging:
+    name: Deploy all to staging
     needs: checks
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: dev
+    environment: staging
     permissions:
       contents: read
       id-token: write
@@ -100,7 +102,7 @@ jobs:
 
       - name: Apply Supabase schema
         # Runs infra/supabase/schema.sql's idempotent CREATE/ALTER statements
-        # against the live dev database. Previously a manual step -- see
+        # against the live staging database. Previously a manual step -- see
         # scripts/apply-supabase-schema.py; a missed run here is exactly what
         # let the jobs.mode/retry_of/row_count migration sit uncommitted and
         # unapplied while api_call-mode job inserts failed outright.
@@ -127,23 +129,23 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
-          cat > .env.dev <<EOF
-          ENVIRONMENT=dev
+          cat > .env.staging <<EOF
+          ENVIRONMENT=staging
           GCP_PROJECT=${GCP_PROJECT}
           GCP_REGION=${GCP_REGION}
           REGION=${GCP_REGION}
-          PULUMI_STACK=dev
+          PULUMI_STACK=staging
           GDRIVE_ROOT_FOLDER_ID=${GDRIVE_ROOT_FOLDER_ID}
           VITE_API_URL=${VITE_API_URL}
           VITE_API_KEY=${VITE_API_KEY}
           VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
           VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
           EOF
-          cp .env.dev .env.active
+          cp .env.staging .env.active
 
-      - name: Deploy backend to dev
+      - name: Deploy backend to staging
         # Frontend hosting moved to Vercel (frontend/vercel.json), which
         # deploys on push via its own GitHub integration — not this
         # workflow. `make deploy-all` still includes a Firebase Hosting
         # step left over from before that migration; skip it here.
-        run: make env-dev && make deploy-infra && make deploy-mcp
+        run: make env-staging && make deploy-infra && make deploy-mcp
