@@ -98,6 +98,18 @@ jobs:
       - name: Install firebase-tools
         run: npm install -g firebase-tools
 
+      - name: Apply Supabase schema
+        # Runs infra/supabase/schema.sql's idempotent CREATE/ALTER statements
+        # against the live dev database. Previously a manual step -- see
+        # scripts/apply-supabase-schema.py; a missed run here is exactly what
+        # let the jobs.mode/retry_of/row_count migration sit uncommitted and
+        # unapplied while api_call-mode job inserts failed outright.
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          pip install psycopg2-binary
+          python scripts/apply-supabase-schema.py
+
       - name: Create Pulumi virtualenv for infra
         working-directory: infra
         run: |
