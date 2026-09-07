@@ -22,6 +22,7 @@ import requests
 from google.cloud import secretmanager
 from shared.ads_report_config import ADS_REPORT_TYPES as _ADS_REPORT_TYPES, TIME_UNITS, get_report_defaults
 from shared.config import ADS_API_ENDPOINTS, LWA_TOKEN_URL, get_environment, get_project
+from shared.local_secrets import is_local_mode, resolve_secret
 from shared.logging_setup import (
     bind_log_context,
     clear_log_context,
@@ -1286,9 +1287,15 @@ def _pop_oauth_state(state: str) -> dict[str, str] | None:
 
 
 def _read_app_secret(api_source: str) -> dict[str, str]:
+    """Load the app-level LWA client_id/client_secret from Secret Manager
+    (or scripts/local-secrets.json when LOCAL_MODE=true)."""
     env = get_environment()
     prefix = "sp-api" if api_source == "sp_api" else "ads-api"
     secret_name = f"kalilos-{env}-{prefix}-app-credentials"
+
+    if is_local_mode():
+        return json.loads(resolve_secret(secret_name))
+
     project = get_project()
     name = f"projects/{project}/secrets/{secret_name}/versions/latest"
     resp = _get_sm().access_secret_version(name=name)
@@ -1496,7 +1503,7 @@ def oauth_callback():
     if error:
         logger.warning("OAuth error from Amazon", extra={"error": error, "description": error_description})
         msg = error_description or error
-        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message={msg}")
+        return flask.redirect(f"{_get_frontend_url()}/oauth-complete?oauth=error&message={msg}")
 
     code = flask.request.args.get("spapi_oauth_code") or flask.request.args.get("code")
     state = flask.request.args.get("state", "")
@@ -1504,12 +1511,12 @@ def oauth_callback():
 
     if not code:
         logger.warning("OAuth callback missing authorization code", extra={"state": state})
-        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message=missing_code")
+        return flask.redirect(f"{_get_frontend_url()}/oauth-complete?oauth=error&message=missing_code")
 
     state_data = _pop_oauth_state(state)
     if not state_data:
         logger.warning("OAuth callback invalid or expired state", extra={"state": state[:16]})
-        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message=invalid_state")
+        return flask.redirect(f"{_get_frontend_url()}/oauth-complete?oauth=error&message=invalid_state")
 
     client_id = state_data.get("client_id", "")
     api_source = state_data["api_source"]
@@ -1554,6 +1561,26 @@ def oauth_callback():
 
         elif api_source == "ads_api":
             access_token = tokens["access_token"]
+            # Ads API profiles are agency-shared, not per-seller like SP-API:
+            # one authorized login can reach every client's advertiser profile,
+            # distinguished only by profile_id (see shared/credentials.py's
+            # get_ads_credentials). So the refresh token belongs on the
+            # app-level credentials, not a per-client secret — persist it
+            # there (merging into whatever's already there) the first time
+            # a real Ads OAuth completes, since it was previously discarded
+            # after being used only for profile discovery.
+            if "refresh_token" in tokens:
+                try:
+                    env = get_environment()
+                    app_secret_name = f"kalilos-{env}-ads-api-app-credentials"
+                    merged = dict(app_creds)
+                    merged["refresh_token"] = tokens["refresh_token"]
+                    _get_sm().add_secret_version(request={
+                        "parent": f"projects/{get_project()}/secrets/{app_secret_name}",
+                        "payload": {"data": json.dumps(merged).encode("utf-8")},
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to persist Ads API agency refresh_token", extra={"error": str(exc)})
             update_fields_ads: dict[str, Any] = {}
             try:
                 profiles = _discover_ads_profiles(access_token, app_creds["client_id"])
@@ -1575,11 +1602,18 @@ def oauth_callback():
             "api_source": api_source,
             "selling_partner_id": selling_partner_id,
         })
-        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=success&api_source={api_source}&client_id={client_id}")
+        return flask.redirect(f"{_get_frontend_url()}/oauth-complete?oauth=success&api_source={api_source}&client_id={client_id}")
 
     except Exception as exc:
         logger.exception("OAuth token exchange failed", extra={"client_id": client_id, "api_source": api_source})
-        return flask.redirect(f"{_get_frontend_url()}/clients?oauth=error&message={str(exc)[:100]}")
+        # Postgres errors in particular often span multiple lines (e.g. a
+        # "LINE 1: ..." pointer under the message) — a raw newline in a
+        # redirect's Location header makes Werkzeug raise, turning what
+        # should be a clean error redirect into an unrelated 500. Collapse
+        # whitespace and URL-encode before it ever reaches the query string.
+        message = " ".join(str(exc)[:200].split())
+        query = urlencode({"oauth": "error", "message": message})
+        return flask.redirect(f"{_get_frontend_url()}/oauth-complete?{query}")
 
 
 @app.route("/oauth/debug", methods=["GET"])

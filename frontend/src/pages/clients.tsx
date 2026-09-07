@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -53,6 +52,7 @@ import {
   Eye,
   EyeOff,
   Copy,
+  Search,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -60,11 +60,11 @@ function ConnectionStatus({ connected, label }: { connected: boolean; label: str
   return (
     <span className="inline-flex items-center gap-1 text-xs">
       {connected ? (
-        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+        <CheckCircle2 className="h-3.5 w-3.5 text-status-success" />
       ) : (
         <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
       )}
-      <span className={connected ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>
+      <span className={connected ? "text-status-success" : "text-muted-foreground"}>
         {label}
       </span>
     </span>
@@ -263,20 +263,13 @@ export function Clients() {
   const [tokenValue, setTokenValue] = useState("");
   const [tokenRevealed, setTokenRevealed] = useState(false);
   const [tokenLoading, setTokenLoading] = useState(false);
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    const oauthResult = searchParams.get("oauth");
-    if (oauthResult === "success") {
-      const source = searchParams.get("api_source");
-      toast.success(`${source === "sp_api" ? "SP API" : "Ads API"} connected successfully`);
-      setSearchParams({}, { replace: true });
-    } else if (oauthResult === "error") {
-      const message = searchParams.get("message") ?? "Unknown error";
-      toast.error(`OAuth failed: ${message}`);
-      setSearchParams({}, { replace: true });
-    }
-  }, [searchParams, setSearchParams]);
+  const filteredClients = clients?.filter((client) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return client.name.toLowerCase().includes(q) || client.id.toLowerCase().includes(q);
+  });
 
   const handleCreate = (data: ClientFormData) => {
     const { sp_refresh_token, ads_profile_id, ...clientData } = data;
@@ -326,6 +319,15 @@ export function Clients() {
         onError: (err) => toast.error(err.message),
       },
     );
+  };
+
+  const copyConnectLink = async (url: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success(`${label} connect link copied`);
+    } catch {
+      toast.error("Couldn't copy link — your browser may be blocking clipboard access");
+    }
   };
 
   const handleDelete = (client: Client) => {
@@ -434,8 +436,19 @@ export function Clients() {
       </div>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
           <CardTitle>All Clients</CardTitle>
+          {!!clients?.length && (
+            <div className="relative w-64">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name or ID..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+          )}
         </CardHeader>
         <CardContent>
           {!clients?.length ? (
@@ -449,6 +462,12 @@ export function Clients() {
                   Add Client
                 </Button>
               }
+            />
+          ) : !filteredClients?.length ? (
+            <EmptyState
+              icon={Search}
+              title="No matching clients"
+              description={`No clients match "${search}".`}
             />
           ) : (
             <Table>
@@ -464,7 +483,7 @@ export function Clients() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {clients.map((client) => (
+                {filteredClients.map((client) => (
                   <TableRow key={client.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -519,20 +538,27 @@ export function Clients() {
                             </Button>
                           }
                         />
-                        <DropdownMenuContent align="end">
+                        <DropdownMenuContent align="end" className="w-64">
                           {!client.sp_api_secret_name && (
                             <>
                               {(() => {
                                 const regions = getClientRegions(client.marketplaces ?? []);
                                 const showRegionLabel = regions.length > 1;
                                 return regions.map((region) => (
-                                  <DropdownMenuItem
-                                    key={`sp-oauth-${region}`}
-                                    onClick={() => { window.location.href = api.getSpApiAuthUrl(client.id, region); }}
-                                  >
-                                    <Link2 className="mr-2 h-4 w-4" />
-                                    Connect SP API{showRegionLabel ? ` - ${REGION_LABELS[region] ?? region.toUpperCase()}` : ""} (OAuth)
-                                  </DropdownMenuItem>
+                                  <div key={`sp-oauth-${region}`}>
+                                    <DropdownMenuItem
+                                      onClick={() => { window.location.href = api.getSpApiAuthUrl(client.id, region); }}
+                                    >
+                                      <Link2 className="mr-2 h-4 w-4" />
+                                      Connect SP API{showRegionLabel ? ` - ${REGION_LABELS[region] ?? region.toUpperCase()}` : ""} (OAuth)
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={() => copyConnectLink(api.getSpApiAuthUrl(client.id, region), "SP API")}
+                                    >
+                                      <Copy className="mr-2 h-4 w-4" />
+                                      Copy SP API connect link{showRegionLabel ? ` - ${REGION_LABELS[region] ?? region.toUpperCase()}` : ""}
+                                    </DropdownMenuItem>
+                                  </div>
                                 ));
                               })()}
                               <DropdownMenuItem
@@ -543,6 +569,12 @@ export function Clients() {
                               </DropdownMenuItem>
                             </>
                           )}
+                          {client.sp_api_secret_name && (
+                            <DropdownMenuItem onClick={() => openTokenView(client)}>
+                              <Key className="mr-2 h-4 w-4" />
+                              Show SP API token
+                            </DropdownMenuItem>
+                          )}
                           {!client.ads_profile_id && (
                             <>
                               <DropdownMenuItem
@@ -552,18 +584,18 @@ export function Clients() {
                                 Connect Ads API (OAuth)
                               </DropdownMenuItem>
                               <DropdownMenuItem
+                                onClick={() => copyConnectLink(api.getAdsApiAuthUrl(client.id), "Ads API")}
+                              >
+                                <Copy className="mr-2 h-4 w-4" />
+                                Copy Ads API connect link
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
                                 onClick={() => openManualConnect(client, "ads_api")}
                               >
                                 <Key className="mr-2 h-4 w-4" />
                                 Connect Ads API (Token)
                               </DropdownMenuItem>
                             </>
-                          )}
-                          {client.sp_api_secret_name && (
-                            <DropdownMenuItem onClick={() => openTokenView(client)}>
-                              <Key className="mr-2 h-4 w-4" />
-                              View SP API token
-                            </DropdownMenuItem>
                           )}
                           <DropdownMenuItem
                             onClick={() => {

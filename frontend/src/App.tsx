@@ -9,6 +9,7 @@ import { Schedules } from "@/pages/schedules";
 import { OnDemand } from "@/pages/on-demand";
 import { Admin } from "@/pages/admin";
 import { SlackBots } from "@/pages/slack-bots";
+import { OAuthComplete } from "@/pages/oauth-complete";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -21,10 +22,11 @@ const queryClient = new QueryClient({
 
 export function App() {
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <Routes>
+            <Route path="oauth-complete" element={<OAuthComplete />} />
             <Route element={<Layout />}>
               <Route index element={<Dashboard />} />
               <Route path="clients" element={<Clients />} />
