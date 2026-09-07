@@ -20,17 +20,20 @@ blank: confirmed absent from the Finances API v2024-06-19 model (see
 shared.finances_client module docstring) and from every other SP-API
 surface this app calls.
 
-Two breakdownType families are dropped entirely rather than bucketed:
-- "FundTransfer": a disbursement/bank-transfer event, not order revenue or
-  expense -- the money it moves was already recognized by the order-level
-  transactions that earned it, so bucketing it (even into "other") would
-  double-count it. Confirmed absent from Amazon's own UI Transaction Report
-  ("type" column never contains "Transfer" in a real export).
-- "AdvertisingFee": ad spend deducted directly from the Amazon balance,
-  which is presumably already captured by a separate Ads API pull feeding
-  the P&L's own "Advertising Cost" line -- including it here would double
-  it from a second source.
-Both are logged (count + $ total) rather than silently discarded.
+"FundTransfer" (a disbursement/bank-transfer event) is bucketed into "other"
+like any other unmapped type, but with its sign flipped first. Confirmed
+2026-09 against a real July pull: Amazon's own UI report *does* include
+Transfer-type rows in "other" (its own "type" column shows "Transfer" with
+a real dollar amount there -- an earlier assumption that it was absent was
+wrong, based on a sample window that happened not to include one) -- but
+the Finances API records the transfer amount with the opposite sign from
+what the UI report shows (e.g. +72,276.61 here vs. the UI's negative
+equivalent), so it must be negated to land in the same place as ground
+truth, not just included as-is.
+
+AdvertisingFee is *not* special-cased here anymore -- shared.finance_buckets
+classifies it directly into "other transaction fees" (confirmed exact-match
+against a real July pull's ground truth for that column).
 
 Usage:
     python scripts/pivot-finance-transactions.py --in raw.tsv --out wide.csv
@@ -68,21 +71,13 @@ _BUCKET_TO_COLUMN = {
 
 _NUMERIC_COLUMNS = list(_BUCKET_TO_COLUMN.values())
 
-# breakdownType substrings (matched the same way finance_buckets normalizes
-# keys: lowercased, spaces/slashes/underscores stripped) excluded entirely --
-# see module docstring.
-_EXCLUDED_BREAKDOWN_SUBSTRINGS = ("fundtransfer", "advertisingfee")
-
 
 def _normalize(breakdown_type: str) -> str:
     return breakdown_type.lower().replace(" ", "").replace("/", "").replace("_", "")
 
 
-def _is_excluded(breakdown_type: str | None) -> bool:
-    if not breakdown_type:
-        return False
-    key = _normalize(breakdown_type)
-    return any(term in key for term in _EXCLUDED_BREAKDOWN_SUBSTRINGS)
+def _is_fund_transfer(breakdown_type: str | None) -> bool:
+    return bool(breakdown_type) and "fundtransfer" in _normalize(breakdown_type)
 
 
 _OUTPUT_COLUMNS = [
@@ -111,18 +106,11 @@ def main() -> None:
 
     groups: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
     unmapped_types: set[str] = set()
-    excluded_count = 0
-    excluded_amount = 0.0
+    transfer_count = 0
+    transfer_amount = 0.0
 
     for row in raw_rows:
         breakdown_type = row.get("breakdownType") or None
-        if _is_excluded(breakdown_type):
-            excluded_count += 1
-            amt_str = row.get("breakdownAmount") or ""
-            if amt_str:
-                excluded_amount += float(amt_str)
-            continue
-
         key = (row.get("transactionId", ""), row.get("sku") or "")
         group = groups.get(key)
         if group is None:
@@ -145,6 +133,12 @@ def main() -> None:
         if amount_str == "":
             continue
         amount = float(amount_str)
+
+        if _is_fund_transfer(breakdown_type):
+            transfer_count += 1
+            transfer_amount += amount
+            group["buckets"]["other"] += -amount  # sign-flip -- see module docstring
+            continue
 
         bucket = bucket_for(breakdown_type, row.get("transactionType"))
         if bucket == UNMAPPED:
@@ -192,10 +186,10 @@ def main() -> None:
             + ", ".join(sorted(unmapped_types)),
             file=sys.stderr,
         )
-    if excluded_count:
+    if transfer_count:
         print(
-            f"NOTE: excluded {excluded_count} FundTransfer/AdvertisingFee row(s) "
-            f"totaling {round(excluded_amount, 2)} -- see module docstring",
+            f"NOTE: {transfer_count} FundTransfer row(s) totaling {round(transfer_amount, 2)} "
+            f"folded into 'other' with sign flipped -- see module docstring",
             file=sys.stderr,
         )
 

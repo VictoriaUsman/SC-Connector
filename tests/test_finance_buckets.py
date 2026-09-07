@@ -89,6 +89,12 @@ class TestBucketFor:
         assert bucket_for("PerItemFee") == OTHER_TRANSACTION_FEES
         assert bucket_for("TaxCollectionFee") == OTHER_TRANSACTION_FEES
 
+    def test_advertising_fee_is_other_transaction_fees(self):
+        from shared.finance_buckets import OTHER_TRANSACTION_FEES, bucket_for
+
+        assert bucket_for("AdvertisingFee") == OTHER_TRANSACTION_FEES
+        assert bucket_for("Expenses / AdvertisingFee") == OTHER_TRANSACTION_FEES
+
     def test_none_breakdown_type_is_unmapped(self):
         from shared.finance_buckets import UNMAPPED, bucket_for
 

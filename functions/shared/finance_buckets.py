@@ -109,6 +109,11 @@ _RULES: tuple[tuple[tuple[str, ...], tuple[str, ...], str], ...] = (
     (("holdback",), (), OTHER_TRANSACTION_FEES),
     (("peritemfee",), (), OTHER_TRANSACTION_FEES),
     (("taxcollectionfee",), (), OTHER_TRANSACTION_FEES),
+    # Confirmed 2026-09 against a real ItsBodily/US July pull: excluding
+    # AdvertisingFee entirely left exactly -22,197.23 unaccounted for --
+    # which is the ground-truth report's *exact* "other transaction fees"
+    # total for that month (that column is 100% "Service Fee" type there).
+    (("advertisingfee",), (), OTHER_TRANSACTION_FEES),
     (("fba",), (), OTHER_TRANSACTION_FEES),  # standalone FBA-only events — see module docstring
     (("productcharges", "tax"), (), PRODUCT_SALES_TAX),
     (("principal",), (), PRODUCT_SALES),
