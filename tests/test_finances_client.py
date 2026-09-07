@@ -100,7 +100,7 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert len(rows) == 3
         for row in rows:
@@ -119,7 +119,7 @@ class TestFlattenTransaction:
             "totalAmount": {"currencyCode": "USD", "currencyAmount": 10.0},
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert len(rows) == 1
         assert rows[0]["breakdownType"] is None
@@ -141,7 +141,7 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert len(rows) == 1
         assert rows[0]["breakdownType"] == "Principal"
@@ -164,7 +164,7 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         # The grouping node ("ProductCharges") itself is not a row — only its
         # two leaves are, and their type carries the joined path.
@@ -176,7 +176,7 @@ class TestFlattenTransaction:
     def test_missing_related_order_id_is_none(self):
         from shared.finances_client import _flatten_transaction
 
-        rows = _flatten_transaction({"transactionId": "txn-5", "totalAmount": {}})
+        rows = _flatten_transaction({"transactionId": "txn-5", "totalAmount": {}}, "US")
         assert rows[0]["relatedOrderId"] is None
 
     def test_settlement_id_account_type_and_marketplace_name(self):
@@ -193,7 +193,7 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert rows[0]["marketplaceName"] == "amazon.com"
         assert rows[0]["accountType"] == "Standard Orders"
@@ -210,14 +210,14 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert rows[0]["releaseDate"] == "2026-07-09"
 
     def test_release_date_none_without_deferred_context(self):
         from shared.finances_client import _flatten_transaction
 
-        rows = _flatten_transaction({"transactionId": "txn-8", "totalAmount": {}})
+        rows = _flatten_transaction({"transactionId": "txn-8", "totalAmount": {}}, "US")
         assert rows[0]["releaseDate"] is None
 
     def test_sku_quantity_fulfillment_from_item_product_context(self):
@@ -238,11 +238,31 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert rows[0]["sku"] == "BW01004EL"
         assert rows[0]["quantityShipped"] == 1
         assert rows[0]["fulfillmentNetwork"] == "AFN"
+
+    def test_posted_date_is_converted_to_marketplace_local_time(self):
+        # 2026-08-01T06:55:00Z reads as "August 1" in UTC but is still
+        # "July 31, 11:55 PM PDT" in the US marketplace's own calendar day --
+        # exactly the boundary that confused a "pulled July 1-31" export
+        # showing an Aug-1-looking timestamp.
+        from shared.finances_client import _flatten_transaction
+
+        txn = {"transactionId": "txn-11", "postedDate": "2026-08-01T06:55:00Z", "totalAmount": {}}
+
+        rows = _flatten_transaction(txn, "US")
+
+        assert rows[0]["postedDate"] == "2026-07-31T23:55:00-07:00"
+
+    def test_posted_date_none_passes_through(self):
+        from shared.finances_client import _flatten_transaction
+
+        rows = _flatten_transaction({"transactionId": "txn-12", "totalAmount": {}}, "US")
+
+        assert rows[0]["postedDate"] is None
 
     def test_sku_is_none_for_transaction_level_breakdowns(self):
         # A transaction-level breakdown isn't attributable to a single item,
@@ -260,7 +280,7 @@ class TestFlattenTransaction:
             ],
         }
 
-        rows = _flatten_transaction(txn)
+        rows = _flatten_transaction(txn, "US")
 
         assert rows[0]["sku"] is None
 

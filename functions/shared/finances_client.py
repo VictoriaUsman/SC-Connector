@@ -118,7 +118,7 @@ def fetch_transactions(
 
     rows: list[dict[str, Any]] = []
     for txn in _dedupe_transactions(txns):
-        rows.extend(_flatten_transaction(txn))
+        rows.extend(_flatten_transaction(txn, marketplace))
 
     return rows
 
@@ -247,7 +247,29 @@ def _breakdown_signature(txn: dict[str, Any]) -> tuple[tuple[str, float], ...]:
     ))
 
 
-def _flatten_transaction(txn: dict[str, Any]) -> list[dict[str, Any]]:
+def _to_marketplace_local(utc_iso: str | None, marketplace: str) -> str | None:
+    """Convert a UTC "...Z" timestamp to the marketplace's local time, as an
+    ISO-8601 string with an explicit numeric offset (e.g.
+    "2026-07-31T23:55:00-07:00" instead of "2026-08-01T06:55:00Z").
+
+    Amazon's own postedDate is UTC, but a UTC clock-face reading can land on
+    the "wrong" calendar day relative to the marketplace's local day the
+    pull window is actually scoped to (confirmed source of real confusion:
+    a Jul 1-31 US pull correctly includes late-July-31-Pacific transactions
+    whose UTC timestamp reads Aug 1). Amazon's own UI report shows local
+    time with a timezone label for exactly this reason — this mirrors that.
+    Same instant either way; only the displayed calendar day changes.
+    """
+    if not utc_iso:
+        return utc_iso
+    try:
+        dt = datetime.strptime(utc_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return utc_iso
+    return dt.astimezone(_marketplace_tz(marketplace)).isoformat()
+
+
+def _flatten_transaction(txn: dict[str, Any], marketplace: str) -> list[dict[str, Any]]:
     total = txn.get("totalAmount") or {}
     marketplace_details = txn.get("marketplaceDetails") or {}
     seller_metadata = txn.get("sellingPartnerMetadata") or {}
@@ -255,7 +277,7 @@ def _flatten_transaction(txn: dict[str, Any]) -> list[dict[str, Any]]:
         "transactionId": txn.get("transactionId"),
         "transactionType": txn.get("transactionType"),
         "transactionStatus": txn.get("transactionStatus"),
-        "postedDate": txn.get("postedDate"),
+        "postedDate": _to_marketplace_local(txn.get("postedDate"), marketplace),
         "description": txn.get("description"),
         "marketplaceId": marketplace_details.get("marketplaceId"),
         "marketplaceName": marketplace_details.get("marketplaceName"),
