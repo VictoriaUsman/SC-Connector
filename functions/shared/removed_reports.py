@@ -10,12 +10,22 @@ can reject them up front with clear, actionable guidance.
 The Subscribe & Save reports below were deprecated on 2025-07-25 (empty
 responses) and fully removed from the SP-API on 2025-12-11.  Amazon's
 recommended replacement is the Replenishment API (v2022-11-07).
+
+GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA is a different kind of removal:
+Amazon still shows it in Seller Central and rejects it with a generic
+"Request for report type 1202 is not allowed at this time" (InvalidInput)
+rather than accept-then-cancel — confirmed against multiple, independently
+authorized accounts with Finance and Accounting already granted, so this is
+not a role/reconnect issue. Amazon's replacement is the Finances API
+(v2024-06-19) listTransactions operation, exposed here as the
+SP_FINANCE_TRANSACTIONS pseudo-report (shared.finances_client).
 """
 
 from __future__ import annotations
 
 FBA_SNS_PERFORMANCE_REPORT = "GET_FBA_SNS_PERFORMANCE_DATA"
 FBA_SNS_FORECAST_REPORT = "GET_FBA_SNS_FORECAST_DATA"
+DATE_RANGE_FINANCIAL_TRANSACTION_REPORT = "GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA"
 
 # Maps a removed SP-API report type to an actionable, human-readable reason.
 REMOVED_SP_REPORT_TYPES: dict[str, str] = {
@@ -33,6 +43,13 @@ REMOVED_SP_REPORT_TYPES: dict[str, str] = {
         "accepted but the report is immediately cancelled, so it can no longer "
         "be generated. Remove it from this schedule and use the Replenishment "
         "API (v2022-11-07) for Subscribe & Save metrics."
+    ),
+    DATE_RANGE_FINANCIAL_TRANSACTION_REPORT: (
+        "Amazon no longer allows GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA to "
+        "be requested via the SP-API — every request is rejected with "
+        "'not allowed at this time', regardless of role or reconnect state. "
+        "Remove it from this schedule and use 'Financial Transactions "
+        "(Finances API)' (SP_FINANCE_TRANSACTIONS) instead."
     ),
 }
 

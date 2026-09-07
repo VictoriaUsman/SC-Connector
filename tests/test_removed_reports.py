@@ -65,6 +65,18 @@ class TestRemovedReportRegistry:
 
         assert removed_report_reason("GET_SALES_AND_TRAFFIC_REPORT") is None
 
+    def test_date_range_financial_transaction_report_is_removed(self):
+        from shared.removed_reports import (
+            DATE_RANGE_FINANCIAL_TRANSACTION_REPORT,
+            is_removed_report_type,
+            removed_report_reason,
+        )
+
+        assert is_removed_report_type(DATE_RANGE_FINANCIAL_TRANSACTION_REPORT)
+        reason = removed_report_reason(DATE_RANGE_FINANCIAL_TRANSACTION_REPORT)
+        assert reason is not None
+        assert "SP_FINANCE_TRANSACTIONS" in reason
+
 
 # ---------------------------------------------------------------------------
 # create_report guard
@@ -112,6 +124,24 @@ class TestCreateReportGuard:
         err = mock_status.call_args_list[-1].kwargs["error_details"]
         assert err["code"] == "REPORT_REMOVED"
         assert err["phase"] == "create_report"
+
+    def test_date_range_financial_transaction_report_rejected_without_calling_amazon(self):
+        from create_report import main as cr
+
+        with (
+            patch.object(cr, "update_job_status"),
+            patch.object(cr, "get_sp_credentials") as mock_creds,
+            patch.object(cr, "sp_api_client") as mock_sp,
+        ):
+            body, code = cr.handler(_FakeRequest(
+                self._payload(report_type="GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA")
+            ))
+
+        assert code == 422
+        assert body["code"] == "REPORT_REMOVED"
+        assert "SP_FINANCE_TRANSACTIONS" in body["error"]
+        mock_creds.assert_not_called()
+        mock_sp.create_report.assert_not_called()
 
     def test_active_report_not_blocked(self):
         from create_report import main as cr

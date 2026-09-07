@@ -23,7 +23,7 @@ from shared.logging_setup import bind_log_context, clear_log_context, init_loggi
 from shared.report_converter import rows_to_tsv
 from shared.sp_api_rest import SPAPIRequestError
 from shared.throttle import is_throttled
-from shared import replenishment_client
+from shared import finances_client, replenishment_client
 
 logger = logging.getLogger(__name__)
 init_logging("fetch-api")
@@ -207,6 +207,13 @@ def _dispatch(
         return replenishment_client.fetch_offer_metrics(
             client_id, marketplace, start_date, end_date,
             aggregation=aggregation, time_period_type=time_period_type,
+        )
+
+    if handler_key == "finance_transactions":
+        transaction_status = (report_params.get("reportOptions") or {}).get("transactionStatus") or None
+        return finances_client.fetch_transactions(
+            client_id, marketplace, start_date, end_date,
+            transaction_status=transaction_status,
         )
 
     raise ValueError(f"No fetch handler implemented for '{handler_key}'")

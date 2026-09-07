@@ -197,6 +197,50 @@ _SNS_SP_METRICS_SCHEMA = TableSchema(
 )
 
 # ---------------------------------------------------------------------------
+# Financial transactions — SP_FINANCE_TRANSACTIONS (Finances API v2024-06-19)
+# ---------------------------------------------------------------------------
+# One row per breakdown line (see shared.finances_client._flatten_transaction).
+# Cross-pull de-dup happens at the BigQuery _latest view (client_id,
+# marketplace, transaction_id, breakdown_type, line_index) — see
+# infra/resources/bigquery.py's "finance_transactions" TABLE_DEFS entry —
+# same append-only-ingest-plus-read-side-view pattern as every other table.
+#
+# The last 7 columns (marketplace_name through fulfillment_network) are
+# appended rather than interleaved with the fields they logically sit next to
+# (marketplace_name next to marketplace_id, etc.) so the BigQuery table schema
+# only ever grows by adding nullable columns at the end — never reordering
+# existing ones. sku/quantity_shipped/fulfillment_network are NULL on rows
+# whose breakdown wasn't attributable to a single item (see
+# shared.finances_client._product_fields).
+_FINANCE_TRANSACTIONS_COLUMNS = (
+    ColumnMapping("transaction_id", "STRING", "transactionId"),
+    ColumnMapping("transaction_type", "STRING", "transactionType"),
+    ColumnMapping("transaction_status", "STRING", "transactionStatus"),
+    ColumnMapping("posted_date", "TIMESTAMP", "postedDate"),
+    ColumnMapping("description", "STRING", "description"),
+    ColumnMapping("marketplace_id", "STRING", "marketplaceId"),
+    ColumnMapping("related_order_id", "STRING", "relatedOrderId"),
+    ColumnMapping("currency", "STRING", "currencyCode"),
+    ColumnMapping("total_amount", "FLOAT", "totalAmount"),
+    ColumnMapping("breakdown_type", "STRING", "breakdownType"),
+    ColumnMapping("breakdown_amount", "FLOAT", "breakdownAmount"),
+    ColumnMapping("line_index", "INTEGER", "lineIndex"),
+    ColumnMapping("marketplace_name", "STRING", "marketplaceName"),
+    ColumnMapping("account_type", "STRING", "accountType"),
+    ColumnMapping("settlement_id", "STRING", "settlementId"),
+    ColumnMapping("release_date", "DATE", "releaseDate"),
+    ColumnMapping("sku", "STRING", "sku"),
+    ColumnMapping("quantity_shipped", "INTEGER", "quantityShipped"),
+    ColumnMapping("fulfillment_network", "STRING", "fulfillmentNetwork"),
+)
+
+_FINANCE_TRANSACTIONS_SCHEMA = TableSchema(
+    table_name="finance_transactions",
+    columns=_FINANCE_TRANSACTIONS_COLUMNS,
+    dedup_key=None,
+)
+
+# ---------------------------------------------------------------------------
 # Registry: (report_type, api_source) -> TableSchema
 # ---------------------------------------------------------------------------
 _REGISTRY: dict[tuple[str, str], TableSchema] = {
@@ -206,6 +250,7 @@ _REGISTRY: dict[tuple[str, str], TableSchema] = {
     ("sdCampaigns", "ads_api"): _SD_CAMPAIGNS_SCHEMA,
     ("SNS_OFFER_METRICS", "sp_api"): _SNS_OFFER_METRICS_SCHEMA,
     ("SNS_SP_METRICS", "sp_api"): _SNS_SP_METRICS_SCHEMA,
+    ("SP_FINANCE_TRANSACTIONS", "sp_api"): _FINANCE_TRANSACTIONS_SCHEMA,
 }
 
 

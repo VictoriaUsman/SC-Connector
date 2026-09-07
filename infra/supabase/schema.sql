@@ -89,7 +89,21 @@ CREATE TABLE IF NOT EXISTS jobs (
     ingest_status text,
     ingest_error text,
     started_at timestamptz NOT NULL DEFAULT now(),
-    completed_at timestamptz
+    completed_at timestamptz,
+    -- mode: "report" (async create-report -> poll -> download, the default
+    -- every existing job predates this column under) or "api_call" (synchronous
+    -- fetch_api path — Replenishment/S&S, Finances API transactions). Written by
+    -- shared.workflow_launcher and api/main.py's on-demand route ever since the
+    -- api_call path was added; missing from the original migration, so every
+    -- api_call-mode job insert failed outright (UndefinedColumn) until now.
+    mode text,
+    -- retry_of: the original job a manually-retried job is a retry of
+    -- (api/main.py's /jobs/<id>/retry). Same story as mode — always written,
+    -- never actually a column.
+    retry_of uuid REFERENCES jobs(id) ON DELETE SET NULL,
+    -- row_count: rows delivered by an api_call-mode job (fetch_api has no
+    -- report-file byte count to report, unlike the report pipeline).
+    row_count int
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_client_started ON jobs (client_id, started_at DESC);

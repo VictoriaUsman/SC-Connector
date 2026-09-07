@@ -25,6 +25,11 @@ SNS_OFFER_METRICS = "SNS_OFFER_METRICS"
 SNS_SP_METRICS = "SNS_SP_METRICS"
 SNS_OFFERS = "SNS_OFFERS"
 
+# Finances API v2024-06-19 (listTransactions) — replaces the SP-API report
+# GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA, which Amazon deprecated from
+# programmatic (Reports API) requests; see shared.removed_reports.
+SP_FINANCE_TRANSACTIONS = "SP_FINANCE_TRANSACTIONS"
+
 API_OPERATIONS: dict[str, dict] = {
     SNS_OFFER_METRICS: {
         "api_source": "sp_api",
@@ -59,6 +64,20 @@ API_OPERATIONS: dict[str, dict] = {
         "handler": "replenishment_offers",
         "aggregation": None,
         "bq_table": None,
+    },
+    SP_FINANCE_TRANSACTIONS: {
+        "api_source": "sp_api",
+        "label": "Financial Transactions (Finances API)",
+        "description": (
+            "Line-item financial transactions (sales, refunds, fees, "
+            "reimbursements, adjustments) for a custom date range from the "
+            "Finances API (v2024-06-19). Replaces the removed "
+            "GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA report."
+        ),
+        "handler": "finance_transactions",
+        "aggregation": None,
+        "bq_table": "finance_transactions",
+        "replaces": ["GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA"],
     },
 }
 

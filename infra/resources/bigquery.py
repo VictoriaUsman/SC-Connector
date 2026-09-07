@@ -131,6 +131,32 @@ _SNS_SP_METRICS_COLUMNS = [
     {"name": "shipped_subscription_units", "type": "FLOAT", "mode": "NULLABLE"},
 ]
 
+# Appended (not interleaved) so schema updates only ever add nullable columns
+# at the end — see the matching comment in shared.bq_schemas. sku/
+# quantity_shipped/fulfillment_network are NULL on rows whose breakdown wasn't
+# attributable to a single item (shared.finances_client._product_fields).
+_FINANCE_TRANSACTIONS_COLUMNS = [
+    {"name": "transaction_id", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "transaction_type", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "transaction_status", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "posted_date", "type": "TIMESTAMP", "mode": "NULLABLE"},
+    {"name": "description", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "marketplace_id", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "related_order_id", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "currency", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "total_amount", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "breakdown_type", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "breakdown_amount", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "line_index", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "marketplace_name", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "account_type", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "settlement_id", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "release_date", "type": "DATE", "mode": "NULLABLE"},
+    {"name": "sku", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "quantity_shipped", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "fulfillment_network", "type": "STRING", "mode": "NULLABLE"},
+]
+
 TABLE_DEFS: list[dict] = [
     {
         "name": "orders",
@@ -177,6 +203,20 @@ TABLE_DEFS: list[dict] = [
         "clustering": ["client_id", "marketplace"],
         "description": "Subscribe & Save account-level metrics from the Replenishment API",
     },
+    {
+        "name": "finance_transactions",
+        "columns": _FINANCE_TRANSACTIONS_COLUMNS,
+        "partition_field": "report_date",
+        "clustering": ["client_id", "marketplace"],
+        "description": "Line-item financial transactions from the Finances API (v2024-06-19)",
+        # finance_transactions_latest keeps one row per breakdown line, mirroring
+        # the row-level shape shared.finances_client emits. Transactions are
+        # immutable once posted (no last_updated_date equivalent), so order by
+        # posted_date itself — ties (a re-pulled/backfilled window) fall through
+        # to ingested_at, keeping the most recent pull.
+        "latest_keys": ("transaction_id", "breakdown_type", "line_index"),
+        "latest_order_by": "posted_date",
+    },
 ]
 
 
@@ -191,6 +231,7 @@ def _latest_view_query(
     dataset_id: str,
     table_name: str,
     row_dedup_keys: tuple[str, ...] | None = None,
+    order_by_field: str = "last_updated_date",
 ) -> str:
     """Build a read-side de-dup view query for an append-only base table.
 
@@ -199,11 +240,16 @@ def _latest_view_query(
     pull. The view restores the de-duplicated read semantics the old MERGE /
     DELETE+INSERT loaders provided, with one of two strategies:
 
-    * ``row_dedup_keys`` set (orders): keep one row per
-      (client_id, marketplace, *keys) — the latest by ``last_updated_date`` then
+    * ``row_dedup_keys`` set (orders, finance_transactions): keep one row per
+      (client_id, marketplace, *keys) — the latest by ``order_by_field`` then
       ``ingested_at``. This mirrors the old MERGE on (amazon_order_id, sku) and
-      is correct even when the same order line is re-pulled under several
-      ``report_date`` partitions (multi-day timeframes).
+      is correct even when the same row is re-pulled under several
+      ``report_date`` partitions (multi-day timeframes, or a backfill overlapping
+      a later scheduled pull). ``order_by_field`` defaults to orders'
+      ``last_updated_date``; a table without that column (e.g. finance
+      transactions, which are immutable once posted) passes its own — usually
+      just the date/timestamp field a re-pull can't retroactively change, so
+      ties fall through to ``ingested_at`` (the real "most recent pull wins").
 
     * ``row_dedup_keys`` is None (ads / SnS snapshots): keep every row of the
       most-recent pull per (client_id, marketplace, report_date) — DENSE_RANK
@@ -217,7 +263,7 @@ def _latest_view_query(
             "SELECT * EXCEPT(_row_rank) FROM (\n"
             "  SELECT t.*, ROW_NUMBER() OVER (\n"
             f"    PARTITION BY {partition}\n"
-            "    ORDER BY last_updated_date DESC, ingested_at DESC\n"
+            f"    ORDER BY {order_by_field} DESC, ingested_at DESC\n"
             "  ) AS _row_rank\n"
             f"  FROM {fq} AS t\n"
             ")\nWHERE _row_rank = 1"
@@ -292,6 +338,7 @@ def create(
             view=gcp.bigquery.TableViewArgs(
                 query=_latest_view_query(
                     project, dataset_id, table_name, table_def.get("latest_keys"),
+                    order_by_field=table_def.get("latest_order_by", "last_updated_date"),
                 ),
                 use_legacy_sql=False,
             ),
