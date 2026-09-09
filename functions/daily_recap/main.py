@@ -34,6 +34,7 @@ from google.cloud import bigquery
 
 from shared.db import (
     get_client,
+    has_bot_activity,
     list_bot_configs,
     log_bot_activity,
 )
@@ -110,6 +111,18 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         recap_date = _previous_calendar_day(now, client_tz)
         currency = config.get("base_currency", "USD")
 
+        # This function is invoked every 15 minutes (see
+        # infra/resources/scheduler.py); each client only gets acted on once
+        # it's inside its own 1-3h-past-local-midnight window, and only if
+        # that day's recap hasn't already been sent — two independent gates
+        # so a more-frequent trigger can't double-post.
+        if not _is_due(now, client_tz):
+            continue
+
+        report_date = recap_date.isoformat()
+        if has_bot_activity("daily_recap", client_id, report_date):
+            continue
+
         try:
             # Always recap the previous full calendar day (the spec's "previous
             # full calendar day") and query that exact day. The recap is
@@ -119,7 +132,6 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             # recent day with any data", but that was dominated by the ads tables
             # (which ingest before the orders report), so the chosen day's orders
             # were still missing and Total Sales read $0 while ads were correct.
-            report_date = recap_date.isoformat()
 
             # Query per marketplace (a single-element marketplaces list is the
             # same query today's single-marketplace clients already ran, so
@@ -243,7 +255,12 @@ _TRIGGER_WINDOW_END_HOURS = 3.0
 def _hours_since_local_midnight(now: datetime, client_tz: ZoneInfo) -> float:
     """Absolute hours elapsed since local midnight today, in client_tz."""
     local_now = now.astimezone(client_tz)
-    midnight_local = datetime(local_now.year, local_now.month, local_now.day, tzinfo=client_tz)
+    # Built via .replace() on the already-real `local_now` instance rather than
+    # the module-level `datetime` constructor, so this keeps working when a
+    # caller (e.g. handler(), in tests) patches `daily_recap.main.datetime` to
+    # freeze "now" — that patch doesn't touch datetime *instances* already in
+    # hand, only the module-level class name used to construct new ones.
+    midnight_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     # Convert both to UTC before subtracting to handle DST transitions correctly
     utc_midnight = midnight_local.astimezone(timezone.utc)
     utc_now = local_now.astimezone(timezone.utc)

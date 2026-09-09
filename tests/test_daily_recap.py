@@ -292,6 +292,8 @@ class TestHandlerGating:
                 _make_bot_config(daily_recap_enabled=True, hourly_enabled=False),
             ]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -314,6 +316,8 @@ class TestHandlerDelivery:
             patch("daily_recap.main.datetime") as mock_dt,
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=totals) as mock_query,
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -354,6 +358,8 @@ class TestHandlerDelivery:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -375,6 +381,8 @@ class TestHandlerDelivery:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -391,6 +399,8 @@ class TestHandlerDelivery:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -407,6 +417,8 @@ class TestHandlerDelivery:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", side_effect=RuntimeError("BQ down")),
             patch("daily_recap.main.log_bot_activity") as mock_log,
         ):
@@ -583,6 +595,8 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
             patch("daily_recap.main.datetime") as mock_dt,
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=totals) as mock_query,
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -621,6 +635,8 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
             patch("daily_recap.main.datetime") as mock_dt,
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)) as mock_query,
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -672,6 +688,8 @@ class TestAuAccountEndToEnd:
             patch("daily_recap.main.datetime", _FrozenDateTime),
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "acme-au", "name": "Acme AU", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._get_bq", return_value=fake),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity") as mock_log,
@@ -824,6 +842,8 @@ class TestMultiMarketplaceRecap:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US"])]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -850,6 +870,8 @@ class TestMultiMarketplaceRecap:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US", "CA"])]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", side_effect=lambda cid, mkts, *a: totals_by_mkt[mkts[0]]),
             patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -885,6 +907,8 @@ class TestMultiMarketplaceRecap:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US", "CA"])]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", side_effect=lambda cid, mkts, *a: totals_by_mkt[mkts[0]]),
             patch("daily_recap.main._query_prior_year_totals", side_effect=lambda cid, mkt, *a: yoy_by_mkt[mkt]),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -918,6 +942,8 @@ class TestMultiMarketplaceRecap:
         with (
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US", "CA"])]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._is_due", return_value=True),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
             patch("daily_recap.main._query_account_totals", side_effect=lambda cid, mkts, *a: totals_by_mkt[mkts[0]]),
             patch("daily_recap.main._query_prior_year_totals", side_effect=lambda cid, mkt, *a: yoy_by_mkt[mkt]),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
@@ -932,6 +958,110 @@ class TestMultiMarketplaceRecap:
         # Combined Total: spend 150 vs YoY 120, ppc 600 vs YoY 450.
         assert "Spend: $150.00 _(YoY: $120.00" in total_block
         assert "PPC Sales: $600.00 _(YoY: $450.00" in total_block
+
+
+class TestTriggerGating:
+    def test_client_not_due_yet_is_skipped(self):
+        """Outside the 1-3h post-local-midnight window: no query, no send."""
+        from daily_recap.main import handler, AccountTotals
+
+        # 30 min past Pacific midnight — before the window opens.
+        now = datetime(2026, 6, 5, 7, 30, tzinfo=timezone.utc)
+
+        with (
+            patch("daily_recap.main.datetime") as mock_dt,
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals") as mock_query,
+            patch("daily_recap.main.has_bot_activity") as mock_has_activity,
+            patch("daily_recap.main.post_message") as mock_post,
+        ):
+            mock_dt.now.return_value = now
+            body, status = handler(_make_request())
+
+        assert body["messages_sent"] == 0
+        mock_query.assert_not_called()
+        mock_post.assert_not_called()
+        # Not-due is decided before ever checking activity history.
+        mock_has_activity.assert_not_called()
+
+    def test_client_due_but_already_sent_is_skipped(self):
+        from daily_recap.main import handler, AccountTotals
+
+        # 2h past Pacific midnight — inside the window.
+        now = datetime(2026, 6, 5, 9, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("daily_recap.main.datetime") as mock_dt,
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main.has_bot_activity", return_value=True) as mock_has_activity,
+            patch("daily_recap.main._query_account_totals") as mock_query,
+            patch("daily_recap.main.post_message") as mock_post,
+        ):
+            mock_dt.now.return_value = now
+            body, status = handler(_make_request())
+
+        assert body["messages_sent"] == 0
+        mock_query.assert_not_called()
+        mock_post.assert_not_called()
+        mock_has_activity.assert_called_once_with("daily_recap", "c1", "2026-06-04")
+
+    def test_client_due_and_not_yet_sent_proceeds(self):
+        from daily_recap.main import handler, AccountTotals
+
+        now = datetime(2026, 6, 5, 9, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("daily_recap.main.datetime") as mock_dt,
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
+            patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            mock_dt.now.return_value = now
+            body, status = handler(_make_request())
+
+        assert body["messages_sent"] == 1
+        mock_post.assert_called_once()
+
+    def test_mixed_clients_only_due_one_sends(self):
+        """Two clients in the same invocation, in different timezones — only
+        the one whose local time is inside its own window sends."""
+        from daily_recap.main import handler, AccountTotals
+
+        due_config = _make_bot_config(client_id="due-client")
+        due_config["client_timezone"] = "America/Los_Angeles"
+        due_config["channels"] = [{"id": "C_DUE"}]
+        del due_config["slack_channel_id"]
+
+        not_due_config = _make_bot_config(client_id="not-due-client")
+        not_due_config["client_timezone"] = "Europe/Berlin"
+        not_due_config["channels"] = [{"id": "C_NOT_DUE"}]
+        del not_due_config["slack_channel_id"]
+
+        # 2h past Pacific midnight (due) — Berlin midnight was ~11h ago (not due).
+        now = datetime(2026, 6, 5, 9, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("daily_recap.main.datetime") as mock_dt,
+            patch("daily_recap.main.list_bot_configs", return_value=[due_config, not_due_config]),
+            patch("daily_recap.main.get_client", return_value={"id": "x", "name": "X", "is_active": True}),
+            patch("daily_recap.main.has_bot_activity", return_value=False),
+            patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            mock_dt.now.return_value = now
+            body, status = handler(_make_request())
+
+        assert body["messages_sent"] == 1
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][0] == "C_DUE"
 
 
 # ---------------------------------------------------------------------------
