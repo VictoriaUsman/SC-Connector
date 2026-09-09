@@ -768,6 +768,31 @@ def log_bot_activity(data: dict[str, Any]) -> str:
         return str(row[0])
 
 
+def has_bot_activity(bot: str, client_id: str, recap_date: str, status: str = "sent") -> bool:
+    """True if a bot_activity row already records this (bot, client, recap_date, status).
+
+    Used to make a periodic (rather than once-daily) trigger idempotent: before
+    sending, a caller checks whether today's send already happened so a
+    more-frequent poll doesn't double-post. Queries the same `payload` shape
+    ``log_bot_activity`` already writes on every send (``bot``, ``client_id``,
+    ``recap_date``, ``status``) — no new table or column.
+    """
+    conn = _get_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM bot_activity
+            WHERE payload->>'bot' = %s
+              AND payload->>'client_id' = %s
+              AND payload->>'recap_date' = %s
+              AND payload->>'status' = %s
+            LIMIT 1
+            """,
+            (bot, client_id, recap_date, status),
+        )
+        return cur.fetchone() is not None
+
+
 # ---------------------------------------------------------------------------
 # Slack Thread Anchors
 # ---------------------------------------------------------------------------

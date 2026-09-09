@@ -971,3 +971,37 @@ class TestAppConfig:
         assert "ON CONFLICT" in sql_text.upper() and "DO UPDATE" in sql_text.upper()
         assert params[0] == "currency_rates"
         assert any("Json" in str(type(p)) for p in params)
+
+
+class TestHasBotActivity:
+    def test_true_when_matching_row_exists(self):
+        cur = _FakeCursor([(_desc("exists"), [(1,)])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.has_bot_activity("daily_recap", "c1", "2026-09-08")
+        assert result is True
+
+    def test_false_when_no_matching_row(self):
+        cur = _FakeCursor([(_desc("exists"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            result = db.has_bot_activity("daily_recap", "c1", "2026-09-08")
+        assert result is False
+
+    def test_queries_bot_client_date_and_status(self):
+        cur = _FakeCursor([(_desc("exists"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.has_bot_activity("daily_recap", "c1", "2026-09-08", status="sent")
+        query, params = cur.queries[-1]
+        sql_text = str(query)
+        assert "bot_activity" in sql_text
+        assert "payload->>'bot'" in sql_text
+        assert "payload->>'client_id'" in sql_text
+        assert "payload->>'recap_date'" in sql_text
+        assert "payload->>'status'" in sql_text
+        assert params == ("daily_recap", "c1", "2026-09-08", "sent")
+
+    def test_default_status_is_sent(self):
+        cur = _FakeCursor([(_desc("exists"), [])])
+        with patch.object(db, "_get_connection", return_value=_FakeConnection(cur)):
+            db.has_bot_activity("daily_recap", "c1", "2026-09-08")
+        _, params = cur.queries[-1]
+        assert params[3] == "sent"
