@@ -1,4 +1,3 @@
-encryptionsalt: v1:4a0gKtmtwlM=:v1:0gV7OCH6zaofXNJL:LXrMhbrxkYlntx7fuJ7Hnilxe+38Yg==
 config:
   gcp:project: kalilos-connector-dev
   gcp:region: us-central1
@@ -7,10 +6,11 @@ config:
   kalilos:gdrive-root-folder: Kalilos Reports
   kalilos:gdrive-root-folder-id: 0AMwE_D4Cl8OUUk9PVA
   kalilos:frontend-url: https://kalilos-connector.vercel.app
-  kalilos:supabase-db-url:
-    secure: v1:yBgZidedPlGs6CGu:ZR2BsgLdZB8T9cDof/GKTiTGnfKhcFrblCGNp/LKmnztgd9F77ETlAG8Ldp7JCzENDpEbwSmoSPGl0loc7LxXLWAOM2Bkkf7nBvRUbPiJLk+s6NdUJonTk139Lxb70cpwt71eNM2
   kalilos:supabase-url: https://ckrbkeljuevemzclcpod.supabase.co
+  kalilos:supabase-db-url:
+    secure: v1:kphLbv0X+UYxLXP9:uedRzuObhwxsS1NFDmH3o4qNI2XGMXf6WrvdeaxjxY7utmQrrAbBfzr+uRKebnD6cf0YjGYh7q1Q6SknFlC1iK0IcNjuuCwtOljrm36i68m9WSnWOGA6IGFoKX8MeIPilmtzVtsr
   kalilos:api-key:
-    secure: v1:0VtP9Qj4Wsm+G8/r:LVtsyfgjHRLPAKMzPiv6ZHSroYB+Zf8ClURMNOJNEmtHy/ypVGBqq8IDNiP0r+2vBxmS3Mr8vOKupL4=
+    secure: v1:+RRk3cVWCjZHdf3B:91S1varJVpSkP38gjPsW8K+TH7D8j3Mki4mNkbZFykPtIL/E9Z0ZQCHoxxPOKVq1UfOamlw2LX8=
   kalilos:mcp-api-key:
-    secure: v1:UjsF4sV7X5zY40bl:ktriH/wcGXKpjDQzjc2isL4KW4S/8VQeRZeuGuZ6P9JB2wQcDgiUigqxH9hm0zNyiDjSmu3uRttYjZo=
+    secure: v1:NYMGhoMQYkA7n+yh:qYRfYs5em/7SI/KyzRKsEGPsm2zbYBhjySqk1XOIg8MmFbSv6ho1fCSOxcK4HnCusR9bgi1UDnk=
+encryptionsalt: v1:nTohlkOlwzg=:v1:3KUpiw23DzngV9cN:TiGxe4Vt8lbPyil9eaRCTshhGBwf2Q==
