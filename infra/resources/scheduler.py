@@ -97,14 +97,17 @@ def create(
             daily_recap = gcp.cloudscheduler.Job(
                 f"kalilos-{env}-daily-recap",
                 name=f"kalilos-{env}-daily-recap",
-                # Run after the day's report pulls (ads *and* the orders report)
-                # have ingested. At the old 10:00 UTC slot the recap queried
-                # before the orders report landed (~10:30–11:00 UTC), so Total
-                # Sales read $0 while ads were already correct. 23:00 UTC is still
-                # the same Pacific calendar day as the old slot, so the recap's
-                # "previous full calendar day" is unchanged — only the data is now
-                # present. Overridable via the kalilos:daily-recap-cron config.
-                schedule=kalilos_config.get("daily-recap-cron") or "0 23 * * *",
+                # Runs every 15 minutes; the function itself decides, per
+                # client, whether "now" falls 1-3 hours past *that client's*
+                # own local midnight (see functions/daily_recap/main.py's
+                # `_is_due`) before doing any work. This replaced a single
+                # fixed 23:00 UTC daily fire — correct for keeping Total Sales
+                # from reading $0 before that day's orders report had
+                # ingested, but it meant every client waited until 23:00 UTC
+                # regardless of their own timezone (up to ~16h after a
+                # Pacific client's own midnight). Overridable via the
+                # kalilos:daily-recap-cron config.
+                schedule=kalilos_config.get("daily-recap-cron") or "*/15 * * * *",
                 time_zone="UTC",
                 region=region,
                 project=project,
