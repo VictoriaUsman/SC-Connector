@@ -10,9 +10,14 @@ comparison "daily pulse". For every client whose bot config has
   3. Derives ACoS (Spend / PPC Sales) and TACoS (Spend / Total Sales)
   4. Posts a flat, single-day recap to the client's configured Slack channel
 
-The message body is exactly a date line (MM/DD/YY) followed by five bulleted
-lines, matching the hourly bot's visual style. It contains no comparison logic
-(no DoD/WoW/MoM/YoY, no event-day indexing).
+The message matches the hourly bot's visual style: a title block
+(":bar_chart: Daily Recap — {client}" + a "{time} | {date}" subtitle), then
+one block per marketplace (plain, non-bulleted metric lines — no
+DoD/WoW/MoM/event-day indexing), and a combined *Total* block once a client
+has 2+ marketplaces. The one comparison it does carry is an inline YoY suffix
+on Spend, PPC Sales, and ACoS, sourced from a manually-loaded prior-year
+reference table (see scripts/load_prior_year_reference.py) when one exists for
+the client/marketplace/date; it's silently omitted otherwise.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 import flask
@@ -36,6 +41,8 @@ from shared import metrics_repository
 from shared.logging_setup import init_logging
 from shared.slack_client import (
     format_currency,
+    format_delta,
+    format_delta_bps,
     format_percentage,
     get_channel_tag_block,
     post_message,
@@ -113,23 +120,47 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             # (which ingest before the orders report), so the chosen day's orders
             # were still missing and Total Sales read $0 while ads were correct.
             report_date = recap_date.isoformat()
-            totals = _query_account_totals(
-                client_id, marketplaces, report_date, client_tz,
-            )
-            blocks = _build_recap_blocks(recap_date, totals, currency)
+
+            # Query per marketplace (a single-element marketplaces list is the
+            # same query today's single-marketplace clients already ran, so
+            # this is a no-op refactor for them). A combined Total block is
+            # only meaningful — and only shown — once there are 2+ marketplaces
+            # to add together.
+            per_marketplace_totals = {
+                mkt: _query_account_totals(client_id, [mkt], report_date, client_tz)
+                for mkt in marketplaces
+            }
+            per_marketplace_yoy = {
+                mkt: _query_prior_year_totals(client_id, mkt, recap_date)
+                for mkt in marketplaces
+            }
+
+            blocks: list[dict] = [
+                _build_title_block(client.get("name", client_id), recap_date, now, client_tz),
+            ]
+            for mkt in marketplaces:
+                blocks.append(_build_marketplace_block(
+                    mkt, per_marketplace_totals[mkt], currency, now, client_tz,
+                    yoy=per_marketplace_yoy[mkt],
+                ))
+            _maybe_add_total_block(blocks, per_marketplace_totals, per_marketplace_yoy, currency)
+
             text_fallback = f"Daily Recap — {recap_date.strftime('%m/%d/%y')}"
 
             # Per-client totals are logged so the recap day and each metric are
             # verifiable in Cloud Logging (e.g. confirming Total Sales is no
-            # longer spuriously zero once orders have ingested).
+            # longer spuriously zero once orders have ingested). Logged as the
+            # combined total across marketplaces, matching the pre-breakdown
+            # log shape.
+            combined = _sum_totals(per_marketplace_totals.values())
             logger.info(
                 "Daily recap computed",
                 extra={
                     "client_id": client_id,
                     "recap_date": report_date,
-                    "spend": round(totals.spend, 2),
-                    "ppc_sales": round(totals.ppc_sales, 2),
-                    "total_sales": round(totals.total_sales, 2),
+                    "spend": round(combined.spend, 2),
+                    "ppc_sales": round(combined.ppc_sales, 2),
+                    "total_sales": round(combined.total_sales, 2),
                 },
             )
 
@@ -349,22 +380,208 @@ def _query_ads_total(
 
 
 # ---------------------------------------------------------------------------
+# YoY baseline — manually-loaded prior-year reference data
+# ---------------------------------------------------------------------------
+
+def _query_prior_year_totals(
+    client_id: str, marketplace: str, recap_date: date,
+) -> AccountTotals | None:
+    """Same-calendar-date-last-year totals, or None when no baseline exists.
+
+    Reads ``ads_prior_year_reference`` (see scripts/load_prior_year_reference.py)
+    — a manually-loaded Amazon Ads export, not part of the normal ingestion
+    pipeline. It only has Spend/PPC Sales/Purchases/Units sold, never an
+    account-wide Total Sales, so ``total_sales`` is always 0 on the returned
+    ``AccountTotals`` and the caller must never show a Total Sales/TACoS YoY
+    from it. Returns None (rather than raising) on a missing row, a
+    year-that-doesn't-exist edge case (e.g. Feb 29), or any query failure —
+    a client with no reference data loaded yet is the normal case, not an
+    error, and the recap must still send without YoY.
+    """
+    try:
+        prior_date = recap_date.replace(year=recap_date.year - 1)
+    except ValueError:
+        return None
+
+    project = os.environ.get("GCP_PROJECT", "")
+    dataset = os.environ.get("BQ_DATASET", "")
+    query = f"""
+        SELECT spend, ppc_sales
+        FROM `{project}.{dataset}.ads_prior_year_reference`
+        WHERE client_id = @client_id AND marketplace = @marketplace AND date = @date
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("client_id", "STRING", client_id),
+        bigquery.ScalarQueryParameter("marketplace", "STRING", marketplace),
+        bigquery.ScalarQueryParameter("date", "DATE", prior_date.isoformat()),
+    ])
+    try:
+        for row in _get_bq().query(query, job_config=job_config):
+            return AccountTotals(spend=float(row["spend"]), ppc_sales=float(row["ppc_sales"]), total_sales=0.0)
+    except Exception:
+        logger.warning(
+            "Prior-year reference query failed — sending recap without YoY",
+            extra={"client_id": client_id, "marketplace": marketplace, "prior_date": prior_date.isoformat()},
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Slack message formatting
 # ---------------------------------------------------------------------------
 
-def _build_recap_blocks(recap_date, totals: AccountTotals, currency: str) -> list[dict]:
-    """Build the flat single-day recap: a date line + five bulleted metric lines."""
-    lines = [
-        recap_date.strftime("%m/%d/%y"),
-        f"• Spend: {format_currency(totals.spend, currency)}",
-        f"• PPC Sales: {format_currency(totals.ppc_sales, currency)}",
-        f"• ACoS: {format_percentage(totals.acos)}",
-        f"• Total Sales: {format_currency(totals.total_sales, currency)}",
-        f"• TACoS: {format_percentage(totals.tacos)}",
-    ]
+def _section(text: str) -> dict:
+    """A mrkdwn section block with ``expand: True`` so it's never collapsed
+    behind Slack's "Show more" toggle, matching the hourly bot's convention."""
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}, "expand": True}
+
+
+def _yoy_currency_suffix(prior: float | None, current: float, currency: str) -> str:
+    """Inline YoY suffix for a currency metric, or "" when no baseline exists."""
+    if prior is None:
+        return ""
+    return f" _(YoY: {format_currency(prior, currency)} {format_delta(current, prior)})_"
+
+
+def _yoy_pct_suffix(prior: float | None, current: float) -> str:
+    """Inline YoY suffix for a percentage metric (ACoS), or "" when no baseline exists."""
+    if prior is None:
+        return ""
+    return f" _(YoY: {format_percentage(prior)} {format_delta_bps(current, prior)})_"
+
+
+_MARKETPLACE_TIMEZONES: dict[str, str] = {
+    "US": "America/Los_Angeles",
+    "CA": "America/Los_Angeles",
+    "MX": "America/Los_Angeles",
+    "UK": "Europe/London",
+    "DE": "Europe/Paris",
+    "FR": "Europe/Paris",
+    "IT": "Europe/Paris",
+    "ES": "Europe/Paris",
+    "NL": "Europe/Paris",
+    "TR": "Europe/Istanbul",
+    "AU": "Australia/Sydney",
+    "SG": "Asia/Singapore",
+}
+
+_TZ_ABBREVIATIONS: dict[str, str] = {
+    "America/Los_Angeles": "PST",
+    "America/New_York": "EST",
+    "Europe/London": "GMT",
+    "Europe/Paris": "CET",
+    "Europe/Istanbul": "TRT",
+    "Australia/Sydney": "AEST",
+    "Asia/Singapore": "SGT",
+}
+
+
+def _format_local_time(now: datetime, tz: ZoneInfo) -> str:
+    """Format time like '6 PM PST' (or '6 PM PDT' while daylight saving is in
+    effect). Duplicated from the hourly bot (functions/slack_bot/main.py) —
+    each Cloud Function's deploy bundles only its own directory + shared/, so
+    the two bots can't import each other's code, only shared/ (see design
+    note on ``_maybe_add_total_block`` for the same reasoning). Strips the
+    leading-zero hour manually rather than via the hourly bot's ``%-I``
+    (a glibc-only strftime extension that raises ValueError on Windows,
+    though never on the Linux Cloud Functions runtime this actually deploys
+    to) so this copy also runs cleanly in local/Windows dev and tests.
+    """
+    local = now.astimezone(tz)
+    hour = local.strftime("%I %p").lstrip("0")
+    live_name = local.tzname() or ""
+    tz_name = live_name if live_name and live_name[0] not in "+-" else _TZ_ABBREVIATIONS.get(str(tz), str(tz))
+    return f"{hour} {tz_name}"
+
+
+def _build_title_block(client_name: str, recap_date, now: datetime, client_tz: ZoneInfo) -> dict:
+    """Title + subtitle, matching the hourly bot's header style.
+
+    daily_recap has no event/day-index concept (it's year-round, not tied to
+    an event), so the subtitle is just "{time posted} | {recap date}" rather
+    than the hourly bot's "{time} | {event_name} — Day N".
+    """
+    time_str = _format_local_time(now, client_tz)
+    subtitle = f"{time_str} | {recap_date.strftime('%m/%d/%y')}"
+    return _section(f":bar_chart: *Daily Recap — {client_name}*\n{subtitle}")
+
+
+def _metric_lines(totals: AccountTotals, currency: str, yoy: AccountTotals | None) -> list[str]:
+    """The five plain (non-bulleted) metric lines, matching the hourly bot's style."""
     return [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-        },
+        f"Spend: {format_currency(totals.spend, currency)}"
+        f"{_yoy_currency_suffix(yoy.spend if yoy else None, totals.spend, currency)}",
+        f"PPC Sales: {format_currency(totals.ppc_sales, currency)}"
+        f"{_yoy_currency_suffix(yoy.ppc_sales if yoy else None, totals.ppc_sales, currency)}",
+        f"ACoS: {format_percentage(totals.acos)}"
+        f"{_yoy_pct_suffix(yoy.acos if yoy else None, totals.acos)}",
+        f"Total Sales: {format_currency(totals.total_sales, currency)}",
+        f"TACoS: {format_percentage(totals.tacos)}",
     ]
+
+
+def _build_marketplace_block(
+    marketplace: str,
+    totals: AccountTotals,
+    currency: str,
+    now: datetime,
+    client_tz: ZoneInfo,
+    *,
+    yoy: AccountTotals | None = None,
+) -> dict:
+    """One marketplace's block: a bold marketplace header (with its own local
+    time when it differs from the client's) plus five plain metric lines.
+
+    ``yoy`` — the same-calendar-date-last-year totals — adds an inline YoY
+    comparison to Spend, PPC Sales, and ACoS only. Total Sales and TACoS never
+    get one: the prior-year reference data is a manually-loaded Ads export
+    (see scripts/load_prior_year_reference.py), which has no account-wide
+    order total to compare against, only ad-attributed figures.
+    """
+    header = f"*{marketplace}*"
+    mkt_tz_str = _MARKETPLACE_TIMEZONES.get(marketplace)
+    if mkt_tz_str and mkt_tz_str != str(client_tz):
+        header += f" ({_format_local_time(now, ZoneInfo(mkt_tz_str))})"
+
+    lines = [header, *_metric_lines(totals, currency, yoy)]
+    return _section("\n".join(lines))
+
+
+def _sum_totals(totals: Iterable[AccountTotals]) -> AccountTotals:
+    """Combine several marketplaces' totals into one (for logging/Total row)."""
+    totals = list(totals)
+    return AccountTotals(
+        spend=sum(t.spend for t in totals),
+        ppc_sales=sum(t.ppc_sales for t in totals),
+        total_sales=sum(t.total_sales for t in totals),
+    )
+
+
+def _maybe_add_total_block(
+    blocks: list[dict],
+    per_marketplace_totals: dict[str, AccountTotals],
+    per_marketplace_yoy: dict[str, AccountTotals | None],
+    currency: str,
+) -> None:
+    """Append a combined *Total* block across marketplaces, when there's more than one.
+
+    A single-marketplace account has nothing to total — its Total would just
+    repeat that one marketplace's own numbers — so this is a no-op below 2,
+    matching the hourly bot's existing ``_maybe_add_total_row`` convention.
+
+    The Total's own YoY is only shown when *every* marketplace has a prior-year
+    baseline — a partial sum (some marketplaces compared, others not) would
+    misrepresent the comparison rather than just omit it.
+    """
+    if len(per_marketplace_totals) <= 1:
+        return
+
+    total = _sum_totals(per_marketplace_totals.values())
+
+    yoy_by_mkt = per_marketplace_yoy.values()
+    total_yoy = _sum_totals(yoy_by_mkt) if all(v is not None for v in yoy_by_mkt) else None
+
+    lines = ["*Total*", *_metric_lines(total, currency, total_yoy)]
+    blocks.append({"type": "divider"})
+    blocks.append(_section("\n".join(lines)))

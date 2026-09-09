@@ -88,43 +88,81 @@ class TestPreviousCalendarDay:
 # Message formatting
 # ---------------------------------------------------------------------------
 
-class TestBuildRecapBlocks:
+class TestBuildTitleBlock:
     def test_exact_format(self):
-        from daily_recap.main import _build_recap_blocks, AccountTotals
+        """Title + subtitle, matching the hourly bot's header style."""
+        from daily_recap.main import _build_title_block
         from datetime import date
+
+        # 10:00 UTC on 06/05 is 3 AM PDT.
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        block = _build_title_block("ItsBodily", date(2026, 6, 4), now, ZoneInfo("America/Los_Angeles"))
+        assert block["text"]["text"] == ":bar_chart: *Daily Recap — ItsBodily*\n3 AM PDT | 06/04/26"
+
+    def test_no_event_or_day_language(self):
+        """daily_recap is year-round, not event-based — no "Day N" / event name."""
+        from daily_recap.main import _build_title_block
+        from datetime import date
+
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        text = _build_title_block("Acme", date(2026, 6, 4), now, ZoneInfo("America/Los_Angeles"))["text"]["text"]
+        for token in ("Day ", "Event"):
+            assert token not in text
+
+
+class TestBuildMarketplaceBlock:
+    def test_exact_format(self):
+        from daily_recap.main import _build_marketplace_block, AccountTotals
 
         totals = AccountTotals(spend=100.18, ppc_sales=347.68, total_sales=1604.29)
-        blocks = _build_recap_blocks(date(2026, 6, 4), totals, "USD")
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        block = _build_marketplace_block("US", totals, "USD", now, ZoneInfo("America/Los_Angeles"))
 
-        assert len(blocks) == 1
-        text = blocks[0]["text"]["text"]
         expected = (
-            "06/04/26\n"
-            "• Spend: $100.18\n"
-            "• PPC Sales: $347.68\n"
-            "• ACoS: 28.81%\n"
-            "• Total Sales: $1,604.29\n"
-            "• TACoS: 6.24%"
+            "*US*\n"
+            "Spend: $100.18\n"
+            "PPC Sales: $347.68\n"
+            "ACoS: 28.81%\n"
+            "Total Sales: $1,604.29\n"
+            "TACoS: 6.24%"
         )
-        assert text == expected
+        assert block["text"]["text"] == expected
 
-    def test_no_comparison_or_event_language(self):
-        from daily_recap.main import _build_recap_blocks, AccountTotals
-        from datetime import date
+    def test_no_comparison_or_event_language_without_yoy(self):
+        from daily_recap.main import _build_marketplace_block, AccountTotals
 
         totals = AccountTotals(spend=10, ppc_sales=50, total_sales=200)
-        text = _build_recap_blocks(date(2026, 6, 4), totals, "USD")[0]["text"]["text"]
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        text = _build_marketplace_block("US", totals, "USD", now, ZoneInfo("America/Los_Angeles"))["text"]["text"]
 
         for token in ("YoY", "DoD", "WoW", "MoM", "Day ", "Recap", "Event", "vs"):
             assert token not in text
 
     def test_non_usd_currency_symbol(self):
-        from daily_recap.main import _build_recap_blocks, AccountTotals
-        from datetime import date
+        from daily_recap.main import _build_marketplace_block, AccountTotals
 
         totals = AccountTotals(spend=6.03, ppc_sales=213.32, total_sales=255.98)
-        text = _build_recap_blocks(date(2026, 6, 4), totals, "GBP")[0]["text"]["text"]
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        text = _build_marketplace_block("UK", totals, "GBP", now, ZoneInfo("Europe/London"))["text"]["text"]
         assert "£6.03" in text
+
+    def test_marketplace_local_time_shown_when_it_differs_from_client_tz(self):
+        """A marketplace whose timezone differs from the client's own gets its
+        own local time annotated next to the header, matching the hourly bot."""
+        from daily_recap.main import _build_marketplace_block, AccountTotals
+
+        totals = AccountTotals(spend=1, ppc_sales=2, total_sales=3)
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)  # 3 AM PDT / 11 AM BST
+        text = _build_marketplace_block("UK", totals, "GBP", now, ZoneInfo("America/Los_Angeles"))["text"]["text"]
+        assert text.startswith("*UK* (11 AM BST)\n")
+
+    def test_no_marketplace_local_time_when_it_matches_client_tz(self):
+        from daily_recap.main import _build_marketplace_block, AccountTotals
+
+        totals = AccountTotals(spend=1, ppc_sales=2, total_sales=3)
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        text = _build_marketplace_block("US", totals, "USD", now, ZoneInfo("America/Los_Angeles"))["text"]["text"]
+        assert text.startswith("*US*\n")
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +206,7 @@ class TestHandlerGating:
             ]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
         ):
@@ -189,6 +228,7 @@ class TestHandlerDelivery:
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=totals) as mock_query,
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity") as mock_log,
         ):
@@ -203,11 +243,15 @@ class TestHandlerDelivery:
         assert mock_query.call_args[0][2] == "2026-06-04"
 
         blocks = mock_post.call_args[0][1]
-        text = blocks[0]["text"]["text"]
-        assert text.startswith("06/04/26\n")
-        assert "• Spend: $100.18" in text
-        assert "• ACoS: 28.81%" in text
-        assert "• TACoS: 6.24%" in text
+        title_text = blocks[0]["text"]["text"]
+        assert title_text.startswith(":bar_chart: *Daily Recap — Acme*\n")
+        assert "06/04/26" in title_text
+
+        mkt_text = blocks[1]["text"]["text"]
+        assert mkt_text.startswith("*US*\n")
+        assert "Spend: $100.18" in mkt_text
+        assert "ACoS: 28.81%" in mkt_text
+        assert "TACoS: 6.24%" in mkt_text
 
         log_data = mock_log.call_args[0][0]
         assert log_data["status"] == "sent"
@@ -224,6 +268,7 @@ class TestHandlerDelivery:
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
         ):
@@ -244,6 +289,7 @@ class TestHandlerDelivery:
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
         ):
@@ -259,6 +305,7 @@ class TestHandlerDelivery:
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
         ):
@@ -450,6 +497,7 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
             patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=totals) as mock_query,
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity") as mock_log,
         ):
@@ -460,9 +508,9 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
         assert body["messages_sent"] == 1
         # The metric query is pinned to yesterday — no date slipping.
         assert mock_query.call_args[0][2] == "2026-06-13"
-        text = mock_post.call_args[0][1][0]["text"]["text"]
-        assert text.startswith("06/13/26\n")
-        assert "• Total Sales: $1,604.29" in text
+        blocks = mock_post.call_args[0][1]
+        assert "06/13/26" in blocks[0]["text"]["text"]
+        assert "Total Sales: $1,604.29" in blocks[1]["text"]["text"]
 
         # The activity log records the recap (data) day.
         log_data = mock_log.call_args[0][0]
@@ -487,6 +535,7 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
             patch("daily_recap.main.list_bot_configs", return_value=[config]),
             patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
             patch("daily_recap.main._query_account_totals", return_value=AccountTotals(1, 4, 10)) as mock_query,
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
             patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
             patch("daily_recap.main.log_bot_activity"),
         ):
@@ -494,7 +543,7 @@ class TestRecapDayIsAlwaysPreviousCalendarDay:
             handler(_make_request())
 
         assert mock_query.call_args[0][2] == "2026-06-04"
-        assert mock_post.call_args[0][1][0]["text"]["text"].startswith("06/04/26\n")
+        assert "06/04/26" in mock_post.call_args[0][1][0]["text"]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -553,15 +602,267 @@ class TestAuAccountEndToEnd:
         assert _params(ads_call[1])["marketplaces"] == ["AU"]
 
         # Delivered message: Sydney recap date + AUD (A$) currency symbol.
-        text = mock_post.call_args[0][1][0]["text"]["text"]
-        assert text.startswith("07/01/26\n")
-        assert "• Spend: A$100.18" in text
-        assert "• PPC Sales: A$347.68" in text
-        assert "• Total Sales: A$1,604.29" in text
-        assert "• ACoS: 28.81%" in text
-        assert "• TACoS: 6.24%" in text
+        blocks = mock_post.call_args[0][1]
+        assert "07/01/26" in blocks[0]["text"]["text"]
+        mkt_text = blocks[1]["text"]["text"]
+        assert mkt_text.startswith("*AU*\n")
+        assert "Spend: A$100.18" in mkt_text
+        assert "PPC Sales: A$347.68" in mkt_text
+        assert "Total Sales: A$1,604.29" in mkt_text
+        assert "ACoS: 28.81%" in mkt_text
+        assert "TACoS: 6.24%" in mkt_text
 
         log_data = mock_log.call_args[0][0]
         assert log_data["status"] == "sent"
         assert log_data["marketplaces_reported"] == ["AU"]
         assert log_data["recap_date"] == "2026-07-01"
+
+
+# ---------------------------------------------------------------------------
+# YoY suffix on Spend / PPC Sales / ACoS only
+# ---------------------------------------------------------------------------
+
+
+class TestYoySuffix:
+    def test_no_yoy_by_default(self):
+        """Omitting yoy produces the plain (no-comparison) message."""
+        from daily_recap.main import _build_marketplace_block, AccountTotals
+
+        totals = AccountTotals(spend=100.18, ppc_sales=347.68, total_sales=1604.29)
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        text = _build_marketplace_block("US", totals, "USD", now, ZoneInfo("America/Los_Angeles"))["text"]["text"]
+        assert "YoY" not in text
+
+    def test_yoy_added_to_spend_ppc_acos_only(self):
+        from daily_recap.main import _build_marketplace_block, AccountTotals
+
+        totals = AccountTotals(spend=932.53, ppc_sales=4052.57, total_sales=7556.51)
+        yoy = AccountTotals(spend=1313.88, ppc_sales=5330.00, total_sales=0.0)
+        now = datetime(2026, 9, 8, 10, 0, tzinfo=timezone.utc)
+        text = _build_marketplace_block(
+            "US", totals, "USD", now, ZoneInfo("America/Los_Angeles"), yoy=yoy,
+        )["text"]["text"]
+
+        assert "Spend: $932.53 _(YoY: $1,313.88 [-29%])_" in text
+        assert "PPC Sales: $4,052.57 _(YoY: $5,330.00 [-24%])_" in text
+        assert "ACoS: 23.01% _(YoY: 24.65%" in text
+        # Total Sales / TACoS never get a YoY suffix — no baseline metric exists.
+        assert text.endswith("Total Sales: $7,556.51\nTACoS: 12.34%")
+        assert "Total Sales: $7,556.51 _(YoY" not in text
+        assert "TACoS: 12.34% _(YoY" not in text
+
+    def test_yoy_omitted_when_no_prior_year_data(self):
+        from daily_recap.main import _build_marketplace_block, AccountTotals
+
+        totals = AccountTotals(spend=10, ppc_sales=50, total_sales=200)
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        text = _build_marketplace_block(
+            "US", totals, "USD", now, ZoneInfo("America/Los_Angeles"), yoy=None,
+        )["text"]["text"]
+        assert "YoY" not in text
+
+
+# ---------------------------------------------------------------------------
+# Prior-year reference lookup (scripts/load_prior_year_reference.py's table)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryPriorYearTotals:
+    def test_returns_totals_when_row_exists(self, monkeypatch):
+        from daily_recap.main import _query_prior_year_totals
+        from datetime import date
+
+        monkeypatch.setenv("GCP_PROJECT", "proj")
+        monkeypatch.setenv("BQ_DATASET", "ds")
+        fake = _FakeBQ([("ads_prior_year_reference", [{"spend": 1313.88, "ppc_sales": 5330.00}])])
+
+        with patch("daily_recap.main._get_bq", return_value=fake):
+            result = _query_prior_year_totals("itsbodily", "US", date(2026, 9, 7))
+
+        assert result.spend == 1313.88
+        assert result.ppc_sales == 5330.00
+        assert result.total_sales == 0.0  # never a real baseline for this metric
+
+        sql, job_config = fake.calls[0]
+        params = _params(job_config)
+        # Queries the *prior* year's same calendar date.
+        assert params["date"] == date(2025, 9, 7)
+        assert params["client_id"] == "itsbodily"
+        assert params["marketplace"] == "US"
+
+    def test_returns_none_when_no_row(self):
+        from daily_recap.main import _query_prior_year_totals
+        from datetime import date
+
+        fake = _FakeBQ([])  # no matching rows for any query
+        with patch("daily_recap.main._get_bq", return_value=fake):
+            result = _query_prior_year_totals("itsbodily", "US", date(2026, 9, 7))
+        assert result is None
+
+    def test_returns_none_on_query_failure_not_raises(self):
+        """A client with no reference data loaded is the normal case, not an
+        error — the recap must still send without YoY rather than blow up."""
+        from daily_recap.main import _query_prior_year_totals
+        from datetime import date
+
+        class _Boom:
+            def query(self, *a, **kw):
+                raise RuntimeError("no such table")
+
+        with patch("daily_recap.main._get_bq", return_value=_Boom()):
+            result = _query_prior_year_totals("itsbodily", "US", date(2026, 9, 7))
+        assert result is None
+
+    def test_returns_none_for_feb_29_leap_day(self):
+        """Recapping Feb 29 has no same-calendar-date last year in a non-leap year."""
+        from daily_recap.main import _query_prior_year_totals
+        from datetime import date
+
+        result = _query_prior_year_totals("itsbodily", "US", date(2028, 2, 29))
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-marketplace: per-marketplace blocks + conditional Total
+# ---------------------------------------------------------------------------
+
+
+class TestMultiMarketplaceRecap:
+    def test_single_marketplace_has_header_but_no_total(self):
+        """A single-marketplace client still gets its own marketplace header
+        (matching the hourly bot, which always shows one) but no Total block —
+        a Total across one marketplace would just repeat its own numbers."""
+        from daily_recap.main import handler, AccountTotals
+
+        with (
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US"])]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        # Title block + one marketplace block — no Total, no divider.
+        assert len(blocks) == 2
+        assert blocks[0]["text"]["text"].startswith(":bar_chart: *Daily Recap — Acme*\n")
+        assert blocks[1]["text"]["text"].startswith("*US*\n")
+        assert "*Total*" not in blocks[1]["text"]["text"]
+        assert {"type": "divider"} not in blocks
+
+    def test_multi_marketplace_gets_header_per_marketplace_and_total(self):
+        from daily_recap.main import handler, AccountTotals
+
+        totals_by_mkt = {
+            "US": AccountTotals(100, 400, 1000),
+            "CA": AccountTotals(50, 200, 500),
+        }
+
+        with (
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US", "CA"])]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals", side_effect=lambda cid, mkts, *a: totals_by_mkt[mkts[0]]),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        full_text = "\n".join(b.get("text", {}).get("text", "") for b in blocks)
+
+        assert "*US*" in full_text
+        assert "*CA*" in full_text
+        assert "*Total*" in full_text
+        # Total sums both marketplaces: spend 100+50, ppc 400+200, total_sales 1000+500.
+        assert "Spend: $150.00" in full_text
+        assert "PPC Sales: $600.00" in full_text
+        assert "Total Sales: $1,500.00" in full_text
+        # A divider separates the per-marketplace blocks from the Total block.
+        assert {"type": "divider"} in blocks
+
+    def test_total_yoy_only_when_every_marketplace_has_a_baseline(self):
+        from daily_recap.main import handler, AccountTotals
+
+        totals_by_mkt = {
+            "US": AccountTotals(100, 400, 1000),
+            "CA": AccountTotals(50, 200, 500),
+        }
+        yoy_by_mkt = {
+            "US": AccountTotals(80, 300, 0),
+            "CA": None,  # CA has no prior-year reference data loaded
+        }
+
+        with (
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US", "CA"])]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals", side_effect=lambda cid, mkts, *a: totals_by_mkt[mkts[0]]),
+            patch("daily_recap.main._query_prior_year_totals", side_effect=lambda cid, mkt, *a: yoy_by_mkt[mkt]),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        full_text = "\n".join(b.get("text", {}).get("text", "") for b in blocks)
+
+        # US alone has a baseline, so its own line gets a YoY suffix...
+        assert "Spend: $100.00 _(YoY: $80.00" in full_text
+        # ...but the combined Total does not, since CA has none.
+        total_block = next(
+            b["text"]["text"] for b in blocks if b.get("text", {}).get("text", "").startswith("*Total*")
+        )
+        assert "YoY" not in total_block
+
+    def test_total_yoy_shown_when_all_marketplaces_have_a_baseline(self):
+        from daily_recap.main import handler, AccountTotals
+
+        totals_by_mkt = {
+            "US": AccountTotals(100, 400, 1000),
+            "CA": AccountTotals(50, 200, 500),
+        }
+        yoy_by_mkt = {
+            "US": AccountTotals(80, 300, 0),
+            "CA": AccountTotals(40, 150, 0),
+        }
+
+        with (
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config(marketplaces=["US", "CA"])]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main._query_account_totals", side_effect=lambda cid, mkts, *a: totals_by_mkt[mkts[0]]),
+            patch("daily_recap.main._query_prior_year_totals", side_effect=lambda cid, mkt, *a: yoy_by_mkt[mkt]),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+            patch("daily_recap.main.log_bot_activity"),
+        ):
+            handler(_make_request())
+
+        blocks = mock_post.call_args[0][1]
+        total_block = next(
+            b["text"]["text"] for b in blocks if b.get("text", {}).get("text", "").startswith("*Total*")
+        )
+        # Combined Total: spend 150 vs YoY 120, ppc 600 vs YoY 450.
+        assert "Spend: $150.00 _(YoY: $120.00" in total_block
+        assert "PPC Sales: $600.00 _(YoY: $450.00" in total_block
+
+
+# ---------------------------------------------------------------------------
+# _maybe_add_total_block unit tests (no handler/Slack involved)
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeAddTotalBlock:
+    def test_noop_for_single_marketplace(self):
+        from daily_recap.main import _maybe_add_total_block, AccountTotals
+
+        blocks: list[dict] = []
+        _maybe_add_total_block(blocks, {"US": AccountTotals(1, 2, 3)}, {"US": None}, "USD")
+        assert blocks == []
+
+    def test_noop_for_zero_marketplaces(self):
+        from daily_recap.main import _maybe_add_total_block
+
+        blocks: list[dict] = []
+        _maybe_add_total_block(blocks, {}, {}, "USD")
+        assert blocks == []
