@@ -1064,6 +1064,57 @@ class TestTriggerGating:
         assert mock_post.call_args[0][0] == "C_DUE"
 
 
+class TestActivityRoundTrip:
+    def test_second_handler_call_sees_first_calls_activity_and_skips(self):
+        """Proves the real contract between log_bot_activity (write) and
+        has_bot_activity (read) — not two independently-mocked halves that
+        happen to agree. A real in-memory list stands in for the activity
+        store; the patched functions mirror the real write/read shapes so a
+        second handler() invocation for the same due window only sends once."""
+        from daily_recap.main import handler, AccountTotals
+
+        activity_log: list[dict] = []
+
+        def fake_log_bot_activity(data: dict) -> None:
+            activity_log.append({
+                "bot": data["bot"],
+                "client_id": data["client_id"],
+                "recap_date": data["recap_date"],
+                "status": data["status"],
+            })
+
+        def fake_has_bot_activity(bot: str, client_id: str, recap_date: str) -> bool:
+            return any(
+                a["bot"] == bot
+                and a["client_id"] == client_id
+                and a["recap_date"] == recap_date
+                and a["status"] == "sent"
+                for a in activity_log
+            )
+
+        # 2h past Pacific midnight — inside the trigger window.
+        now = datetime(2026, 6, 5, 9, 0, tzinfo=timezone.utc)
+
+        with (
+            patch("daily_recap.main.datetime") as mock_dt,
+            patch("daily_recap.main.list_bot_configs", return_value=[_make_bot_config()]),
+            patch("daily_recap.main.get_client", return_value={"id": "c1", "name": "Acme", "is_active": True}),
+            patch("daily_recap.main.log_bot_activity", side_effect=fake_log_bot_activity),
+            patch("daily_recap.main.has_bot_activity", side_effect=fake_has_bot_activity),
+            patch("daily_recap.main._query_account_totals", return_value=AccountTotals(100, 400, 1000)),
+            patch("daily_recap.main._query_prior_year_totals", return_value=None),
+            patch("daily_recap.main.post_message", return_value={"ok": True, "ts": "1.2"}) as mock_post,
+        ):
+            mock_dt.now.return_value = now
+
+            first_body, _ = handler(_make_request())
+            second_body, _ = handler(_make_request())
+
+        assert first_body["messages_sent"] == 1
+        assert second_body["messages_sent"] == 0
+        mock_post.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _maybe_add_total_block unit tests (no handler/Slack involved)
 # ---------------------------------------------------------------------------

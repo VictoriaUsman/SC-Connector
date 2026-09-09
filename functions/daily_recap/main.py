@@ -94,6 +94,21 @@ def handler(request: flask.Request) -> tuple[dict, int]:
 
     for config in enabled:
         client_id = config["client_id"]
+
+        # Gate on the trigger window before doing any work for this client.
+        # This function is invoked every 15 minutes (see
+        # infra/resources/scheduler.py); each client only gets acted on once
+        # it's inside its own 1-3h-past-local-midnight window, and only if
+        # that day's recap hasn't already been sent — two independent gates
+        # so a more-frequent trigger can't double-post. Checking this first —
+        # before get_client() (a DB read) or resolve_target_channels() — means
+        # a not-due client costs nothing beyond reading
+        # config.get("client_timezone", ...): no DB read, no "No Slack
+        # channel for client" warning logged on every 15-minute poll.
+        client_tz = ZoneInfo(config.get("client_timezone", "America/Los_Angeles"))
+        if not _is_due(now, client_tz):
+            continue
+
         client = get_client(client_id)
         if not client or not client.get("is_active", True):
             continue
@@ -107,17 +122,8 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         if not marketplaces:
             continue
 
-        client_tz = ZoneInfo(config.get("client_timezone", "America/Los_Angeles"))
         recap_date = _previous_calendar_day(now, client_tz)
         currency = config.get("base_currency", "USD")
-
-        # This function is invoked every 15 minutes (see
-        # infra/resources/scheduler.py); each client only gets acted on once
-        # it's inside its own 1-3h-past-local-midnight window, and only if
-        # that day's recap hasn't already been sent — two independent gates
-        # so a more-frequent trigger can't double-post.
-        if not _is_due(now, client_tz):
-            continue
 
         report_date = recap_date.isoformat()
         if has_bot_activity("daily_recap", client_id, report_date):
@@ -261,7 +267,20 @@ def _hours_since_local_midnight(now: datetime, client_tz: ZoneInfo) -> float:
     # freeze "now" — that patch doesn't touch datetime *instances* already in
     # hand, only the module-level class name used to construct new ones.
     midnight_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Convert both to UTC before subtracting to handle DST transitions correctly
+    # Convert both to UTC before subtracting — do not "simplify" this by
+    # subtracting local_now - midnight_local directly, even though it looks
+    # redundant. `.replace()` preserves the original tzinfo *object* by
+    # default, so midnight_local and local_now share the identical tzinfo
+    # instance. Python's datetime.__sub__ takes a fast path whenever both
+    # operands share that identical tzinfo object: it does naive wall-clock
+    # subtraction and skips reconciling any UTC-offset difference between the
+    # two instants. That's silently wrong across a DST transition, where the
+    # UTC offset changes between local midnight and "now" but the wall-clock
+    # subtraction has no way to see it. Converting both operands to
+    # timezone.utc first defeats that shortcut: once both sides are already
+    # in UTC, absolute-time subtraction and wall-clock subtraction are the
+    # same operation, so the result is correct regardless of any DST shift
+    # in between.
     utc_midnight = midnight_local.astimezone(timezone.utc)
     utc_now = local_now.astimezone(timezone.utc)
     return (utc_now - utc_midnight).total_seconds() / 3600
