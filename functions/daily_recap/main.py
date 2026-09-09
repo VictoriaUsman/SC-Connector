@@ -227,6 +227,35 @@ def _previous_calendar_day(now: datetime, client_tz: ZoneInfo):
     return now.astimezone(client_tz).date() - timedelta(days=1)
 
 
+# Trigger window: how long after a client's own local midnight the recap is
+# allowed to fire. 1h buffer (down from an earlier fixed 23:00 UTC slot that
+# gave Pacific clients up to ~16h of lag) — evidence from 2026-09-08 showed a
+# client's data fully settled within ~40 minutes of its own midnight. The 2h
+# window width (not a single instant) absorbs poll timing slop and, more
+# importantly, a DST "spring forward" transition: computed from *absolute*
+# elapsed time (aware-datetime subtraction, not a wall-clock hour reading),
+# the window still produces a due instant on a day where the wall clock skips
+# an hour entirely (see TestIsDue's DST tests).
+_TRIGGER_WINDOW_START_HOURS = 1.0
+_TRIGGER_WINDOW_END_HOURS = 3.0
+
+
+def _hours_since_local_midnight(now: datetime, client_tz: ZoneInfo) -> float:
+    """Absolute hours elapsed since local midnight today, in client_tz."""
+    local_now = now.astimezone(client_tz)
+    midnight_local = datetime(local_now.year, local_now.month, local_now.day, tzinfo=client_tz)
+    # Convert both to UTC before subtracting to handle DST transitions correctly
+    utc_midnight = midnight_local.astimezone(timezone.utc)
+    utc_now = local_now.astimezone(timezone.utc)
+    return (utc_now - utc_midnight).total_seconds() / 3600
+
+
+def _is_due(now: datetime, client_tz: ZoneInfo) -> bool:
+    """True when `now` falls in the post-local-midnight trigger window."""
+    hours = _hours_since_local_midnight(now, client_tz)
+    return _TRIGGER_WINDOW_START_HOURS <= hours < _TRIGGER_WINDOW_END_HOURS
+
+
 # ---------------------------------------------------------------------------
 # BigQuery — sum the prior full calendar day across marketplaces
 # ---------------------------------------------------------------------------

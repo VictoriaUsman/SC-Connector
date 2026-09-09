@@ -85,6 +85,93 @@ class TestPreviousCalendarDay:
 
 
 # ---------------------------------------------------------------------------
+# Trigger window: when to send daily recap
+# ---------------------------------------------------------------------------
+
+class TestIsDue:
+    def test_before_window_not_due(self):
+        from daily_recap.main import _is_due
+
+        # Pacific midnight (PDT, UTC-7) on 06/05 is 07:00 UTC. 30 min later
+        # is well inside the "not yet" zone (window starts at 1h).
+        now = datetime(2026, 6, 5, 7, 30, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is False
+
+    def test_window_start_is_due_inclusive(self):
+        from daily_recap.main import _is_due
+
+        # Exactly 1h past Pacific midnight (07:00 UTC -> 08:00 UTC).
+        now = datetime(2026, 6, 5, 8, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is True
+
+    def test_inside_window_is_due(self):
+        from daily_recap.main import _is_due
+
+        # 2h past Pacific midnight.
+        now = datetime(2026, 6, 5, 9, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is True
+
+    def test_window_end_not_due_exclusive(self):
+        from daily_recap.main import _is_due
+
+        # Exactly 3h past Pacific midnight — window end is exclusive.
+        now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is False
+
+    def test_after_window_not_due(self):
+        from daily_recap.main import _is_due
+
+        # 4h past Pacific midnight.
+        now = datetime(2026, 6, 5, 11, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is False
+
+    def test_different_timezone_computed_independently(self):
+        from daily_recap.main import _is_due
+
+        # Berlin (CEST, UTC+2) midnight on 06/05 is 05/04 22:00 UTC. 2h later
+        # is 06/05 00:00 UTC.
+        now = datetime(2026, 6, 5, 0, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("Europe/Berlin")) is True
+
+    def test_dst_spring_forward_still_has_a_due_window(self):
+        """US DST begins 2026-03-08: clocks skip 2:00 AM -> 3:00 AM Pacific.
+        A window based on absolute elapsed time (not wall-clock hour) must
+        still produce a due instant that day, even though the wall clock
+        never reads some hours at all.
+        """
+        from daily_recap.main import _is_due
+
+        # Pacific midnight on 2026-03-08 is still PST (UTC-8) -> 08:00 UTC.
+        # 2h of *absolute* elapsed time later is 10:00 UTC, which is exactly
+        # the DST transition instant (2:00 AM PST becomes 3:00 AM PDT).
+        now = datetime(2026, 3, 8, 10, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is True
+
+    def test_dst_spring_forward_window_still_closes(self):
+        from daily_recap.main import _is_due
+
+        # 4h absolute elapsed past the same Pacific midnight.
+        now = datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc)
+        assert _is_due(now, ZoneInfo("America/Los_Angeles")) is False
+
+
+class TestHoursSinceLocalMidnight:
+    def test_exact_hours(self):
+        from daily_recap.main import _hours_since_local_midnight
+
+        now = datetime(2026, 6, 5, 9, 30, tzinfo=timezone.utc)  # 07:00 UTC = Pacific midnight
+        hours = _hours_since_local_midnight(now, ZoneInfo("America/Los_Angeles"))
+        assert abs(hours - 2.5) < 0.001
+
+    def test_never_negative_at_midnight_itself(self):
+        from daily_recap.main import _hours_since_local_midnight
+
+        now = datetime(2026, 6, 5, 7, 0, tzinfo=timezone.utc)  # exactly Pacific midnight
+        hours = _hours_since_local_midnight(now, ZoneInfo("America/Los_Angeles"))
+        assert abs(hours - 0.0) < 0.001
+
+
+# ---------------------------------------------------------------------------
 # Message formatting
 # ---------------------------------------------------------------------------
 
