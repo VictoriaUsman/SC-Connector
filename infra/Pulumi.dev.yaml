@@ -2,6 +2,11 @@ encryptionsalt: v1:4a0gKtmtwlM=:v1:0gV7OCH6zaofXNJL:LXrMhbrxkYlntx7fuJ7Hnilxe+38
 config:
   gcp:project: kalilos-connector-dev
   gcp:region: us-central1
+  kalilos:scheduler-cron: '*/30 * * * *'
+  kalilos:scheduler-timezone: America/New_York
+  kalilos:gdrive-root-folder: Kalilos Reports
+  kalilos:gdrive-root-folder-id: 0AMwE_D4Cl8OUUk9PVA
+  kalilos:frontend-url: https://kalilos-connector.vercel.app
   kalilos:supabase-db-url:
     secure: v1:yBgZidedPlGs6CGu:ZR2BsgLdZB8T9cDof/GKTiTGnfKhcFrblCGNp/LKmnztgd9F77ETlAG8Ldp7JCzENDpEbwSmoSPGl0loc7LxXLWAOM2Bkkf7nBvRUbPiJLk+s6NdUJonTk139Lxb70cpwt71eNM2
   kalilos:supabase-url: https://ckrbkeljuevemzclcpod.supabase.co
