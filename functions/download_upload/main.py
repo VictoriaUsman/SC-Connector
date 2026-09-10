@@ -22,7 +22,7 @@ from shared.credentials import get_ads_credentials, get_sp_credentials
 from shared.drive_client import find_or_create_folder, upload_report
 from shared.db import get_client, update_job_status
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
-from shared.report_converter import maybe_convert_to_tsv
+from shared.report_converter import localize_timestamp_columns, maybe_convert_to_tsv
 from shared.sp_api_errors import SPAPIForbiddenError
 from shared.throttle import is_throttled
 
@@ -102,6 +102,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
             output_columns=output_columns,
             normalize_percentages=(api_source == "sp_api"),
         )
+        content = localize_timestamp_columns(content, api_source, report_type, marketplace)
         file_ext = ".tsv" if converted else None
         mime_type = "text/tab-separated-values" if converted else None
 

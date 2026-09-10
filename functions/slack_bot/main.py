@@ -423,6 +423,10 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                 # Hourly updates report the current local day.
                 anchor_date = now.astimezone(client_tz).date()
                 anchor_day = day_index
+                prior_hourly = _fetch_hourly_yoy_metrics(
+                    live_event.get("prior_event_id"),
+                    client_id, marketplaces, day_index, client_tz, now,
+                )
                 blocks = _build_message_blocks(
                     client_name=client_name,
                     event_name=event_name,
@@ -431,6 +435,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
                     client_tz=client_tz,
                     metrics=metrics,
                     base_currency=config.get("base_currency", "USD"),
+                    prior_metrics=prior_hourly,
                 )
                 # Per-SKU breakdown (per-customer toggle / legacy allowlist).
                 # Purely additive — leaves the account-level blocks untouched.
@@ -630,6 +635,7 @@ def _query_metrics(
     report_date: str | None = None,
     full_day: bool = False,
     manual_ads: dict[str, dict[str, dict[str, Any]]] | None = None,
+    through: datetime | None = None,
 ) -> list[MarketplaceMetrics]:
     """Query BQ for orders and ads data, returning per-marketplace metrics.
 
@@ -642,6 +648,11 @@ def _query_metrics(
     matching ``(marketplace, date)`` entry exists it overrides the BigQuery ads
     query. This is how prior-year YoY ads are populated for events older than
     Amazon Ads' ~95-day reporting window, which the API can no longer pull.
+
+    ``through`` caps the orders window at that instant instead of the full live
+    day — used for prior-year hourly YoY, so last year's already-complete day
+    isn't compared against this year's still-running one (mirrors the per-SKU
+    query's same parameter; see ``_marketplace_day_window``).
     """
     dataset = os.environ.get("BQ_DATASET", "")
     project = os.environ.get("GCP_PROJECT", "")
@@ -651,7 +662,8 @@ def _query_metrics(
     for mkt in marketplaces:
         mkt_date = report_date or marketplace_today(mkt, now).isoformat()
         orders = _query_orders(
-            bq, project, dataset, client_id, mkt, mkt_date, now, full_day=full_day,
+            bq, project, dataset, client_id, mkt, mkt_date, now,
+            full_day=full_day, through=through,
         )
         ads = _manual_ads_lookup(manual_ads, mkt, mkt_date)
         if ads is None:
@@ -718,6 +730,7 @@ def _query_orders(
     now: datetime,
     *,
     full_day: bool = False,
+    through: datetime | None = None,
 ) -> dict[str, Any]:
     """Sum orders for a single marketplace on ``report_date``.
 
@@ -760,7 +773,7 @@ def _query_orders(
     )
 
     day_start_utc, day_end_utc = _marketplace_day_window(
-        marketplace, now, report_date=report_date, full_day=full_day,
+        marketplace, now, report_date=report_date, full_day=full_day, through=through,
     )
 
     query = f"""
@@ -1159,10 +1172,19 @@ _TZ_ABBREVIATIONS: dict[str, str] = {
 
 
 def _format_local_time(now: datetime, tz: ZoneInfo) -> str:
-    """Format time like '6 PM PST'."""
+    """Format time like '6 PM PST' (or '6 PM PDT' while daylight saving is in effect).
+
+    Uses zoneinfo's own tzname() so the abbreviation reflects whichever half
+    of the year it actually is (PST/PDT, EST/EDT, GMT/BST, CET/CEST,
+    AEST/AEDT) instead of a fixed label that's wrong for months at a time.
+    Some zones (e.g. Europe/Istanbul, since Turkey dropped DST) have no named
+    abbreviation in tzdata and tzname() falls back to a bare UTC offset like
+    "+03" -- for those, fall back to the friendly static table instead.
+    """
     local = now.astimezone(tz)
     hour = local.strftime("%-I %p")
-    tz_name = _TZ_ABBREVIATIONS.get(str(tz), str(tz))
+    live_name = local.tzname() or ""
+    tz_name = live_name if live_name and live_name[0] not in "+-" else _TZ_ABBREVIATIONS.get(str(tz), str(tz))
     return f"{hour} {tz_name}"
 
 
@@ -1186,8 +1208,16 @@ def _build_message_blocks(
     metrics: list[MarketplaceMetrics],
     base_currency: str,
     rates: dict[str, float] | None = None,
+    prior_metrics: list[MarketplaceMetrics] | None = None,
 ) -> list[dict]:
-    """Build Slack Block Kit blocks for the hourly update."""
+    """Build Slack Block Kit blocks for the hourly update.
+
+    ``prior_metrics`` (when a prior event is linked) is the prior year's
+    day-to-date figures through this same wall-clock hour — see
+    ``_fetch_hourly_yoy_metrics``. YoY is only shown on Total Sales and Units
+    here (unlike the full recap, which YoY's every line) to keep the hourly
+    drop lighter; Spend/PPC Sales/ACoS/TACoS still show current-year only.
+    """
     time_str = _format_local_time(now, client_tz)
     day_str = f"Day {day_index}" if day_index > 0 else ""
     subtitle = f"{time_str} | {event_name}"
@@ -1198,7 +1228,10 @@ def _build_message_blocks(
         _section(f":zap: *Hourly Update — {client_name}*\n{subtitle}"),
     ]
 
+    prior_by_mkt = _metrics_by_marketplace(prior_metrics)
+
     for m in metrics:
+        p = prior_by_mkt.get(m.marketplace)
         mkt_header = f"*{m.marketplace}*"
         mkt_tz_str = _MARKETPLACE_TIMEZONES.get(m.marketplace)
         if mkt_tz_str and mkt_tz_str != str(client_tz):
@@ -1211,7 +1244,9 @@ def _build_message_blocks(
             f"Spend: {format_currency(m.spend, m.currency)}",
             f"PPC Sales: {format_currency(m.ppc_sales, m.currency)}",
             f"ACoS: {format_percentage(m.acos)}",
-            f"Total Sales: {format_currency(m.total_sales, m.currency)}",
+            f"Units: {m.units:,}{_format_units_yoy_suffix(m.units, p.units if p else None)}",
+            f"Total Sales: {format_currency(m.total_sales, m.currency)}"
+            f"{_format_yoy_suffix(m.total_sales, p.total_sales if p else None, m.currency)}",
             f"TACoS: {format_percentage(m.tacos)}",
         ]
 
@@ -1243,6 +1278,8 @@ def _maybe_add_total_row(
     if len(metrics) <= 1:
         return
 
+    total_units = sum(m.units for m in metrics)
+
     currencies = {m.currency for m in metrics}
     if len(currencies) == 1:
         currency = currencies.pop()
@@ -1273,6 +1310,7 @@ def _maybe_add_total_row(
         f"Spend: {format_currency(total_spend, currency)}",
         f"PPC Sales: {format_currency(total_ppc, currency)}",
         f"ACoS: {format_percentage(acos)}",
+        f"Units: {total_units:,}",
         f"Total Sales: {format_currency(total_sales, currency)}",
         f"TACoS: {format_percentage(tacos)}",
     ]
@@ -1663,6 +1701,45 @@ def _fetch_prior_yoy_metrics(
     return prior_single, prior_cumulative
 
 
+def _fetch_hourly_yoy_metrics(
+    prior_event_id: str | None,
+    client_id: str,
+    marketplaces: list[str],
+    event_day: int,
+    client_tz: ZoneInfo,
+    now: datetime,
+) -> list[MarketplaceMetrics] | None:
+    """Prior-year day-to-date metrics through the same wall-clock hour, for the
+    live (non-recap) hourly update. None if no prior event is linked.
+
+    Mirrors ``_maybe_attach_sku_yoy``'s date/time resolution exactly: same
+    event-day number in the prior event's calendar, same clock time as ``now``
+    moved onto that date, and the same ``through`` cap so last year's
+    already-complete day isn't compared against this year's still-running one.
+    """
+    if not prior_event_id:
+        return None
+    prior_event = get_event(prior_event_id)
+    if not prior_event:
+        return None
+    prior_start = prior_event.get("start_date", "")
+    if not prior_start:
+        return None
+
+    # Same rationale as _fetch_prior_yoy_metrics: Amazon Ads can't serve
+    # history past ~95 days, so operator-supplied figures fill Spend/PPC Sales
+    # for older prior-year events. Total Sales/Units still come from BigQuery.
+    manual_ads = prior_event.get("manual_ads") or None
+
+    ly_date = _report_date_for_event_day(prior_start, event_day, client_tz)
+    ly_now = _clock_on_date(now, ly_date, client_tz)
+    return _query_metrics(
+        client_id, marketplaces, ly_now,
+        report_date=ly_date, full_day=False, through=ly_now,
+        manual_ads=manual_ads,
+    )
+
+
 def _metrics_by_marketplace(metrics: list[MarketplaceMetrics] | None) -> dict[str, MarketplaceMetrics]:
     if not metrics:
         return {}
@@ -1681,6 +1758,14 @@ def _format_yoy_suffix(
     if is_pct:
         return f" _(YoY: {format_percentage(prior)} {format_delta_bps(current, prior)})_"
     return f" _(YoY: {format_currency(prior, currency)} {format_delta(current, prior)})_"
+
+
+def _format_units_yoy_suffix(current: int, prior: int | None) -> str:
+    """Same shape as ``_format_yoy_suffix``, but for a plain unit count (no
+    currency symbol)."""
+    if prior is None:
+        return " _(YoY: —)_"
+    return f" _(YoY: {prior:,} {format_delta(current, prior)})_"
 
 
 def _format_marketplace_recap_lines(

@@ -11,6 +11,10 @@ where tsv_header_name is the header as it appears in the downloaded TSV file.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from shared.config import MARKETPLACE_TIMEZONES
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,11 @@ class TableSchema:
     table_name: str
     columns: tuple[ColumnMapping, ...]
     dedup_key: tuple[str, ...] | None = None  # columns for MERGE dedup (None = replace)
+    # (new_bq_name, source_bq_name): derive a marketplace-local DATE from an
+    # already-cast UTC TIMESTAMP column, computed by ingest_bigquery at parse
+    # time (not a TSV column, so it can't be a plain ColumnMapping). Source
+    # column's own value/semantics are untouched.
+    derived_local_date: tuple[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +71,7 @@ _ORDERS_SCHEMA = TableSchema(
     table_name="orders",
     columns=_ORDERS_COLUMNS,
     dedup_key=("amazon_order_id", "sku"),
+    derived_local_date=("purchase_date_local", "purchase_date"),
 )
 
 # ---------------------------------------------------------------------------
@@ -245,6 +255,12 @@ _FINANCE_TRANSACTIONS_SCHEMA = TableSchema(
 # ---------------------------------------------------------------------------
 _REGISTRY: dict[tuple[str, str], TableSchema] = {
     ("GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL", "sp_api"): _ORDERS_SCHEMA,
+    # Same columns as the by-last-update variant above (both are "flat file all
+    # orders" reports, differing only in which date Amazon filters on) — used
+    # for on-demand/historical order-date pulls. MERGE dedup on
+    # (amazon_order_id, sku) means rows from either variant land in the same
+    # table cleanly, so it's safe to share the schema.
+    ("GET_FLAT_FILE_ALL_ORDERS_DATA_BY_ORDER_DATE_GENERAL", "sp_api"): _ORDERS_SCHEMA,
     ("spCampaigns", "ads_api"): _SP_CAMPAIGNS_SCHEMA,
     ("sbCampaigns", "ads_api"): _SB_CAMPAIGNS_SCHEMA,
     ("sdCampaigns", "ads_api"): _SD_CAMPAIGNS_SCHEMA,
@@ -290,3 +306,41 @@ def cast_value(raw: str, bq_type: str) -> str | int | float | bool | None:
     if bq_type in ("DATE", "TIMESTAMP"):
         return raw
     return raw
+
+
+def _parse_utc(raw_utc_timestamp: str, marketplace: str) -> datetime | None:
+    """Parse a raw UTC timestamp string and convert to the marketplace's local tz."""
+    if not raw_utc_timestamp:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw_utc_timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    tz = ZoneInfo(MARKETPLACE_TIMEZONES.get(marketplace, "UTC"))
+    return dt.astimezone(tz)
+
+
+def to_marketplace_local_date(raw_utc_timestamp: str, marketplace: str) -> str | None:
+    """Derive the marketplace-local calendar date from a raw UTC timestamp string.
+
+    Amazon's flat-file timestamp columns (e.g. purchase-date) are always UTC,
+    so an order placed late at night in a marketplace behind UTC reads as the
+    next calendar day if read naively. Ground it in the marketplace's own
+    timezone instead, purely for local-day bucketing — never use this for
+    instant-range comparisons (that's what the untouched UTC column is for).
+    """
+    local = _parse_utc(raw_utc_timestamp, marketplace)
+    return local.date().isoformat() if local else None
+
+
+def to_marketplace_local_datetime(raw_utc_timestamp: str, marketplace: str) -> str | None:
+    """Convert a raw UTC timestamp string to its full marketplace-local ISO 8601
+    equivalent (date, time, and offset) — for display in delivered report files.
+
+    Unlike to_marketplace_local_date, this keeps time-of-day precision; it's
+    used to rewrite a downloaded report's own timestamp columns in place
+    (report_converter.localize_timestamp_columns), not to derive a BigQuery
+    bucketing column.
+    """
+    local = _parse_utc(raw_utc_timestamp, marketplace)
+    return local.isoformat() if local else None

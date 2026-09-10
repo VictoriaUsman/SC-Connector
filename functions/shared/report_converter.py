@@ -13,6 +13,7 @@ import json
 import logging
 from typing import Any
 
+from shared.bq_schemas import get_table_schema, to_marketplace_local_datetime
 from shared.vendor_reports import VENDOR_REPORT_ARRAY_KEYS
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,61 @@ def maybe_convert_to_tsv(
         return (result, result is not raw)
 
     return raw, False
+
+
+def localize_timestamp_columns(
+    raw: bytes,
+    api_source: str,
+    report_type: str,
+    marketplace: str,
+) -> bytes:
+    """Rewrite a delivered flat-file report's known UTC timestamp columns to
+    marketplace-local time, in place.
+
+    Amazon's raw timestamp columns (e.g. orders' purchase-date) are always
+    UTC, so an order placed late at night in a marketplace behind UTC reads
+    as belonging to the wrong calendar day when a human opens the file. This
+    is display-only — it rewrites the exact same file Amazon returned, not a
+    BigQuery reconstruction (see download_upload.py), and it never touches
+    the UTC-instant values BigQuery's ingestion stores/queries by.
+
+    Only affects report types registered in bq_schemas with TIMESTAMP-typed
+    columns (currently: orders' purchase-date/last-updated-date). Everything
+    else — unregistered report types, or registered ones with no TIMESTAMP
+    columns (e.g. ads reports' DATE-typed "date") — passes through unchanged.
+    """
+    schema = get_table_schema(report_type, api_source)
+    if schema is None:
+        return raw
+
+    ts_headers = {c.tsv_header for c in schema.columns if c.bq_type == "TIMESTAMP"}
+    if not ts_headers:
+        return raw
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+
+    rows = list(csv.reader(io.StringIO(text), delimiter="\t"))
+    if not rows:
+        return raw
+
+    header = rows[0]
+    ts_indexes = [i for i, h in enumerate(header) if h in ts_headers]
+    if not ts_indexes:
+        return raw
+
+    for row in rows[1:]:
+        for i in ts_indexes:
+            if i < len(row) and row[i]:
+                local = to_marketplace_local_datetime(row[i], marketplace)
+                if local is not None:
+                    row[i] = local
+
+    buf = io.StringIO()
+    csv.writer(buf, delimiter="\t", lineterminator="\n").writerows(rows)
+    return buf.getvalue().encode("utf-8")
 
 
 def rows_to_tsv(

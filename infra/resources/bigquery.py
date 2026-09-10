@@ -23,6 +23,14 @@ _ORDERS_COLUMNS = [
     {"name": "amazon_order_id", "type": "STRING", "mode": "REQUIRED"},
     {"name": "merchant_order_id", "type": "STRING", "mode": "NULLABLE"},
     {"name": "purchase_date", "type": "TIMESTAMP", "mode": "NULLABLE"},
+    # Amazon's purchase-date column is always UTC, so an order placed late at
+    # night in a marketplace behind UTC (e.g. US/Pacific) reads as the next
+    # calendar day here. purchase_date_local derives the marketplace-local
+    # calendar date at ingest time (see ingest_bigquery/main.py), for anything
+    # that wants to bucket by the day the order actually happened locally,
+    # without disturbing purchase_date's exact-instant semantics (still relied
+    # on for UTC range filters, e.g. daily_recap's day-boundary queries).
+    {"name": "purchase_date_local", "type": "DATE", "mode": "NULLABLE"},
     {"name": "last_updated_date", "type": "TIMESTAMP", "mode": "NULLABLE"},
     {"name": "order_status", "type": "STRING", "mode": "NULLABLE"},
     {"name": "sales_channel", "type": "STRING", "mode": "NULLABLE"},

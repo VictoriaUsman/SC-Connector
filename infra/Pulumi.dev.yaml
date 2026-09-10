@@ -4,7 +4,7 @@ config:
   kalilos:scheduler-cron: '*/30 * * * *'
   kalilos:scheduler-timezone: America/New_York
   kalilos:gdrive-root-folder: Kalilos Reports
-  kalilos:gdrive-root-folder-id: 0AMwE_D4Cl8OUUk9PVA
+  kalilos:gdrive-root-folder-id: 0AIEDfYeD1RayUk9PVA
   kalilos:frontend-url: https://kalilos-connector.vercel.app
   kalilos:supabase-url: https://ckrbkeljuevemzclcpod.supabase.co
   kalilos:supabase-db-url:

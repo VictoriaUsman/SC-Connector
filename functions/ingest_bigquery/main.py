@@ -21,7 +21,13 @@ from typing import Callable, TypeVar
 import flask
 from google.cloud import bigquery
 
-from shared.bq_schemas import ColumnMapping, TableSchema, cast_value, get_table_schema
+from shared.bq_schemas import (
+    ColumnMapping,
+    TableSchema,
+    cast_value,
+    get_table_schema,
+    to_marketplace_local_date,
+)
 from shared.drive_client import get_service as get_drive_service
 from shared.logging_setup import bind_log_context, clear_log_context, init_logging
 
@@ -129,7 +135,7 @@ def handler(request: flask.Request) -> tuple[dict, int]:
         dataset = os.environ.get("BQ_DATASET", "")
         if not dataset:
             project = os.environ.get("GCP_PROJECT", "")
-            env = os.environ.get("ENVIRONMENT", "staging")
+            env = os.environ.get("ENVIRONMENT", "dev")
             dataset = f"kalilos_reports_{env}"
 
         table_ref = f"{_get_bq_client().project}.{dataset}.{schema.table_name}"
@@ -207,6 +213,10 @@ def _parse_tsv(
         for tsv_header, col in header_to_col.items():
             raw_val = raw_row.get(tsv_header, "")
             row[col.bq_name] = cast_value(raw_val, col.bq_type)
+
+        if schema.derived_local_date:
+            new_col, source_col = schema.derived_local_date
+            row[new_col] = to_marketplace_local_date(row.get(source_col), marketplace)
 
         rows.append(row)
 
