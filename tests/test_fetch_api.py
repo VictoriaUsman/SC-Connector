@@ -10,11 +10,27 @@ from __future__ import annotations
 import os
 import sys
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "functions"))
+
+_REQUIREMENTS_TXT = (
+    Path(__file__).resolve().parent.parent / "functions" / "fetch_api" / "requirements.txt"
+)
+
+
+class TestRequirements:
+    def test_declares_bigquery_dependency(self):
+        """fetch_api's _dispatch imports shared.pricing_client, which imports
+        google.cloud.bigquery and instantiates a bigquery.Client — without
+        this pin, fetch_api breaks at deploy/runtime for ALL its operations,
+        not just buybox_status.
+        """
+        requirements = _REQUIREMENTS_TXT.read_text()
+        assert "google-cloud-bigquery" in requirements
 
 os.environ.setdefault("GCP_PROJECT", "test-project")
 os.environ.setdefault("ENVIRONMENT", "staging")
