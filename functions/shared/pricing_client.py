@@ -62,3 +62,75 @@ def get_active_asins(client_id: str, marketplace: str) -> list[str]:
     )
     rows = client.query(query, job_config=job_config)
     return [row["asin"] for row in rows]
+
+
+def fetch_buybox_status(
+    client_id: str,
+    marketplace: str,
+    asins: list[str],
+) -> list[dict[str, Any]]:
+    """Check live Buy Box status for each ASIN in *asins*.
+
+    One row per ASIN, in the same order given. A single ASIN's failure
+    (delisted, transient error surviving sp_api_request's own retries) is
+    recorded on that row rather than raised, so the rest of the batch still
+    completes.
+    """
+    client = get_client(client_id)
+    if not client:
+        raise ValueError(f"Unknown client_id: {client_id}")
+    seller_id = client.get("selling_partner_id")
+    marketplace_id = get_marketplace_id(marketplace)
+
+    rows: list[dict[str, Any]] = []
+    for i, asin in enumerate(asins):
+        if i > 0:
+            time.sleep(_PACE_SECONDS)
+        rows.append(_check_one_asin(client_id, marketplace, marketplace_id, seller_id, asin))
+    return rows
+
+
+def _check_one_asin(
+    client_id: str,
+    marketplace: str,
+    marketplace_id: str,
+    seller_id: str | None,
+    asin: str,
+) -> dict[str, Any]:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    try:
+        resp = sp_api_request(
+            client_id, marketplace, "GET",
+            f"/products/pricing/v0/items/{asin}/offers",
+            params={"MarketplaceId": marketplace_id, "ItemCondition": "New"},
+        )
+    except SPAPIRequestError as exc:
+        logger.warning(
+            "Buy Box check failed for one ASIN — recording and continuing",
+            extra={"client_id": client_id, "asin": asin, "error": str(exc)},
+        )
+        return {
+            "asin": asin, "is_buybox_winner": None, "buybox_price": None,
+            "your_price": None, "currency": None, "offer_count": 0,
+            "checked_at": checked_at, "error": str(exc),
+        }
+
+    payload = resp.get("payload", {})
+    offers = payload.get("Offers", [])
+    our_offer = next((o for o in offers if o.get("SellerId") == seller_id), None)
+
+    buybox_price = None
+    buybox_prices = payload.get("Summary", {}).get("BuyBoxPrices", [])
+    if buybox_prices:
+        buybox_price = buybox_prices[0].get("ListingPrice", {}).get("Amount")
+
+    return {
+        "asin": asin,
+        "is_buybox_winner": our_offer.get("IsBuyBoxWinner") if our_offer else None,
+        "buybox_price": buybox_price,
+        "your_price": our_offer.get("ListingPrice", {}).get("Amount") if our_offer else None,
+        "currency": our_offer.get("ListingPrice", {}).get("CurrencyCode") if our_offer else None,
+        "offer_count": len(offers),
+        "checked_at": checked_at,
+        "error": None,
+    }

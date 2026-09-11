@@ -39,3 +39,122 @@ class TestGetActiveAsins:
             asins = pricing_client.get_active_asins("itsbodily", "US")
 
         assert asins == []
+
+
+class TestFetchBuyboxStatus:
+    def _client_row(self):
+        return {"id": "itsbodily", "selling_partner_id": "A38K1AMGZXHFY8"}
+
+    def test_our_offer_wins_the_box(self):
+        from shared import pricing_client
+
+        response = {
+            "payload": {
+                "Summary": {"BuyBoxPrices": [{"ListingPrice": {"Amount": 19.99, "CurrencyCode": "USD"}}]},
+                "Offers": [
+                    {"SellerId": "A38K1AMGZXHFY8", "IsBuyBoxWinner": True,
+                     "ListingPrice": {"Amount": 19.99, "CurrencyCode": "USD"}},
+                    {"SellerId": "OTHERSELLER", "IsBuyBoxWinner": False,
+                     "ListingPrice": {"Amount": 21.50, "CurrencyCode": "USD"}},
+                ],
+            }
+        }
+        with patch.object(pricing_client, "get_client", return_value=self._client_row()), \
+             patch.object(pricing_client, "sp_api_request", return_value=response) as mock_req:
+            rows = pricing_client.fetch_buybox_status("itsbodily", "US", ["B0ABC12345"])
+
+        assert rows == [{
+            "asin": "B0ABC12345",
+            "is_buybox_winner": True,
+            "buybox_price": 19.99,
+            "your_price": 19.99,
+            "currency": "USD",
+            "offer_count": 2,
+            "checked_at": rows[0]["checked_at"],
+            "error": None,
+        }]
+        path = mock_req.call_args[0][3]
+        assert path == "/products/pricing/v0/items/B0ABC12345/offers"
+
+    def test_our_offer_exists_but_does_not_win(self):
+        from shared import pricing_client
+
+        response = {
+            "payload": {
+                "Summary": {"BuyBoxPrices": [{"ListingPrice": {"Amount": 21.50, "CurrencyCode": "USD"}}]},
+                "Offers": [
+                    {"SellerId": "A38K1AMGZXHFY8", "IsBuyBoxWinner": False,
+                     "ListingPrice": {"Amount": 22.00, "CurrencyCode": "USD"}},
+                    {"SellerId": "OTHERSELLER", "IsBuyBoxWinner": True,
+                     "ListingPrice": {"Amount": 21.50, "CurrencyCode": "USD"}},
+                ],
+            }
+        }
+        with patch.object(pricing_client, "get_client", return_value=self._client_row()), \
+             patch.object(pricing_client, "sp_api_request", return_value=response):
+            rows = pricing_client.fetch_buybox_status("itsbodily", "US", ["B0ABC12345"])
+
+        assert rows[0]["is_buybox_winner"] is False
+        assert rows[0]["your_price"] == 22.00
+        assert rows[0]["buybox_price"] == 21.50
+
+    def test_no_offer_for_this_seller(self):
+        from shared import pricing_client
+
+        response = {
+            "payload": {
+                "Summary": {"BuyBoxPrices": [{"ListingPrice": {"Amount": 21.50, "CurrencyCode": "USD"}}]},
+                "Offers": [
+                    {"SellerId": "OTHERSELLER", "IsBuyBoxWinner": True,
+                     "ListingPrice": {"Amount": 21.50, "CurrencyCode": "USD"}},
+                ],
+            }
+        }
+        with patch.object(pricing_client, "get_client", return_value=self._client_row()), \
+             patch.object(pricing_client, "sp_api_request", return_value=response):
+            rows = pricing_client.fetch_buybox_status("itsbodily", "US", ["B0ABC12345"])
+
+        assert rows[0]["is_buybox_winner"] is None
+        assert rows[0]["your_price"] is None
+        assert rows[0]["error"] is None
+
+    def test_one_asin_failure_does_not_abort_the_batch(self):
+        from shared import pricing_client
+        from shared.sp_api_rest import SPAPIRequestError
+
+        ok_response = {
+            "payload": {
+                "Summary": {"BuyBoxPrices": []},
+                "Offers": [{"SellerId": "A38K1AMGZXHFY8", "IsBuyBoxWinner": True,
+                            "ListingPrice": {"Amount": 10.0, "CurrencyCode": "USD"}}],
+            }
+        }
+
+        def _side_effect(client_id, marketplace, method, path, **kwargs):
+            if "BADASIN" in path:
+                raise SPAPIRequestError(404, "Not Found")
+            return ok_response
+
+        with patch.object(pricing_client, "get_client", return_value=self._client_row()), \
+             patch.object(pricing_client, "sp_api_request", side_effect=_side_effect), \
+             patch.object(pricing_client.time, "sleep"):
+            rows = pricing_client.fetch_buybox_status(
+                "itsbodily", "US", ["BADASIN", "GOODASIN"],
+            )
+
+        assert len(rows) == 2
+        assert rows[0]["asin"] == "BADASIN"
+        assert rows[0]["is_buybox_winner"] is None
+        assert rows[0]["error"] == "SP-API 404: Not Found"
+        assert rows[1]["asin"] == "GOODASIN"
+        assert rows[1]["is_buybox_winner"] is True
+
+    def test_unknown_client_raises(self):
+        from shared import pricing_client
+
+        with patch.object(pricing_client, "get_client", return_value=None):
+            try:
+                pricing_client.fetch_buybox_status("nosuchclient", "US", ["B0ABC12345"])
+                assert False, "expected ValueError"
+            except ValueError as exc:
+                assert "nosuchclient" in str(exc)
