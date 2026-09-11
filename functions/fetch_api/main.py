@@ -219,6 +219,11 @@ def _dispatch(
     if handler_key == "buybox_status":
         asins = pricing_client.get_active_asins(client_id, marketplace)
         if not asins:
+            logger.info(
+                "No active listings found — has GET_MERCHANT_LISTINGS_ALL_DATA "
+                "been pulled for this client?",
+                extra={"client_id": client_id, "marketplace": marketplace},
+            )
             return []
         return pricing_client.fetch_buybox_status(client_id, marketplace, asins)
 
