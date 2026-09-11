@@ -54,12 +54,15 @@ registry fix from today.
   - Calls SP-API Pricing API v0 `getItemOffers` per ASIN
     (`GET /products/pricing/v0/items/{asin}/offers`,
     `ItemCondition=New`, `MarketplaceId=<marketplace's id>`).
-  - Per ASIN, finds the offer where `MyOffer == true` in the response's
-    `Offers[]` array; reads that offer's `IsBuyBoxWinner`. If no offer is
-    marked `MyOffer` (e.g. the account isn't an active offer for that ASIN
-    — out of stock, suppressed listing), record `is_buybox_winner = None`
-    rather than `False`, so "we don't currently have an offer" is
-    distinguishable from "we have an offer and lost the box."
+  - Per ASIN, finds "our own" offer by matching `Offers[].SellerId`
+    against the client's own Amazon Seller ID — already stored as
+    `clients.selling_partner_id` (confirmed populated today, e.g.
+    `itsbodily` → `A38K1AMGZXHFY8`) — and reads that offer's
+    `IsBuyBoxWinner`. If no offer's `SellerId` matches (e.g. the account
+    isn't an active offer for that ASIN — out of stock, suppressed
+    listing), record `is_buybox_winner = None` rather than `False`, so
+    "we don't currently have an offer" is distinguishable from "we have
+    an offer and lost the box."
   - Returned row shape: `{asin, is_buybox_winner, buybox_price,
     your_price, currency, offer_count, checked_at}`. `checked_at` is a
     UTC timestamp (`datetime.now(timezone.utc).isoformat()`), since this
@@ -69,7 +72,7 @@ registry fix from today.
     sequentially with a fixed inter-call delay; `sp_api_rest.sp_api_request`
     already retries 429s with backoff, so this only needs to set a
     conservative baseline pace, not reimplement retry logic.
-  - Exact field names (`MyOffer`, `IsBuyBoxWinner`, the summary/offer
+  - Exact field names (`SellerId`, `IsBuyBoxWinner`, the summary/offer
     envelope shape) are per Amazon's documented Pricing API v0 schema, but
     — following the same caveat already written into
     `replenishment_client.py` — should be confirmed against a live test
