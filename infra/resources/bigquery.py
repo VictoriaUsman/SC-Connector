@@ -241,7 +241,12 @@ TABLE_DEFS: list[dict] = [
         "partition_field": "report_date",
         "clustering": ["client_id", "marketplace"],
         "description": "Active Listings — current catalog (asin/sku/status), used as the Buy Box check's ASIN source",
+        # active_listings_latest has no per-listing update timestamp (unlike
+        # orders' last_updated_date), so order by the date field itself —
+        # report_date — same reasoning as finance_transactions above; ties
+        # fall through to ingested_at, giving "most recent pull wins".
         "latest_keys": ("sku",),
+        "latest_order_by": "report_date",
     },
 ]
 
