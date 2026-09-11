@@ -149,6 +149,43 @@ class TestFetchBuyboxStatus:
         assert rows[1]["asin"] == "GOODASIN"
         assert rows[1]["is_buybox_winner"] is True
 
+    def test_persistent_network_error_on_one_asin_does_not_abort_the_batch(self):
+        """sp_api_rest.sp_api_request re-raises the raw requests.RequestException
+        unwrapped when every retry attempt fails with a network error (not
+        every failure path wraps into SPAPIRequestError) — this must be
+        caught per-ASIN too, or one bad ASIN kills the whole batch.
+        """
+        import requests
+
+        from shared import pricing_client
+
+        ok_response = {
+            "payload": {
+                "Summary": {"BuyBoxPrices": []},
+                "Offers": [{"SellerId": "A38K1AMGZXHFY8", "IsBuyBoxWinner": True,
+                            "ListingPrice": {"Amount": 10.0, "CurrencyCode": "USD"}}],
+            }
+        }
+
+        def _side_effect(client_id, marketplace, method, path, **kwargs):
+            if "BADASIN" in path:
+                raise requests.RequestException("Connection reset by peer")
+            return ok_response
+
+        with patch.object(pricing_client, "get_client", return_value=self._client_row()), \
+             patch.object(pricing_client, "sp_api_request", side_effect=_side_effect), \
+             patch.object(pricing_client.time, "sleep"):
+            rows = pricing_client.fetch_buybox_status(
+                "itsbodily", "US", ["BADASIN", "GOODASIN"],
+            )
+
+        assert len(rows) == 2
+        assert rows[0]["asin"] == "BADASIN"
+        assert rows[0]["is_buybox_winner"] is None
+        assert rows[0]["error"] == "Connection reset by peer"
+        assert rows[1]["asin"] == "GOODASIN"
+        assert rows[1]["is_buybox_winner"] is True
+
     def test_unknown_client_raises(self):
         from shared import pricing_client
 

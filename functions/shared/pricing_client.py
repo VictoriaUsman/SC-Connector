@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import requests
 from google.cloud import bigquery
 
 from shared.config import get_marketplace_id
@@ -106,7 +107,7 @@ def _check_one_asin(
             f"/products/pricing/v0/items/{asin}/offers",
             params={"MarketplaceId": marketplace_id, "ItemCondition": "New"},
         )
-    except SPAPIRequestError as exc:
+    except (SPAPIRequestError, requests.RequestException) as exc:
         logger.warning(
             "Buy Box check failed for one ASIN — recording and continuing",
             extra={"client_id": client_id, "asin": asin, "error": str(exc)},
