@@ -30,6 +30,9 @@ SNS_OFFERS = "SNS_OFFERS"
 # programmatic (Reports API) requests; see shared.removed_reports.
 SP_FINANCE_TRANSACTIONS = "SP_FINANCE_TRANSACTIONS"
 
+# Pricing API v0 (getItemOffers) — live Buy Box winner status per active ASIN.
+BUYBOX_STATUS = "BUYBOX_STATUS"
+
 API_OPERATIONS: dict[str, dict] = {
     SNS_OFFER_METRICS: {
         "api_source": "sp_api",
@@ -78,6 +81,18 @@ API_OPERATIONS: dict[str, dict] = {
         "aggregation": None,
         "bq_table": "finance_transactions",
         "replaces": ["GET_DATE_RANGE_FINANCIAL_TRANSACTION_DATA"],
+    },
+    BUYBOX_STATUS: {
+        "api_source": "sp_api",
+        "label": "Buy Box Status",
+        "description": (
+            "Live, point-in-time Buy Box winner status per active ASIN, "
+            "from the Pricing API (v0 getItemOffers). ASINs come from the "
+            "client's Active Listings (GET_MERCHANT_LISTINGS_ALL_DATA)."
+        ),
+        "handler": "buybox_status",
+        "aggregation": None,
+        "bq_table": None,
     },
 }
 

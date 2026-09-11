@@ -99,7 +99,7 @@ def create(
             gdrive_folder_id = config.get("gdrive-root-folder-id")
             if gdrive_folder_id:
                 env_vars["GDRIVE_ROOT_FOLDER_ID"] = gdrive_folder_id
-        if fn_name == "ingest-bigquery":
+        if fn_name in ("ingest-bigquery", "fetch-api"):
             env_vars["BQ_DATASET"] = f"kalilos_reports_{env}"
         if fn_name == "event-report-scheduler":
             env_vars["WORKFLOW_NAME"] = f"kalilos-{env}-report-flow"

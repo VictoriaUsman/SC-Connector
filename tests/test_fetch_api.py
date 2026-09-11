@@ -59,3 +59,28 @@ class TestDispatchFinanceTransactions:
 
         with pytest.raises(ValueError, match="nonexistent_handler"):
             fa._dispatch({"handler": "nonexistent_handler"}, "moxe", "US", date(2026, 8, 1), date(2026, 8, 1), {})
+
+
+class TestDispatchBuyboxStatus:
+    def test_routes_to_pricing_client(self):
+        from fetch_api import main as fa
+
+        op = {"handler": "buybox_status"}
+        with patch.object(fa.pricing_client, "get_active_asins", return_value=["B0ABC12345"]) as mock_asins, \
+             patch.object(fa.pricing_client, "fetch_buybox_status", return_value=[{"asin": "B0ABC12345"}]) as mock_check:
+            rows = fa._dispatch(op, "itsbodily", "US", date(2026, 9, 11), date(2026, 9, 11), {})
+
+        mock_asins.assert_called_once_with("itsbodily", "US")
+        mock_check.assert_called_once_with("itsbodily", "US", ["B0ABC12345"])
+        assert rows == [{"asin": "B0ABC12345"}]
+
+    def test_no_active_asins_returns_empty_without_calling_pricing_api(self):
+        from fetch_api import main as fa
+
+        op = {"handler": "buybox_status"}
+        with patch.object(fa.pricing_client, "get_active_asins", return_value=[]), \
+             patch.object(fa.pricing_client, "fetch_buybox_status") as mock_check:
+            rows = fa._dispatch(op, "itsbodily", "US", date(2026, 9, 11), date(2026, 9, 11), {})
+
+        mock_check.assert_not_called()
+        assert rows == []

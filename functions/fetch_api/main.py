@@ -23,7 +23,7 @@ from shared.logging_setup import bind_log_context, clear_log_context, init_loggi
 from shared.report_converter import rows_to_tsv
 from shared.sp_api_rest import SPAPIRequestError
 from shared.throttle import is_throttled
-from shared import finances_client, replenishment_client
+from shared import finances_client, pricing_client, replenishment_client
 
 logger = logging.getLogger(__name__)
 init_logging("fetch-api")
@@ -215,6 +215,12 @@ def _dispatch(
             client_id, marketplace, start_date, end_date,
             transaction_status=transaction_status,
         )
+
+    if handler_key == "buybox_status":
+        asins = pricing_client.get_active_asins(client_id, marketplace)
+        if not asins:
+            return []
+        return pricing_client.fetch_buybox_status(client_id, marketplace, asins)
 
     raise ValueError(f"No fetch handler implemented for '{handler_key}'")
 
