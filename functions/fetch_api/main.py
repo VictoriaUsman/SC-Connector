@@ -225,7 +225,13 @@ def _dispatch(
                 extra={"client_id": client_id, "marketplace": marketplace},
             )
             return []
-        return pricing_client.fetch_buybox_status(client_id, marketplace, asins)
+        rows = pricing_client.fetch_buybox_status(client_id, marketplace, asins)
+        if rows and all(r.get("error") for r in rows):
+            logger.warning(
+                "Buy Box check: every row in this run errored out",
+                extra={"client_id": client_id, "marketplace": marketplace, "row_count": len(rows)},
+            )
+        return rows
 
     raise ValueError(f"No fetch handler implemented for '{handler_key}'")
 
