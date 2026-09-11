@@ -158,3 +158,31 @@ class TestFetchBuyboxStatus:
                 assert False, "expected ValueError"
             except ValueError as exc:
                 assert "nosuchclient" in str(exc)
+
+    def test_missing_selling_partner_id_raises(self):
+        """A client record with no selling_partner_id configured must raise,
+        not silently return is_buybox_winner=None for every row — that value
+        is indistinguishable from a legitimate "we never win this box"
+        result and would mask a config problem.
+        """
+        from shared import pricing_client
+
+        client_row = {"id": "itsbodily"}  # no selling_partner_id key at all
+        with patch.object(pricing_client, "get_client", return_value=client_row):
+            try:
+                pricing_client.fetch_buybox_status("itsbodily", "US", ["B0ABC12345"])
+                assert False, "expected ValueError"
+            except ValueError as exc:
+                assert "itsbodily" in str(exc)
+                assert "selling_partner_id" in str(exc)
+
+    def test_empty_string_selling_partner_id_raises(self):
+        from shared import pricing_client
+
+        client_row = {"id": "itsbodily", "selling_partner_id": ""}
+        with patch.object(pricing_client, "get_client", return_value=client_row):
+            try:
+                pricing_client.fetch_buybox_status("itsbodily", "US", ["B0ABC12345"])
+                assert False, "expected ValueError"
+            except ValueError as exc:
+                assert "selling_partner_id" in str(exc)

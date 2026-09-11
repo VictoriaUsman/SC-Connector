@@ -80,6 +80,8 @@ def fetch_buybox_status(
     if not client:
         raise ValueError(f"Unknown client_id: {client_id}")
     seller_id = client.get("selling_partner_id")
+    if not seller_id:
+        raise ValueError(f"Client {client_id} has no selling_partner_id configured")
     marketplace_id = get_marketplace_id(marketplace)
 
     rows: list[dict[str, Any]] = []
