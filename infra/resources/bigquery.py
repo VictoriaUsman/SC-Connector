@@ -165,6 +165,16 @@ _FINANCE_TRANSACTIONS_COLUMNS = [
     {"name": "fulfillment_network", "type": "STRING", "mode": "NULLABLE"},
 ]
 
+_ACTIVE_LISTINGS_COLUMNS = [
+    {"name": "sku", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "asin", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "item_name", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "status", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "fulfillment_channel", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "price", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "quantity", "type": "INTEGER", "mode": "NULLABLE"},
+]
+
 TABLE_DEFS: list[dict] = [
     {
         "name": "orders",
@@ -224,6 +234,14 @@ TABLE_DEFS: list[dict] = [
         # to ingested_at, keeping the most recent pull.
         "latest_keys": ("transaction_id", "breakdown_type", "line_index"),
         "latest_order_by": "posted_date",
+    },
+    {
+        "name": "active_listings",
+        "columns": _ACTIVE_LISTINGS_COLUMNS,
+        "partition_field": "report_date",
+        "clustering": ["client_id", "marketplace"],
+        "description": "Active Listings — current catalog (asin/sku/status), used as the Buy Box check's ASIN source",
+        "latest_keys": ("sku",),
     },
 ]
 

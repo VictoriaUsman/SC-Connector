@@ -251,6 +251,25 @@ _FINANCE_TRANSACTIONS_SCHEMA = TableSchema(
 )
 
 # ---------------------------------------------------------------------------
+# Active Listings — GET_MERCHANT_LISTINGS_ALL_DATA
+# ---------------------------------------------------------------------------
+_ACTIVE_LISTINGS_COLUMNS = (
+    ColumnMapping("sku", "STRING", "seller-sku"),
+    ColumnMapping("asin", "STRING", "asin1"),
+    ColumnMapping("item_name", "STRING", "item-name"),
+    ColumnMapping("status", "STRING", "status"),
+    ColumnMapping("fulfillment_channel", "STRING", "fulfillment-channel"),
+    ColumnMapping("price", "FLOAT", "price"),
+    ColumnMapping("quantity", "INTEGER", "quantity"),
+)
+
+_ACTIVE_LISTINGS_SCHEMA = TableSchema(
+    table_name="active_listings",
+    columns=_ACTIVE_LISTINGS_COLUMNS,
+    dedup_key=("sku",),
+)
+
+# ---------------------------------------------------------------------------
 # Registry: (report_type, api_source) -> TableSchema
 # ---------------------------------------------------------------------------
 _REGISTRY: dict[tuple[str, str], TableSchema] = {
@@ -267,6 +286,7 @@ _REGISTRY: dict[tuple[str, str], TableSchema] = {
     ("SNS_OFFER_METRICS", "sp_api"): _SNS_OFFER_METRICS_SCHEMA,
     ("SNS_SP_METRICS", "sp_api"): _SNS_SP_METRICS_SCHEMA,
     ("SP_FINANCE_TRANSACTIONS", "sp_api"): _FINANCE_TRANSACTIONS_SCHEMA,
+    ("GET_MERCHANT_LISTINGS_ALL_DATA", "sp_api"): _ACTIVE_LISTINGS_SCHEMA,
 }
 
 
