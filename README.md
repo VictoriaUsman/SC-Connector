@@ -27,6 +27,17 @@ Cloud Scheduler (cron)
 
 **Stack:** Cloud Functions (Python 3.12) · Cloud Workflows · Firestore · Cloud Scheduler · Secret Manager · Google Drive API · React + Vite + shadcn/ui on Firebase Hosting · Pulumi (IaC)
 
+## Problems It Resolves
+
+- **Automation connection checklist** — every channel is checked and confirmed connected before the event
+- **Consistent hourly cadence** — hourly automations run at :05 past the hour, consistently
+- **No truncated output** — removed the "show more" truncation from hourly outputs
+- **Separate internal/external posting** — hourly bots post to internal AND external threads separately
+- **Cleaner single-marketplace output** — single-marketplace accounts drop the noisy "total" row from hourly updates
+- **Retroactive YoY context** — last year's hourly comparison is added to hourly updates, pulled retroactively from BR
+- **Scoped bot notifications** — notification routing is scoped per person/pod, so nobody receives notifications from every account
+- **YTD context on PD comparisons** — YoY PD comparisons include YTD YoY cumulative growth as context
+
 ## Key Features
 
 - **Multi-client, multi-marketplace** — one schedule fans out across all selected clients and marketplaces
