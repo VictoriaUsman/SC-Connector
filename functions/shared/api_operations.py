@@ -33,6 +33,9 @@ SP_FINANCE_TRANSACTIONS = "SP_FINANCE_TRANSACTIONS"
 # Pricing API v0 (getItemOffers) — live Buy Box winner status per active ASIN.
 BUYBOX_STATUS = "BUYBOX_STATUS"
 
+# FBA Inbound API v2024-03-20 — expiration dates per inbound plan item.
+INBOUND_EXPIRATION = "INBOUND_EXPIRATION"
+
 API_OPERATIONS: dict[str, dict] = {
     SNS_OFFER_METRICS: {
         "api_source": "sp_api",
@@ -91,6 +94,18 @@ API_OPERATIONS: dict[str, dict] = {
             "client's Active Listings (GET_MERCHANT_LISTINGS_ALL_DATA)."
         ),
         "handler": "buybox_status",
+        "aggregation": None,
+        "bq_table": None,
+    },
+    INBOUND_EXPIRATION: {
+        "api_source": "sp_api",
+        "label": "Inbound Shipment Expiration Dates",
+        "description": (
+            "Expiration dates (and lot codes) entered in Send to Amazon, one "
+            "row per inbound plan item, from the FBA Inbound API (v2024-03-20). "
+            "Covers plans last updated on or after the start date."
+        ),
+        "handler": "inbound_expiration",
         "aggregation": None,
         "bq_table": None,
     },

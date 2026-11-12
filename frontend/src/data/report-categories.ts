@@ -98,6 +98,12 @@ export const SP_REPORT_CATEGORIES: ReportCategory[] = [
         description: "Consolidated inventory health: sales velocity (7/30/60/90d), storage fees, aging, excess units, and restock recommendations",
         constraint: "Not available in NL, PL, SE, or BE marketplaces.",
       },
+      {
+        id: "INBOUND_EXPIRATION",
+        label: "Inbound Shipment Expiration Dates",
+        description: "Expiration dates and lot codes entered in Send to Amazon, per inbound plan item, via the FBA Inbound API",
+        constraint: "Covers inbound plans last updated on or after the start date. Requires the Amazon Fulfillment role on the seller's SP-API authorization.",
+      },
     ],
   },
   {

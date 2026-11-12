@@ -399,6 +399,15 @@ export const SP_REPORT_METADATA: Record<string, SpReportMeta> = {
     ],
   },
 
+  INBOUND_EXPIRATION: {
+    description: "Expiration dates and lot codes entered in Send to Amazon, one row per inbound plan item (FBA Inbound API v2024-03-20)",
+    format: "tsv",
+    columns: [
+      "inbound_plan_id", "plan_name", "plan_status", "plan_last_updated",
+      "msku", "asin", "fnsku", "quantity", "expiration", "lot_code",
+    ],
+  },
+
   SP_FINANCE_TRANSACTIONS: {
     description: "Line-item financial transactions for a custom date range (Finances API v2024-06-19) — one row per breakdown line",
     format: "tsv",

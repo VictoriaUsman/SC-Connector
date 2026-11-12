@@ -177,3 +177,16 @@ class TestDispatchBuyboxStatus:
         assert rows == mixed_rows
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert warnings == []
+
+
+class TestDispatchInboundExpiration:
+    def test_routes_to_inbound_client_with_start_date(self):
+        from fetch_api import main as fa
+
+        op = {"handler": "inbound_expiration"}
+        with patch.object(fa.inbound_client, "fetch_inbound_expirations",
+                          return_value=[{"msku": "A"}]) as mock_fetch:
+            rows = fa._dispatch(op, "itsbodily", "US", date(2026, 11, 1), date(2026, 11, 12), {})
+
+        mock_fetch.assert_called_once_with("itsbodily", "US", date(2026, 11, 1))
+        assert rows == [{"msku": "A"}]

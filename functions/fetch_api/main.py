@@ -23,7 +23,7 @@ from shared.logging_setup import bind_log_context, clear_log_context, init_loggi
 from shared.report_converter import rows_to_tsv
 from shared.sp_api_rest import SPAPIRequestError
 from shared.throttle import is_throttled
-from shared import finances_client, pricing_client, replenishment_client
+from shared import finances_client, inbound_client, pricing_client, replenishment_client
 
 logger = logging.getLogger(__name__)
 init_logging("fetch-api")
@@ -232,6 +232,9 @@ def _dispatch(
                 extra={"client_id": client_id, "marketplace": marketplace, "row_count": len(rows)},
             )
         return rows
+
+    if handler_key == "inbound_expiration":
+        return inbound_client.fetch_inbound_expirations(client_id, marketplace, start_date)
 
     raise ValueError(f"No fetch handler implemented for '{handler_key}'")
 
